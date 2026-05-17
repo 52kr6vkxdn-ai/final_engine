@@ -2,9 +2,30 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
     <title>Zengine</title>
-    <script src="pixi.min.js"></script>
+    <!--
+      ┌─ OFFLINE SWAP ──────────────────────────────────────────────────────────┐
+      │  To run without internet:                                               │
+      │  1. Open the URL below in your browser and press Ctrl+S                 │
+      │     https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.4.0/pixi.min.js   │
+      │  2. Save the file as  pixi.min.js  next to index.html                  │
+      │  3. Replace the src below with:  src="pixi.min.js"                     │
+      └─────────────────────────────────────────────────────────────────────────┘
+    -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.4.0/pixi.min.js"></script>
+    <!--
+      ┌─ OFFLINE SWAP ──────────────────────────────────────────────────────────┐
+      │  To run without internet:                                               │
+      │  1. Open the URL below in your browser and press Ctrl+S                 │
+      │     https://cdnjs.cloudflare.com/ajax/libs/hammer.js/2.0.8/hammer.min.js│
+      │  2. Save the file as  hammer.min.js  next to index.html                 │
+      │  3. Replace the src below with:  src="hammer.min.js"                   │
+      └─────────────────────────────────────────────────────────────────────────┘
+    -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/hammer.js/2.0.8/hammer.min.js"></script>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -70,10 +91,48 @@
 
     <!-- Right: scene picker + gizmo mode -->
     <div class="toolbar-right">
+        <button id="btn-export-game" title="Export game as playable zip"
+            style="background:rgba(74,222,128,0.1);border:1px solid rgba(74,222,128,0.4);color:#4ade80;
+                   border-radius:4px;padding:4px 10px;cursor:pointer;font-size:10px;font-weight:600;
+                   letter-spacing:0.3px;white-space:nowrap;display:flex;align-items:center;gap:4px;">
+            📦 Export
+        </button>
+        <div class="tool-divider"></div>
         <button id="scene-switcher-btn" class="scene-btn">
             <svg viewBox="0 0 24 24" style="width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:2;"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
             <span id="scene-btn-label">Scene 1</span>
             <svg viewBox="0 0 24 24" style="width:10px;height:10px;fill:currentColor;"><path d="M7 10l5 5 5-5z"/></svg>
+        </button>
+        <div class="tool-divider"></div>
+        <!-- Collision visibility toggle -->
+        <button class="tool-btn" id="btn-collision-toggle" title="Toggle Collision Shapes (C)"
+                style="position:relative;">
+            <svg viewBox="0 0 24 24" style="fill:none;stroke:currentColor;stroke-width:2;">
+                <polygon points="12 2 22 19 2 19"/>
+                <line x1="12" y1="9" x2="12" y2="14"/>
+                <circle cx="12" cy="17" r="0.5" fill="currentColor"/>
+            </svg>
+            <span id="collision-toggle-badge" style="
+                display:none;position:absolute;top:3px;right:3px;
+                width:6px;height:6px;border-radius:50%;
+                background:#facc15;box-shadow:0 0 4px #facc15;
+            "></span>
+        </button>
+        <!-- Grid visibility toggle -->
+        <button class="tool-btn" id="btn-grid-toggle" title="Toggle Grid (G)"
+                style="position:relative;color:#6adf88;">
+            <svg viewBox="0 0 24 24" style="fill:none;stroke:currentColor;stroke-width:2;">
+                <rect x="3" y="3" width="18" height="18" rx="1"/>
+                <line x1="3" y1="9" x2="21" y2="9"/>
+                <line x1="3" y1="15" x2="21" y2="15"/>
+                <line x1="9" y1="3" x2="9" y2="21"/>
+                <line x1="15" y1="3" x2="15" y2="21"/>
+            </svg>
+            <span id="grid-toggle-badge" style="
+                display:block;position:absolute;top:3px;right:3px;
+                width:6px;height:6px;border-radius:50%;
+                background:#6adf88;box-shadow:0 0 4px #6adf88;
+            "></span>
         </button>
         <div class="tool-divider"></div>
         <div class="gizmo-mode-wrap">
@@ -104,6 +163,7 @@
         <div class="hierarchy-scene-root">
             <svg viewBox="0 0 24 24" style="width:12px;height:12px;fill:none;stroke:#3A72A5;stroke-width:2;"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
             <span id="hierarchy-scene-label" style="color:#7aabcc;font-weight:600;">Scene 1</span>
+            <button id="btn-add-text" title="Add Text Object" style="margin-left:auto;background:rgba(250,204,21,0.12);border:1px solid rgba(250,204,21,0.35);color:#facc15;border-radius:3px;padding:1px 7px;cursor:pointer;font-size:10px;font-family:monospace;letter-spacing:0.3px;line-height:16px;">T+</button>
         </div>
         <div id="hierarchy-list" class="hierarchy-list"></div>
         <div id="resizer-hierarchy" class="resizer resizer--h"></div>
@@ -170,6 +230,10 @@
                         <svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
                         Audio
                     </div>
+                    <div class="folder-item" id="folder-scripts">
+                        <svg viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                        Scripts
+                    </div>
                 </div>
                 <div class="assets-main">
                     <div class="assets-toolbar">
@@ -179,12 +243,22 @@
                         </button>
                     </div>
                     <div id="asset-grid" class="asset-grid"></div>
+                    <div id="script-asset-grid" class="asset-grid" style="display:none;"></div>
                 </div>
             </div>
 
             <!-- Console -->
-            <div id="tab-console" class="tab-panel" style="display:none;">
-                <div id="console-output" style="font-family:monospace;font-size:11px;padding:8px;overflow-y:auto;height:100%;color:#888;background:#141414;">
+            <div id="tab-console" class="tab-panel" style="display:none;flex-direction:column;">
+                <div id="console-toolbar" style="display:flex;align-items:center;gap:6px;padding:4px 8px;background:#0f0f0f;border-bottom:1px solid #1e1e1e;flex-shrink:0;">
+                    <span style="color:#555;font-size:10px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;">Console</span>
+                    <div style="flex:1;"></div>
+                    <button id="btn-console-clear" title="Clear console" style="background:transparent;border:none;color:#555;cursor:pointer;font-size:10px;padding:2px 6px;border-radius:3px;" onmouseenter="this.style.color='#aaa'" onmouseleave="this.style.color='#555'">🗑 Clear</button>
+                    <button id="btn-console-float" title="Pop out console" style="background:transparent;border:none;color:#555;cursor:pointer;font-size:10px;padding:2px 6px;border-radius:3px;" onmouseenter="this.style.color='#aaa'" onmouseleave="this.style.color='#555'">⧉ Float</button>
+                    <label style="display:flex;align-items:center;gap:4px;cursor:pointer;color:#555;font-size:10px;" title="Auto-scroll to bottom">
+                        <input type="checkbox" id="console-autoscroll" checked style="accent-color:#4ade80;cursor:pointer;"> Auto-scroll
+                    </label>
+                </div>
+                <div id="console-output" style="font-family:'Fira Code','Cascadia Code',monospace;font-size:11px;padding:6px 8px;overflow-y:auto;flex:1;color:#888;background:#0c0c0c;line-height:1.6;">
                     <div style="color:#4ade80;">▶ Zengine ready</div>
                 </div>
             </div>
@@ -274,6 +348,34 @@
         <!-- Light Inspector Mount (dynamic) -->
         <div id="light-inspector-mount"></div>
 
+        <!-- Script Component -->
+        <div id="inspector-script-section" class="component-block" style="display:none;border-left:3px solid #3a72a5;">
+            <div class="component-header" style="background:#111827;">
+                <svg viewBox="0 0 24 24" class="comp-icon" style="color:#7cb9f0;"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                <span style="color:#7cb9f0;font-weight:600;">Script</span>
+            </div>
+            <div class="component-body" style="background:#0d1117;">
+                <div id="inspector-script-badge" style="display:none;margin-bottom:8px;">
+                    <div style="display:flex;align-items:center;gap:6px;padding:5px 8px;background:#0d1f33;border:1px solid #1e3a5a;border-radius:4px;">
+                        <svg viewBox="0 0 24 24" style="width:11px;height:11px;flex-shrink:0;fill:none;stroke:#7cb9f0;stroke-width:2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                        <span id="inspector-script-name" style="color:#7cb9f0;font-size:11px;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">—</span>
+                        <button id="btn-script-edit-attached" style="background:none;border:none;color:#4ade80;font-size:10px;cursor:pointer;padding:1px 4px;">Edit</button>
+                    </div>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:5px;">
+                    <button id="btn-create-script" class="btn-secondary full-width" style="border-color:#2a5a8a;color:#7cb9f0;">
+                        <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                        Create Script
+                    </button>
+                    <button id="btn-load-script" class="btn-secondary full-width">
+                        <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+                        Load Script
+                    </button>
+                </div>
+                <div style="color:#3a3a5a;font-size:10px;margin-top:8px;line-height:1.5;">Scripts run in Play Mode only.<br>Use onUpdate(fn) and onStart(fn) to write logic.</div>
+            </div>
+        </div>
+
         <!-- Prefab Section -->
         <div id="inspector-prefab-section" class="component-block" style="display:none; border-left:3px solid #4a8a4a;">
             <div class="component-header" style="background:#1a2a1a;">
@@ -315,15 +417,18 @@
 
 <script type="module">
 import { startEngine } from './engine.core.js';
+import { installGlobalErrorCatchers } from './engine.console.js';
+import './engine.keys.js'; // loads Key + Mouse constants into window
 
 window.onload = () => {
     startEngine();
+    installGlobalErrorCatchers();
 
     // Tab switching
     const tabs = [
         { btn: 'tab-assets-btn',  panel: 'tab-assets',   display: 'flex' },
         { btn: 'tab-prefabs-btn', panel: 'tab-prefabs',  display: 'flex' },
-        { btn: 'tab-console-btn', panel: 'tab-console',  display: 'block' },
+        { btn: 'tab-console-btn', panel: 'tab-console',  display: 'flex' },
     ];
     tabs.forEach(t => {
         document.getElementById(t.btn)?.addEventListener('click', () => {
@@ -338,16 +443,37 @@ window.onload = () => {
         });
     });
 
+    // ── Console controls ────────────────────────────────────────
+    document.getElementById('btn-console-clear')?.addEventListener('click', () => {
+        const out = document.getElementById('console-output');
+        if (out) out.innerHTML = '<div style="color:#555;font-style:italic;font-size:10px;">Console cleared</div>';
+    });
+
+    document.getElementById('btn-console-float')?.addEventListener('click', () => {
+        import('./engine.console.js').then(m => m.openFloatingConsole());
+    });
+
     // Asset folder filters
     const folders = [
         { el: 'folder-all',     filter: 'all' },
         { el: 'folder-sprites', filter: 'sprite' },
         { el: 'folder-audio',   filter: 'audio' },
+        { el: 'folder-scripts', filter: 'scripts' },
     ];
     folders.forEach(f => {
         document.getElementById(f.el)?.addEventListener('click', () => {
             folders.forEach(o => document.getElementById(o.el)?.classList.toggle('folder-item--active', o.el === f.el));
-            import('./engine.ui.js').then(m => m.setAssetFilter(f.filter));
+            const assetGrid  = document.getElementById('asset-grid');
+            const scriptGrid = document.getElementById('script-asset-grid');
+            if (f.filter === 'scripts') {
+                if (assetGrid)  assetGrid.style.display  = 'none';
+                if (scriptGrid) scriptGrid.style.display = '';
+                import('./engine.scripting.js').then(m => m.refreshScriptPanel());
+            } else {
+                if (assetGrid)  assetGrid.style.display  = '';
+                if (scriptGrid) scriptGrid.style.display = 'none';
+                import('./engine.ui.js').then(m => m.setAssetFilter(f.filter));
+            }
         });
     });
 
