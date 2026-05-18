@@ -2016,7 +2016,7 @@ function _friendlyScriptError(err, code, scriptName, objLabel, phase) {
     }
 
     // Adjust for prelude offset: the prelude injected before user code is ~597 lines
-    const PRELUDE_LINES = 597;
+    const PRELUDE_LINES = 1130;
     if (lineNum != null && lineNum > PRELUDE_LINES) {
         const userLine = lineNum - PRELUDE_LINES;
         lines[0] += ` (your script line ~${userLine})`;
@@ -2074,6 +2074,10 @@ function _getErrorHint(msg, stack) {
 
     if (m.includes('rangeerror') || m.includes('invalid array length')) {
         return 'An array or number is out of valid range. Check loops and array indices.';
+    }
+
+    if (m.includes('unexpected reserved word') || (m.includes('await') && m.includes('only valid'))) {
+        return 'You used "await" outside an async function. Wrap your code in: async function run() { ... } run();  — or move await inside an async callback.';
     }
 
     if (m.includes('syntaxerror') || m.includes('unexpected token') || m.includes('unexpected end')) {
@@ -3320,6 +3324,12 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
                 _compilePromise.catch(_err => {
                     const friendly = _friendlyScriptError(_err, code, this.name, this.obj.label, 'compile');
                     for (const line of friendly) _logConsole(line, '#f87171');
+                    const _rm = _err?.message ?? String(_err);
+                    const _rt = _err?.name ?? 'Error';
+                    const _rs = (_err?.stack ?? '').split('\n').slice(0,5).join(' | ');
+                    _logConsole(`  🔍 RAW ERROR: [${_rt}] ${_rm}`, '#fb923c');
+                    _logConsole(`  📋 STACK: ${_rs}`, '#94a3b8');
+                    console.error('[Zengine async compile error]', _rt + ':', _rm, '\nScript:', this.name, '\nFull error:', _err);
                     import('./engine.console.js').then(m => m.recordPlayError());
                 });
             }
@@ -3344,6 +3354,19 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
         } catch (err) {
             const friendly = _friendlyScriptError(err, code, this.name, this.obj.label, 'compile');
             for (const line of friendly) _logConsole(line, '#f87171');
+
+            // ── DETAILED DEBUG DUMP ──────────────────────────────────────────
+            // Always log the raw error to engine console + browser devtools
+            // so you can copy/paste the full error message.
+            const _rawMsg  = err?.message ?? String(err);
+            const _rawType = err?.name    ?? 'Error';
+            const _rawStack = (err?.stack ?? '').split('\n').slice(0,5).join(' | ');
+            _logConsole(`  🔍 RAW ERROR: [${_rawType}] ${_rawMsg}`, '#fb923c');
+            _logConsole(`  📋 STACK: ${_rawStack}`, '#94a3b8');
+            _logConsole(`  📝 SCRIPT: "${this.name}" on object "${this.obj.label}"`, '#94a3b8');
+            // Also dump to browser console for full stack trace
+            console.error('[Zengine compile error]', _rawType + ':', _rawMsg, '\nScript:', this.name, '\nObject:', this.obj.label, '\nFull error:', err);
+
             import('./engine.console.js').then(m => m.recordPlayError());
         }
     }
