@@ -1,27 +1,31 @@
 /* ============================================================
    Zengine — engine.scripting.chat.js
-   NPC chat dialog + AI-powered NPC conversation via Anthropic API.
+   NPC chat dialog + AI-powered NPC conversation.
 
    Script API exposed to user scripts (via prelude injection):
-     showChat(npcName, onInput)   — keyword-matching NPC dialog
-     hideChat()                   — close the panel
-     chatSay(text)                — NPC speaks without waiting for input
-     chatPlayer(text)             — player line (cutscene use)
-     aiChat(npcName, systemPrompt) — AI-powered NPC using Claude
+     showChat(npcName, onInput, options)       — keyword-matching NPC dialog
+     hideChat()                                — close the panel
+     chatSay(text)                             — NPC speaks without waiting
+     chatPlayer(text)                          — player line (cutscene use)
+     aiChat(npcName, description, apiKey, opt) — AI-powered NPC (any OpenAI-compat API)
    ============================================================ */
 
 // ── Chat DOM state ────────────────────────────────────────────
 const _chatState = {
-    el:        null,
-    inputEl:   null,
-    logEl:     null,
-    sendBtn:   null,
-    onSend:    null,   // keyword callback: (input) => string | null
-    npcName:   '',
-    aiMode:    false,
-    aiHistory: [],     // { role, content }[] for Anthropic multi-turn
-    aiSystem:  '',
-    aiTyping:  false,
+    el:           null,
+    inputEl:      null,
+    logEl:        null,
+    sendBtn:      null,
+    onSend:       null,   // keyword callback: (input) => string | null
+    npcName:      '',
+    aiMode:       false,
+    aiHistory:    [],     // { role, content }[] — OpenAI multi-turn format
+    aiSystem:     '',
+    aiApiKey:     '',
+    aiEndpoint:   '',
+    aiModel:      '',
+    aiTyping:     false,
+    closeEnabled: true,   // whether the ✕ button closes the panel
 };
 
 // ── Build the chat panel DOM (once) ──────────────────────────
@@ -73,7 +77,9 @@ function _ensureChatEl() {
     _chatState.logEl   = panel.querySelector('#_ze_chat_log');
     _chatState.sendBtn = panel.querySelector('#_ze_chat_send');
 
-    panel.querySelector('#_ze_chat_close').onclick = () => _hideChat();
+    panel.querySelector('#_ze_chat_close').onclick = () => {
+        if (_chatState.closeEnabled !== false) _hideChat();
+    };
 
     const doSend = () => {
         const raw = _chatState.inputEl.value.trim();
@@ -97,6 +103,53 @@ function _ensureChatEl() {
     _chatState.inputEl.addEventListener('keydown', e => {
         if (e.key === 'Enter') { e.preventDefault(); doSend(); }
     });
+}
+
+// ── Apply layout / behaviour options to the panel ─────────────
+function _applyOptions(opts = {}) {
+    const p = _chatState.el;
+    if (!p) return;
+
+    // ── Size ──────────────────────────────────────────────────
+    if (opts.width != null) {
+        p.style.width = typeof opts.width === 'number' ? opts.width + 'px' : opts.width;
+    }
+
+    // ── Position ──────────────────────────────────────────────
+    // Vertical: bottom (default) or top
+    if (opts.top != null) {
+        p.style.top    = typeof opts.top === 'number' ? opts.top + 'px' : opts.top;
+        p.style.bottom = 'auto';
+    } else if (opts.bottom != null) {
+        p.style.bottom = typeof opts.bottom === 'number' ? opts.bottom + 'px' : opts.bottom;
+        p.style.top    = 'auto';
+    }
+    // Horizontal: right (default) or left
+    if (opts.left != null) {
+        p.style.left  = typeof opts.left === 'number' ? opts.left + 'px' : opts.left;
+        p.style.right = 'auto';
+    } else if (opts.right != null) {
+        p.style.right = typeof opts.right === 'number' ? opts.right + 'px' : opts.right;
+        p.style.left  = 'auto';
+    }
+
+    // ── Chat log height ────────────────────────────────────────
+    const maxH = opts.height ?? opts.maxHeight;
+    if (maxH != null && _chatState.logEl) {
+        _chatState.logEl.style.maxHeight = typeof maxH === 'number' ? maxH + 'px' : maxH;
+    }
+
+    // ── Close button ──────────────────────────────────────────
+    const closeBtn = p.querySelector('#_ze_chat_close');
+    if (closeBtn) {
+        if (opts.closeButton === false) {
+            closeBtn.style.display = 'none';
+            _chatState.closeEnabled = false;
+        } else {
+            closeBtn.style.display = '';
+            _chatState.closeEnabled = true;
+        }
+    }
 }
 
 // ── Render a chat bubble ──────────────────────────────────────
@@ -123,29 +176,38 @@ function _addMsg(text, who) {
     _chatState.logEl.scrollTop = _chatState.logEl.scrollHeight;
 }
 
-// ── AI send — calls Anthropic API ────────────────────────────
+// ── AI send — calls any OpenAI-compatible endpoint ────────────
 async function _sendToAI(userText) {
     if (_chatState.aiTyping) return;
     _chatState.aiTyping = true;
 
-    // Add to history
     _chatState.aiHistory.push({ role: 'user', content: userText });
 
-    // Show typing indicator
     const typingEl = _chatState.el?.querySelector('#_ze_chat_typing');
     if (typingEl) typingEl.style.display = 'block';
     if (_chatState.sendBtn) _chatState.sendBtn.disabled = true;
     if (_chatState.inputEl) _chatState.inputEl.disabled = true;
 
+    const endpoint = _chatState.aiEndpoint
+        || 'https://api.openai.com/v1/chat/completions';
+    const model = _chatState.aiModel || 'gpt-4o-mini';
+    const systemPrompt = _chatState.aiSystem
+        || `You are ${_chatState.npcName}, an NPC in a video game. Reply in character in 1-3 short sentences. Be immersive and stay in character.`;
+
     try {
-        const response = await fetch('https://api.anthropic.com/v1/messages', {
+        const response = await fetch(endpoint, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${_chatState.aiApiKey}`,
+            },
             body: JSON.stringify({
-                model: 'claude-sonnet-4-20250514',
+                model,
                 max_tokens: 300,
-                system: _chatState.aiSystem || `You are ${_chatState.npcName}, an NPC in a video game. Reply in character in 1-3 short sentences. Be immersive and stay in character.`,
-                messages: _chatState.aiHistory,
+                messages: [
+                    { role: 'system', content: systemPrompt },
+                    ..._chatState.aiHistory,
+                ],
             }),
         });
 
@@ -155,19 +217,19 @@ async function _sendToAI(userText) {
         }
 
         const data = await response.json();
-        const reply = data?.content?.[0]?.text?.trim() ?? '';
+        const reply = data?.choices?.[0]?.message?.content?.trim() ?? '';
 
         if (reply) {
             _chatState.aiHistory.push({ role: 'assistant', content: reply });
-            // Trim history to last 20 messages to avoid token bloat
+            // Keep history to last 20 turns to avoid token bloat
             if (_chatState.aiHistory.length > 20) {
                 _chatState.aiHistory = _chatState.aiHistory.slice(-20);
             }
             _addMsg(reply, 'npc');
         }
     } catch (e) {
-        console.error('[aiChat] Anthropic API error:', e);
-        _addMsg(`(${_chatState.npcName} seems distracted… try again.)`, 'npc');
+        console.error('[aiChat] API error:', e);
+        _addMsg(`(${_chatState.npcName} seems distracted… check your API key and try again.)`, 'npc');
     } finally {
         _chatState.aiTyping = false;
         if (typingEl) typingEl.style.display = 'none';
@@ -184,45 +246,66 @@ async function _sendToAI(userText) {
 /**
  * Open a keyword-matching NPC chat dialog.
  * onInput(text) → return the NPC reply string, or null for no reply.
- *
- *   showChat("Guard", (input) => {
- *     if (input.includes("hello")) return "Hey there, traveller!";
- *     return "Move along.";
- *   });
+ * options: { width, height, bottom, right, left, top, closeButton }
  */
-export function _showChat(npcName, onInput) {
+export function _showChat(npcName, onInput, options = {}) {
     _ensureChatEl();
-    _chatState.npcName   = npcName ?? 'NPC';
-    _chatState.onSend    = onInput ?? null;
-    _chatState.aiMode    = false;
-    _chatState.aiHistory = [];
-    _chatState.aiSystem  = '';
-    _chatState.aiTyping  = false;
+    _chatState.npcName      = npcName ?? 'NPC';
+    _chatState.onSend       = onInput ?? null;
+    _chatState.aiMode       = false;
+    _chatState.aiHistory    = [];
+    _chatState.aiSystem     = '';
+    _chatState.aiApiKey     = '';
+    _chatState.aiEndpoint   = '';
+    _chatState.aiModel      = '';
+    _chatState.aiTyping     = false;
+    _chatState.closeEnabled = true;
     _chatState.el.querySelector('#_ze_chat_npc_name').textContent = _chatState.npcName;
     _chatState.el.querySelector('#_ze_chat_ai_badge').style.display = 'none';
     if (_chatState.logEl) _chatState.logEl.innerHTML = '';
+    _applyOptions(options);
     _chatState.el.style.display = 'flex';
     setTimeout(() => _chatState.inputEl?.focus(), 50);
 }
 
 /**
- * Open an AI-powered NPC dialog using Claude.
- * systemPrompt overrides the default NPC persona prompt.
+ * Open an AI-powered NPC dialog using any OpenAI-compatible API.
  *
- *   aiChat("Wizard", "You are Aldric, an ancient wizard who speaks cryptically.");
- *   chatSay("Greetings, seeker of knowledge...");
+ * @param {string} npcName      — Name shown in the header
+ * @param {string} description  — System / persona prompt
+ * @param {string} apiKey       — API key (Bearer token)
+ * @param {object} options      — {
+ *   endpoint, model, badgeText,
+ *   width, height, bottom, right, left, top, closeButton
+ * }
+ *
+ * Example:
+ *   aiChat("Wizard", "You are Aldric, a cryptic wizard.", "sk-...");
+ *   aiChat("Bot", "Helpful assistant.", myKey, {
+ *     model: "gpt-4o", badgeText: "GPT", width: 400, closeButton: false
+ *   });
  */
-export function _aiChat(npcName, systemPrompt) {
+export function _aiChat(npcName, description, apiKey, options = {}) {
     _ensureChatEl();
-    _chatState.npcName   = npcName ?? 'NPC';
-    _chatState.onSend    = null;
-    _chatState.aiMode    = true;
-    _chatState.aiHistory = [];
-    _chatState.aiSystem  = systemPrompt ?? '';
-    _chatState.aiTyping  = false;
+    _chatState.npcName      = npcName ?? 'NPC';
+    _chatState.onSend       = null;
+    _chatState.aiMode       = true;
+    _chatState.aiHistory    = [];
+    _chatState.aiSystem     = description ?? '';
+    _chatState.aiApiKey     = apiKey ?? '';
+    _chatState.aiEndpoint   = options.endpoint ?? '';
+    _chatState.aiModel      = options.model ?? '';
+    _chatState.aiTyping     = false;
+    _chatState.closeEnabled = true;
+
     _chatState.el.querySelector('#_ze_chat_npc_name').textContent = _chatState.npcName;
-    _chatState.el.querySelector('#_ze_chat_ai_badge').style.display = 'block';
+
+    const badge = _chatState.el.querySelector('#_ze_chat_ai_badge');
+    badge.textContent     = options.badgeText ?? 'AI';
+    badge.style.display   = 'block';
+
     if (_chatState.logEl) _chatState.logEl.innerHTML = '';
+    _applyOptions(options);
     _chatState.el.style.display = 'flex';
     setTimeout(() => _chatState.inputEl?.focus(), 50);
 }
@@ -230,13 +313,14 @@ export function _aiChat(npcName, systemPrompt) {
 /** Close the chat dialog. */
 export function _hideChat() {
     if (_chatState.el) _chatState.el.style.display = 'none';
-    _chatState.aiMode    = false;
-    _chatState.aiHistory = [];
-    _chatState.aiTyping  = false;
+    _chatState.aiMode       = false;
+    _chatState.aiHistory    = [];
+    _chatState.aiTyping     = false;
+    _chatState.closeEnabled = true;
 }
 
 /** Add an NPC line without waiting for input (opening line, cutscene). */
-export function _chatSay(text) { _ensureChatEl(); _addMsg(String(text), 'npc'); }
+export function _chatSay(text)    { _ensureChatEl(); _addMsg(String(text), 'npc'); }
 
 /** Add a player line (cutscene / auto-dialog). */
 export function _chatPlayer(text) { _ensureChatEl(); _addMsg(String(text), 'player'); }
@@ -245,7 +329,6 @@ export function _chatPlayer(text) { _ensureChatEl(); _addMsg(String(text), 'play
 export function stopChat() { _hideChat(); }
 
 // ── Register on window._ze so new Function() sandboxes can reach them ────────
-// (new Function() has no module scope access, so we use window._ze as a bridge)
 window._ze = window._ze || {};
 window._ze.showChat   = _showChat;
 window._ze.hideChat   = _hideChat;

@@ -682,6 +682,7 @@ export function refreshHierarchy() {
     list.innerHTML = '';
 
     for (const obj of state.gameObjects) {
+        if (obj._runtimeSpawned) continue; // hide runtime clones from hierarchy
         const item = document.createElement('div');
         item.className = 'tree-item' + (obj === state.gameObject ? ' selected' : '');
         item.dataset.objId = state.gameObjects.indexOf(obj);

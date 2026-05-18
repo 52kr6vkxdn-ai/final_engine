@@ -186,6 +186,41 @@ export function installGlobalErrorCatchers() {
     });
 }
 
+/** Clear the console buffer and both panels */
+export function clearConsole() {
+    _buffer.length = 0;
+    const msg = '<div style="color:#333;font-size:10px;font-style:italic;">Console cleared</div>';
+    const mainOut = document.getElementById('console-output');
+    if (mainOut) mainOut.innerHTML = msg;
+    const floatOut = document.getElementById('float-console-output');
+    if (floatOut) floatOut.innerHTML = msg;
+}
+
+/** Copy all console entries to clipboard as plain text */
+export function copyAllLogs() {
+    const text = _buffer.map(e => {
+        const icon = LEVEL_ICONS[e.level] ?? '›';
+        const repeat = (e.count && e.count > 1) ? ` ×${e.count}` : '';
+        return `${icon} ${e.text}${repeat}`;
+    }).join('\n');
+    if (!text) return;
+    navigator.clipboard?.writeText(text).then(() => {
+        engineLog('📋 Console copied to clipboard', SYS);
+    }).catch(() => {
+        // Fallback: show in a prompt so user can manually copy
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:80vw;height:60vh;z-index:999999;font-family:monospace;font-size:11px;background:#111;color:#ddd;border:1px solid #555;padding:8px;';
+        document.body.appendChild(ta);
+        ta.select();
+        const closeBtn = document.createElement('button');
+        closeBtn.textContent = '✕ Close';
+        closeBtn.style.cssText = 'position:fixed;top:calc(50% - 30vh - 28px);left:50%;transform:translateX(-50%);z-index:999999;background:#222;color:#aaa;border:1px solid #555;border-radius:4px;padding:4px 14px;cursor:pointer;font-size:11px;';
+        closeBtn.onclick = () => { ta.remove(); closeBtn.remove(); };
+        document.body.appendChild(closeBtn);
+    });
+}
+
 function _shortFile(filename) {
     if (!filename) return 'unknown';
     return filename.split('/').pop();

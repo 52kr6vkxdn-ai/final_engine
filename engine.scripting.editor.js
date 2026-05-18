@@ -7,6 +7,14 @@
 import { state }                               from './engine.state.js';
 // getScript/saveScript/refreshScriptPanel loaded dynamically to avoid circular deps
 
+// ── Local console logger (mirrors engine.scripting.js pattern) ─
+function _logConsole(msg, color) {
+    import('./engine.console.js').then(m => m.engineLog(msg,
+        color === '#f87171' ? 'error' :
+        color === '#facc15' ? 'warn'  :
+        color === '#4ade80' ? 'system': 'log'));
+}
+
 // ── Ace CDN (duplicated here so this file is self-contained) ──
 const ACE_BASE = 'https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.2';
 
@@ -675,7 +683,7 @@ export function promptLoadScript(obj) {
         r.addEventListener('mouseleave', () => { if (!r.style.background.includes('165')) r.style.background = 'transparent'; });
     });
     modal.querySelectorAll('.sl-edit').forEach(b => {
-        b.onclick = e => {
+        b.onclick = async e => {
             e.stopPropagation();
             const { getScript } = await import('./engine.scripting.js');
             const rec = getScript(b.dataset.name);

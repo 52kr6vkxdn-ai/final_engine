@@ -92,10 +92,13 @@
     <!-- Right: scene picker + gizmo mode -->
     <div class="toolbar-right">
         <button id="btn-export-game" title="Export game as playable zip"
-            style="background:rgba(74,222,128,0.1);border:1px solid rgba(74,222,128,0.4);color:#4ade80;
-                   border-radius:4px;padding:4px 10px;cursor:pointer;font-size:10px;font-weight:600;
-                   letter-spacing:0.3px;white-space:nowrap;display:flex;align-items:center;gap:4px;">
-            📦 Export
+            style="background:#2D2D2D;border:1px solid #424242;color:#9D9D9D;
+                   border-radius:2px;padding:3px 10px;cursor:pointer;font-size:10px;font-weight:600;
+                   letter-spacing:0.3px;white-space:nowrap;display:flex;align-items:center;gap:4px;
+                   transition:background .1s,color .1s,border-color .1s;"
+            onmouseover="this.style.background='#2C5F8A';this.style.color='#fff';this.style.borderColor='#2C5F8A';"
+            onmouseout="this.style.background='#2D2D2D';this.style.color='#9D9D9D';this.style.borderColor='#424242';">
+            ▤ Export
         </button>
         <div class="tool-divider"></div>
         <button id="scene-switcher-btn" class="scene-btn">
@@ -249,17 +252,18 @@
 
             <!-- Console -->
             <div id="tab-console" class="tab-panel" style="display:none;flex-direction:column;">
-                <div id="console-toolbar" style="display:flex;align-items:center;gap:6px;padding:4px 8px;background:#0f0f0f;border-bottom:1px solid #1e1e1e;flex-shrink:0;">
-                    <span style="color:#555;font-size:10px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;">Console</span>
+                <div id="console-toolbar" style="display:flex;align-items:center;gap:4px;padding:3px 6px;background:#2D2D2D;border-bottom:1px solid #1A1A1A;flex-shrink:0;">
+                    <span style="color:#6a6a6a;font-size:10px;font-weight:600;letter-spacing:.4px;text-transform:uppercase;margin-right:4px;">Console</span>
                     <div style="flex:1;"></div>
-                    <button id="btn-console-clear" title="Clear console" style="background:transparent;border:none;color:#555;cursor:pointer;font-size:10px;padding:2px 6px;border-radius:3px;" onmouseenter="this.style.color='#aaa'" onmouseleave="this.style.color='#555'">🗑 Clear</button>
-                    <button id="btn-console-float" title="Pop out console" style="background:transparent;border:none;color:#555;cursor:pointer;font-size:10px;padding:2px 6px;border-radius:3px;" onmouseenter="this.style.color='#aaa'" onmouseleave="this.style.color='#555'">⧉ Float</button>
-                    <label style="display:flex;align-items:center;gap:4px;cursor:pointer;color:#555;font-size:10px;" title="Auto-scroll to bottom">
-                        <input type="checkbox" id="console-autoscroll" checked style="accent-color:#4ade80;cursor:pointer;"> Auto-scroll
+                    <button id="btn-console-copy-all" title="Copy all console output to clipboard" style="background:transparent;border:none;color:#6a6a6a;cursor:pointer;font-size:10px;padding:2px 5px;border-radius:2px;" onmouseenter="this.style.color='#C8C8C8'" onmouseleave="this.style.color='#6a6a6a'">⎘ Copy All</button>
+                    <button id="btn-console-clear" title="Clear console" style="background:transparent;border:none;color:#6a6a6a;cursor:pointer;font-size:10px;padding:2px 5px;border-radius:2px;" onmouseenter="this.style.color='#C8C8C8'" onmouseleave="this.style.color='#6a6a6a'">Clear</button>
+                    <button id="btn-console-float" title="Pop out console" style="background:transparent;border:none;color:#6a6a6a;cursor:pointer;font-size:10px;padding:2px 5px;border-radius:2px;" onmouseenter="this.style.color='#C8C8C8'" onmouseleave="this.style.color='#6a6a6a'">Float</button>
+                    <label style="display:flex;align-items:center;gap:3px;cursor:pointer;color:#6a6a6a;font-size:10px;" title="Auto-scroll to bottom">
+                        <input type="checkbox" id="console-autoscroll" checked style="accent-color:#4C97D5;cursor:pointer;"> Auto-scroll
                     </label>
                 </div>
-                <div id="console-output" style="font-family:'Fira Code','Cascadia Code',monospace;font-size:11px;padding:6px 8px;overflow-y:auto;flex:1;color:#888;background:#0c0c0c;line-height:1.6;">
-                    <div style="color:#4ade80;">▶ Zengine ready</div>
+                <div id="console-output" style="font-family:'Cascadia Code','Fira Code','Consolas',monospace;font-size:11px;padding:5px 8px;overflow-y:auto;flex:1;color:#C8C8C8;background:#3C3C3C;line-height:1.6;">
+                    <div style="color:#6DB33F;">▶ Zengine ready</div>
                 </div>
             </div>
 
@@ -417,12 +421,56 @@
 
 <script type="module">
 import { startEngine } from './engine.core.js';
-import { installGlobalErrorCatchers } from './engine.console.js';
+import { installGlobalErrorCatchers, engineLog } from './engine.console.js';
 import './engine.keys.js'; // loads Key + Mouse constants into window
 
 window.onload = () => {
     startEngine();
     installGlobalErrorCatchers();
+
+    // ── Startup diagnostics — log everything so you can copy/paste it ──
+    Promise.all([
+        import('./engine.scripting.js'),
+        import('./engine.console.js'),
+    ]).then(([scripting, console_]) => {
+        engineLog('══════════════════════════════════════════', 'system');
+        engineLog('  ZENGINE STARTUP DIAGNOSTICS', 'system');
+        engineLog('══════════════════════════════════════════', 'system');
+
+        // Engine version / browser info
+        engineLog(`● Browser : ${navigator.userAgent.split(' ').slice(-2).join(' ')}`, 'log');
+        engineLog(`● PIXI    : ${window.PIXI?.VERSION ?? 'not loaded'}`, window.PIXI ? 'system' : 'error');
+        engineLog(`● Planck  : ${window.planck?.version ?? (window.planck ? 'loaded' : 'not loaded')}`, 'log');
+        engineLog(`● window._ze chat bridge: ${window._ze ? Object.keys(window._ze).join(', ') : 'NOT SET — chat/say may fail'}`,
+            window._ze ? 'system' : 'error');
+
+        // Run the built-in API self-tests
+        engineLog('── Scripting API Self-Tests ────────────', 'system');
+        try {
+            const r = scripting.runScriptingApiTests();
+            r.results.forEach(line => engineLog(line, line.includes('❌') ? 'error' : 'log'));
+            engineLog(`   ${r.passed}/${r.total} tests passed`, r.passed === r.total ? 'system' : 'error');
+        } catch(e) {
+            engineLog(`Self-test threw: ${e.message}`, 'error');
+        }
+
+        engineLog('── Default Scripts ─────────────────────', 'system');
+        import('./engine.state.js').then(({ state }) => {
+            const defaults = (state.scripts || []).filter(s => s.isDefault);
+            const user     = (state.scripts || []).filter(s => !s.isDefault);
+            if (defaults.length) {
+                engineLog(`● Built-in scripts (${defaults.length}): ${defaults.map(s=>s.name).join(', ')}`, 'system');
+            } else {
+                engineLog('⚠ No built-in scripts found — default scripts may not have loaded', 'warn');
+            }
+            if (user.length) {
+                engineLog(`● Your scripts (${user.length}): ${user.map(s=>s.name).join(', ')}`, 'log');
+            }
+            engineLog('══════════════════════════════════════════', 'system');
+            engineLog('  Use ⎘ Copy All above to copy this log', 'log');
+            engineLog('══════════════════════════════════════════', 'system');
+        });
+    });
 
     // Tab switching
     const tabs = [
@@ -444,9 +492,12 @@ window.onload = () => {
     });
 
     // ── Console controls ────────────────────────────────────────
+    document.getElementById('btn-console-copy-all')?.addEventListener('click', () => {
+        import('./engine.console.js').then(m => m.copyAllLogs());
+    });
+
     document.getElementById('btn-console-clear')?.addEventListener('click', () => {
-        const out = document.getElementById('console-output');
-        if (out) out.innerHTML = '<div style="color:#555;font-style:italic;font-size:10px;">Console cleared</div>';
+        import('./engine.console.js').then(m => m.clearConsole());
     });
 
     document.getElementById('btn-console-float')?.addEventListener('click', () => {

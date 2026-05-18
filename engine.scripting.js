@@ -19,6 +19,11 @@ import { stopChat } from './engine.scripting.chat.js';
 // Other chat functions accessed via window._ze bridge (set by engine.scripting.chat.js)
 // because new Function() sandboxes can't see ES module scope.
 
+// ── Import editor functions into local scope (also re-exported below) ────
+import {
+    openScriptEditor, promptCreateScript, promptLoadScript,
+} from './engine.scripting.editor.js';
+
 // ── Internal console logger ───────────────────────────────────
 function _logConsole(msg, color = '#e0e0e0') {
     import('./engine.console.js').then(m => m.engineLog(msg,
@@ -495,6 +500,10 @@ function _buildSandbox(obj, instRef) {
         // ── INTERNAL vel/grav for runtime ─────────────────────
         _vel,
         _grav,
+        // Raw PIXI container — used by say() / think() speech bubbles (addChild)
+        _ref: obj,
+        /** True if this object was spawned by cloneSelf/cloneObject at runtime */
+        get isClone() { return !!obj._isClone; },
         // ANY-key helpers
         _anyKeyDown()     { return _keys.size > 0; },
         _anyKeyJustDown() { return _keysJustDown.size > 0; },
@@ -833,6 +842,12 @@ function _buildSandbox(obj, instRef) {
         // ── DESTROY ──────────────────────────────────────────
         destroySelf()     { obj._markedForDestroy = true; },
         destroy(other)    { if (other?._ref) other._ref._markedForDestroy = true; },
+        /** Destroy this object after a delay in seconds. */
+        destroyAfter(secs) {
+            _scheduleTimer(secs, () => { obj._markedForDestroy = true; }, 'destroyAfter', obj.label);
+        },
+        /** Returns true if this object is a runtime clone (spawned by cloneSelf/cloneObject). */
+        get isClone() { return obj._isClone === true; },
 
         // ── MESSAGING ────────────────────────────────────────
         /**
@@ -1298,11 +1313,20 @@ function _buildSandbox(obj, instRef) {
                 _logConsole(`cloneSelf: object "${obj.label}" has no asset to clone from`, '#facc15');
                 return null;
             }
+            // Guard: max 128 runtime clones to prevent accidental infinite cascades
+            const liveClones = state.gameObjects.filter(o => o._isClone).length;
+            if (liveClones >= 128) {
+                _logConsole(`cloneSelf: clone limit (128) reached — call destroySelf() on old clones first`, '#f87171');
+                return null;
+            }
             import('./engine.objects.js').then(({ createImageObject }) => {
                 const newObj = createImageObject(asset, wx * 100, -wy * 100, { silent: true });
                 if (!newObj) return;
                 if (newObj._gizmoContainer) newObj._gizmoContainer.visible = false;
                 _deepCopyObjectProps(obj, newObj);
+                // Track which original spawned this clone
+                newObj._cloneSource = obj;
+                newObj._cloneId     = (obj._cloneCounter = (obj._cloneCounter ?? 0) + 1);
 
                 if (onSpawned) {
                     try { onSpawned(_makeProxy(newObj)); }
@@ -1326,6 +1350,15 @@ function _buildSandbox(obj, instRef) {
                     }
                 }
             });
+        },
+
+        /**
+         * Clone THIS object at its current position — shorthand for cloneSelf(x, y).
+         * cloneInPlace()
+         * cloneInPlace((c) => { c.velocityX = 5; })
+         */
+        cloneInPlace(onSpawned = null) {
+            return this.cloneSelf(obj.x / 100, -(obj.y / 100), onSpawned);
         },
 
         /**
@@ -1386,40 +1419,132 @@ function _buildSandbox(obj, instRef) {
             });
         },
 
-        // ── RAYCAST (AABB-based) ──────────────────────────────
+        // ── RAYCAST (AABB slab method) ────────────────────────
         /**
-         * Cast a ray from (x1,y1) to (x2,y2) and return the first object hit.
+         * Cast a ray from (x1,y1) to (x2,y2) and return the FIRST object hit.
+         * Uses the correct AABB slab intersection test.
+         *
          * raycast(0, 0, 10, 0)            — hit any object
-         * raycast(0, 0, 10, 0, "enemy")   — hit only objects tagged "enemy"
-         * Returns: proxy or null
+         * raycast(0, 0, 10, 0, "enemy")   — hit only "enemy" tagged objects
+         * Returns: { hit, point:{x,y}, normal:{x,y}, distance } or null
          */
         raycast(x1, y1, x2, y2, tag = null) {
             const px1 = x1 * 100, py1 = -y1 * 100;
             const px2 = x2 * 100, py2 = -y2 * 100;
-            const dx = px2 - px1, dy = py2 - py1;
-            const len2 = dx * dx + dy * dy;
-            if (len2 === 0) return null;
+            const rdx = px2 - px1, rdy = py2 - py1;
+            const rlen = Math.sqrt(rdx * rdx + rdy * rdy);
+            if (rlen === 0) return null;
 
             const candidates = tag
                 ? [...(_tagRegistry.get(tag) || [])].map(i => i.obj)
                 : state.gameObjects;
 
-            let best = null, bestT = 2;
+            let best = null, bestT = 1.0001;
+            let bestNx = 0, bestNy = 0;
             for (const o of candidates) {
-                if (o === obj) continue;
+                if (o === obj || !o.visible) continue;
                 const bb = _getAABB(o);
-                const cx = (bb.left + bb.right)  / 2;
-                const cy = (bb.top  + bb.bottom) / 2;
-                const t  = Math.max(0, Math.min(1, ((cx - px1) * dx + (cy - py1) * dy) / len2));
-                const closestX = px1 + t * dx;
-                const closestY = py1 + t * dy;
-                const hw = (bb.right - bb.left) / 2;
-                const hh = (bb.bottom - bb.top) / 2;
-                if (Math.abs(closestX - cx) <= hw && Math.abs(closestY - cy) <= hh) {
-                    if (t < bestT) { bestT = t; best = o; }
+                // Slab test
+                const invDx = rdx !== 0 ? 1 / rdx : Infinity;
+                const invDy = rdy !== 0 ? 1 / rdy : Infinity;
+                let tx1 = (bb.left   - px1) * invDx;
+                let tx2 = (bb.right  - px1) * invDx;
+                let ty1 = (bb.top    - py1) * invDy;
+                let ty2 = (bb.bottom - py1) * invDy;
+                if (tx1 > tx2) { const tmp = tx1; tx1 = tx2; tx2 = tmp; }
+                if (ty1 > ty2) { const tmp = ty1; ty1 = ty2; ty2 = tmp; }
+                const tmin = Math.max(tx1, ty1);
+                const tmax = Math.min(tx2, ty2);
+                if (tmin > tmax || tmax < 0 || tmin > 1) continue;
+                const t = Math.max(0, tmin);
+                if (t < bestT) {
+                    bestT = t;
+                    best  = o;
+                    // Compute hit normal from which axis was entered
+                    if (tx1 > ty1) {
+                        bestNx = rdx < 0 ? 1 : -1; bestNy = 0;
+                    } else {
+                        bestNx = 0; bestNy = rdy < 0 ? 1 : -1;
+                    }
                 }
             }
-            return best ? _makeProxy(best) : null;
+            if (!best) return null;
+            const hitPxX = px1 + bestT * rdx;
+            const hitPxY = py1 + bestT * rdy;
+            const result = _makeProxy(best);
+            result._rayHit = {
+                point:    { x: hitPxX / 100, y: -hitPxY / 100 },
+                normal:   { x: bestNx, y: -bestNy },
+                distance: bestT * rlen / 100,
+                fraction: bestT,
+            };
+            return result;
+        },
+
+        /**
+         * Cast a ray and return ALL objects hit, sorted nearest→farthest.
+         * raycastAll(x1, y1, x2, y2)              — all objects
+         * raycastAll(x1, y1, x2, y2, "wall")      — only "wall" tagged
+         * Each result has the same shape as raycast().
+         */
+        raycastAll(x1, y1, x2, y2, tag = null) {
+            const px1 = x1 * 100, py1 = -y1 * 100;
+            const px2 = x2 * 100, py2 = -y2 * 100;
+            const rdx = px2 - px1, rdy = py2 - py1;
+            const rlen = Math.sqrt(rdx * rdx + rdy * rdy);
+            if (rlen === 0) return [];
+
+            const candidates = tag
+                ? [...(_tagRegistry.get(tag) || [])].map(i => i.obj)
+                : state.gameObjects;
+
+            const hits = [];
+            for (const o of candidates) {
+                if (o === obj || !o.visible) continue;
+                const bb = _getAABB(o);
+                const invDx = rdx !== 0 ? 1 / rdx : Infinity;
+                const invDy = rdy !== 0 ? 1 / rdy : Infinity;
+                let tx1 = (bb.left   - px1) * invDx;
+                let tx2 = (bb.right  - px1) * invDx;
+                let ty1 = (bb.top    - py1) * invDy;
+                let ty2 = (bb.bottom - py1) * invDy;
+                if (tx1 > tx2) { const tmp = tx1; tx1 = tx2; tx2 = tmp; }
+                if (ty1 > ty2) { const tmp = ty1; ty1 = ty2; ty2 = tmp; }
+                const tmin = Math.max(tx1, ty1);
+                const tmax = Math.min(tx2, ty2);
+                if (tmin > tmax || tmax < 0 || tmin > 1) continue;
+                const t = Math.max(0, tmin);
+                let nx = 0, ny = 0;
+                if (tx1 > ty1) { nx = rdx < 0 ? 1 : -1; }
+                else           { ny = rdy < 0 ? 1 : -1;  }
+                const hitPxX = px1 + t * rdx;
+                const hitPxY = py1 + t * rdy;
+                const result = _makeProxy(o);
+                result._rayHit = {
+                    point:    { x: hitPxX / 100, y: -hitPxY / 100 },
+                    normal:   { x: nx, y: -ny },
+                    distance: t * rlen / 100,
+                    fraction: t,
+                };
+                hits.push({ proxy: result, t });
+            }
+            hits.sort((a, b) => a.t - b.t);
+            return hits.map(h => h.proxy);
+        },
+
+        /**
+         * Cast a ray from THIS object's position at a given angle.
+         * raycastFromSelf(0, 10)              — cast rightward 10 units
+         * raycastFromSelf(90, 5, "wall")      — cast upward 5 units, only walls
+         * angle: degrees (0=right, 90=up, 180=left, 270=down)
+         */
+        raycastFromSelf(angleDeg, distance, tag = null) {
+            const rad = (angleDeg * Math.PI) / 180;
+            const sx  = obj.x / 100;
+            const sy  = -(obj.y / 100);
+            const ex  = sx + Math.cos(rad) * distance;
+            const ey  = sy + Math.sin(rad) * distance;
+            return this.raycast(sx, sy, ex, ey, tag);
         },
 
         // ── RADIUS QUERY ──────────────────────────────────────
@@ -1711,6 +1836,9 @@ function _buildSandbox(obj, instRef) {
 // Used by cloneSelf, cloneObject, and spawnObject (when using a scene template).
 // Call AFTER createImageObject so the new object already has its sprite/gizmos.
 function _deepCopyObjectProps(src, dst) {
+    // Mark as a runtime clone so hierarchy hides it and onStart is skipped
+    dst._isClone = true;
+
     // Script
     if (src.scriptName) dst.scriptName = src.scriptName;
 
@@ -2125,6 +2253,7 @@ class ScriptInstance {
         this._onDragMouseDown = null;  // set by makeDraggable — fires on mousedown over object
         this._dragReleaseHook = null;  // cleanup hook for drag release
         this._messageHandlers = new Map();
+        this._onCloneStart    = null;
 
         // Collision / overlap tracking
         this._activeCollisions = new Set(); // Set of other obj refs currently colliding
@@ -2150,7 +2279,7 @@ class ScriptInstance {
     _compile(code, api) {
         // ── The full scripting prelude — everything accessible in scripts ──
         const prelude = `
-var _onStart=null, _onUpdate=null, _onStop=null;
+var _onStart=null, _onUpdate=null, _onStop=null, _onCloneStart=null, _onDestroy=null;
 var _onCollisionEnter=null, _onCollisionStay=null, _onCollisionExit=null;
 var _onOverlapEnter=null, _onOverlapExit=null;
 var _onVisible=null, _onHide=null, _onMouseClick=null, _onMouseEnter=null, _onMouseLeave=null;
@@ -2161,12 +2290,31 @@ var _msgHandlers = new Map();
 // Register functions to run at specific moments in the game loop.
 // ═══════════════════════════════════════════════════════════════
 
-/** Runs once when Play is pressed */
+/** Runs once when Play is pressed (only on original objects, NOT clones) */
 function onStart(fn)             { _onStart          = fn; }
+
+/**
+ * Runs once when this object is spawned as a CLONE via cloneSelf() or cloneObject().
+ * Use this to give clones their own initialisation without causing infinite clone chains:
+ *
+ *   onStart(() => {
+ *     cloneSelf(getX() + 1, getY());   // spawn ONE clone to the right
+ *   });
+ *   onCloneStart(() => {
+ *     // this code runs on the clone — NOT on the original
+ *   });
+ */
+function onCloneStart(fn)        { _onCloneStart      = fn; }
 /** Runs every frame. dt = seconds since last frame (use for smooth movement) */
 function onUpdate(fn)            { _onUpdate         = fn; }
 /** Runs once when Play is stopped */
 function onStop(fn)              { _onStop           = fn; }
+/**
+ * Runs once just before this object is destroyed (via destroySelf() or destroy()).
+ * Use it to play effects, drop items, remove HUD elements, etc.
+ *   onDestroy(() => { spawnObject("Explosion", getX(), getY()); })
+ */
+function onDestroy(fn)           { _onDestroy        = fn; }
 /** Runs once when this object begins touching another (physics) */
 function onCollisionEnter(fn)    { _onCollisionEnter = fn; }
 /** Runs every frame while this object is still touching another (physics) */
@@ -2820,13 +2968,34 @@ function drawText(text, x, y, styleOpts = {}) {
     return result;
 }
 
-// ── Raycast (AABB) ─────────────────────────────────────────────
+// ── Raycast (slab AABB) ────────────────────────────────────────
 /**
- * Fire a ray from (x1,y1) → (x2,y2) and return the first object hit.
- * raycast(x, y, x+10, y)             — any object
- * raycast(x, y, x+10, y, "enemy")   — only tagged "enemy"
+ * Fire a ray from (x1,y1) → (x2,y2) and return the FIRST object hit.
+ * Uses a proper AABB slab intersection test.
+ * raycast(x, y, x+10, y)              — any object
+ * raycast(x, y, x+10, y, "enemy")    — only tagged "enemy"
+ * Result has: .name, .x, .y  and  ._rayHit = { point, normal, distance, fraction }
  */
-function raycast(x1, y1, x2, y2, tag) { return api.raycast(x1, y1, x2, y2, tag); }
+function raycast(x1, y1, x2, y2, tag) { return api.raycast(x1, y1, x2, y2, tag ?? null); }
+
+/**
+ * Fire a ray and return ALL objects hit, sorted nearest→farthest.
+ * raycastAll(x, y, x+10, y)
+ * raycastAll(x, y, x+10, y, "wall")
+ * Returns array — each element has ._rayHit = { point, normal, distance, fraction }
+ */
+function raycastAll(x1, y1, x2, y2, tag) { return api.raycastAll(x1, y1, x2, y2, tag ?? null); }
+
+/**
+ * Fire a ray from THIS object's position in a given direction.
+ * raycastFromSelf(0, 10)              — cast rightward 10 units
+ * raycastFromSelf(90, 5)             — cast upward 5 units
+ * raycastFromSelf(180, 8, "wall")    — leftward 8 units, only walls
+ * angle: degrees (0=right, 90=up, 180=left, 270/−90=down)
+ */
+function raycastFromSelf(angleDeg, distance, tag) {
+    return api.raycastFromSelf(angleDeg, distance, tag ?? null);
+}
 
 // ── Radius query ───────────────────────────────────────────────
 /**
@@ -2996,17 +3165,31 @@ function spawnCopy(name, x, y, onReady) {
 
 /**
  * Clone THIS object at (x, y) — an exact copy of yourself.
- * Copies your sprite, scale, rotation, alpha, physics body type, tags, AND script.
+ * Copies sprite, scale, rotation, alpha, physics, tags, AND script.
  * The clone runs its script independently from the moment it spawns.
+ * onStart does NOT fire on clones — use onCloneStart() instead.
  *
- *   cloneSelf(getX() + 2, getY())            — clone 2 units to the right
- *   cloneSelf(5, 0, (c) => { c.velocityX = 3; })  — clone and give it a velocity
- *
- * Use cloneSelf() for self-replication, bullet patterns, cell splitting, etc.
+ *   cloneSelf(getX() + 2, getY())               — clone 2 units to the right
+ *   cloneSelf(5, 0, (c) => { c.velocityX = 3; }) — clone and give it a velocity
  */
 function cloneSelf(x, y, onReady) {
     return api.cloneSelf(x, y, onReady);
 }
+
+/**
+ * Clone THIS object at its CURRENT position — shorthand for cloneSelf(getX(), getY()).
+ *   cloneInPlace()
+ *   cloneInPlace((c) => { c.velocityX = 5; })
+ */
+function cloneInPlace(onReady) {
+    return api.cloneInPlace(onReady);
+}
+
+/** Returns true if this object was created by cloneSelf() or cloneObject(). */
+function isClone() { return api.isClone; }
+
+/** Destroy this object after {seconds} seconds. */
+function destroyAfter(secs) { api.destroyAfter(secs); }
 
 /**
  * Clone any object by name or tag at (x, y).
@@ -3042,7 +3225,7 @@ function cloneObject(nameOrProxy, x, y, onReady) {
  * Rendered as a PIXI.Container attached directly to the game object.
  * Destroyed automatically after {duration} seconds, or when the object is destroyed.
  */
-function _drawSpeechBubble(obj, text, style, duration) {
+function _drawSpeechBubble(obj, text, style, duration, offsetX, offsetY) {
     if (!obj || !window.PIXI) return;
 
     // Remove any existing bubble on this object
@@ -3117,7 +3300,9 @@ function _drawSpeechBubble(obj, text, style, duration) {
 
     // Position bubble above the object (account for object scale)
     const objH = (obj.height || 100);
-    bubble.position.set(-tw / 2, -(objH / 2) - th - 20);
+    const bx = -tw / 2 + (offsetX ?? 0);
+    const by = -(objH / 2) - th - 20 - (offsetY ?? 0);
+    bubble.position.set(bx, by);
 
     obj.addChild(bubble);
     obj._speechBubble = bubble;
@@ -3140,17 +3325,27 @@ function _drawSpeechBubble(obj, text, style, duration) {
 }
 
 /**
- * say("Hello!")              — speech bubble for 2.5 sec
- * say("Hello!", 4)           — stays 4 seconds
- * say("Hello!", 0)           — stays until you call say("") or think("")
+ * say("Hello!")                   — speech bubble for 2.5 sec
+ * say("Hello!", 4)                — stays 4 seconds
+ * say("Hello!", 0)                — stays until you call say("") or think("")
+ * say("Hello!", 2.5, 30, 0)      — offset 30 px right, same height
+ * say("Hello!", 2.5, 0, 20)      — offset 20 px higher than default
+ *
+ * offsetX: horizontal shift in pixels (positive = right)
+ * offsetY: vertical shift in pixels (positive = higher)
  */
-function say(text, duration)   { _drawSpeechBubble(api._ref, text, 'say',   duration); }
+function say(text, duration, offsetX, offsetY) {
+    _drawSpeechBubble(api._ref, text, 'say',   duration, offsetX, offsetY);
+}
 
 /**
- * think("Hmm...")             — cloud thought bubble for 2.5 sec
- * think("Hmm...", 4)          — stays 4 seconds
+ * think("Hmm...")                  — cloud thought bubble for 2.5 sec
+ * think("Hmm...", 4)               — stays 4 seconds
+ * think("Hmm...", 2.5, 0, 30)     — shift 30 px higher
  */
-function think(text, duration) { _drawSpeechBubble(api._ref, text, 'think', duration); }
+function think(text, duration, offsetX, offsetY) {
+    _drawSpeechBubble(api._ref, text, 'think', duration, offsetX, offsetY);
+}
 
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -3158,21 +3353,53 @@ function think(text, duration) { _drawSpeechBubble(api._ref, text, 'think', dura
 // ══════════════════════════════════════════════════════════════════════════════
 // These thin wrappers are injected into every user script via the prelude.
 // The real implementation (including AI support) lives in engine.scripting.chat.js.
-function showChat(npcName, onInput) { window._ze?.showChat(npcName ?? api.name ?? 'NPC', onInput); }
-function hideChat()                  { window._ze?.hideChat(); }
-function chatSay(text)               { window._ze?.chatSay(text); }
-function chatPlayer(text)            { window._ze?.chatPlayer(text); }
-
 /**
- * Open an AI-powered NPC dialog — the NPC replies using Claude.
- * @param {string} npcName      — Name shown in the chat header
- * @param {string} systemPrompt — Persona prompt (optional). Defaults to a generic NPC persona.
+ * Open a keyword/callback NPC chat dialog.
+ * @param {string}   npcName  — Name shown in the chat header
+ * @param {function} onInput  — Callback: (userText) => replyString | null
+ * @param {object}   options  — Optional layout/behaviour overrides:
+ *   { width, height, bottom, right, left, top, closeButton }
+ *   closeButton: false  →  only hideChat() in code can close the panel
  *
  * Example:
- *   aiChat("Wizard", "You are Aldric, an ancient wizard. Speak cryptically in 1-2 sentences.");
- *   chatSay("Greetings, seeker...");
+ *   showChat("Guard", (input) => {
+ *     if (input.includes("hello")) return "Hey there!";
+ *     return "Move along.";
+ *   });
+ *   showChat("Shop", handler, { width: 400, closeButton: false });
  */
-function aiChat(npcName, systemPrompt) { window._ze?.aiChat(npcName ?? api.name ?? 'NPC', systemPrompt); }
+function showChat(npcName, onInput, options) {
+    window._ze?.showChat(npcName ?? api.name ?? 'NPC', onInput, options);
+}
+function hideChat()            { window._ze?.hideChat(); }
+function chatSay(text)         { window._ze?.chatSay(text); }
+function chatPlayer(text)      { window._ze?.chatPlayer(text); }
+
+/**
+ * Open an AI-powered NPC dialog.
+ * The NPC replies using the API key and model you supply — works with any
+ * OpenAI-compatible endpoint (OpenAI, Groq, Together, local Ollama, etc.).
+ *
+ * @param {string} npcName     — Name shown in the header
+ * @param {string} description — Persona/system prompt for the AI
+ * @param {string} apiKey      — Your API key (sent in Authorization: Bearer …)
+ * @param {object} options     — Optional:
+ *   {
+ *     endpoint:    'https://api.openai.com/v1/chat/completions',  // default
+ *     model:       'gpt-4o-mini',          // default
+ *     badgeText:   'AI',                   // replaces the blue "AI" badge
+ *     width, height, bottom, right, left, top,
+ *     closeButton: false                   // prevent user closing it
+ *   }
+ *
+ * Example:
+ *   aiChat("Wizard", "You are Aldric, a cryptic wizard.", "sk-...");
+ *   aiChat("Bot", "Helpful assistant.", myKey, { model: "gpt-4o", badgeText: "GPT" });
+ */
+function aiChat(npcName, description, apiKey, options) {
+    window._ze?.aiChat(npcName ?? api.name ?? 'NPC', description, apiKey, options);
+}
+
 
 
 function launch(vx, vy) {
@@ -3295,6 +3522,8 @@ __out._onHide            = _onHide;
 __out._onMouseClick      = _onMouseClick;
 __out._onMouseEnter      = _onMouseEnter;
 __out._onMouseLeave      = _onMouseLeave;
+__out._onCloneStart      = _onCloneStart;
+__out._onDestroy         = _onDestroy;
 __out._msgHandlers       = _msgHandlers;
 __out._initVX            = typeof velocityX !== 'undefined' ? velocityX : 0;
 __out._initVY            = typeof velocityY !== 'undefined' ? velocityY : 0;
@@ -3334,6 +3563,8 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
                 });
             }
             this._onStart         = out._onStart         ?? null;
+            this._onCloneStart    = out._onCloneStart    ?? null;
+            this._onDestroy       = out._onDestroy       ?? null;
             this._onUpdate        = out._onUpdate        ?? null;
             this._onStop          = out._onStop          ?? null;
             this._onCollisionEnter= out._onCollisionEnter ?? null;
@@ -3372,12 +3603,23 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
     }
 
     start() {
-        if (!this._onStart) return;
-        try { this._onStart(); }
-        catch (e) {
-            const friendly = _friendlyScriptError(e, null, this.name, this.obj.label, 'onStart');
-            for (const line of friendly) _logConsole(line, '#f87171');
-            import('./engine.console.js').then(m => m.recordPlayError());
+        if (this.obj._isClone) {
+            // Clones run onCloneStart (NOT onStart) — prevents infinite cascade
+            if (!this._onCloneStart) return;
+            try { this._onCloneStart(); }
+            catch (e) {
+                const friendly = _friendlyScriptError(e, null, this.name, this.obj.label, 'onCloneStart');
+                for (const line of friendly) _logConsole(line, '#f87171');
+                import('./engine.console.js').then(m => m.recordPlayError());
+            }
+        } else {
+            if (!this._onStart) return;
+            try { this._onStart(); }
+            catch (e) {
+                const friendly = _friendlyScriptError(e, null, this.name, this.obj.label, 'onStart');
+                for (const line of friendly) _logConsole(line, '#f87171');
+                import('./engine.console.js').then(m => m.recordPlayError());
+            }
         }
     }
 
@@ -3474,8 +3716,11 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
             if (vel.y !== 0) obj.y -= vel.y * dt * 100;
         }
 
-        // Destroy queue
-        if (obj._markedForDestroy) _destroyObject(obj);
+        // Destroy queue — fire onDestroy before removing
+        if (obj._markedForDestroy) {
+            this.handleDestroy();
+            _destroyObject(obj);
+        }
 
         // Clear per-frame input flags
         this._keysJustDown.clear();
@@ -3489,6 +3734,16 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
         try { this._onStop(); }
         catch (e) {
             const friendly = _friendlyScriptError(e, null, this.name, this.obj.label, 'onStop');
+            for (const line of friendly) _logConsole(line, '#f87171');
+        }
+    }
+
+    handleDestroy() {
+        if (!this._onDestroy || this._destroyFired) return;
+        this._destroyFired = true;
+        try { this._onDestroy(); }
+        catch (e) {
+            const friendly = _friendlyScriptError(e, null, this.name, this.obj.label, 'onDestroy');
             for (const line of friendly) _logConsole(line, '#f87171');
         }
     }
