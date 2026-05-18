@@ -15,18 +15,9 @@
    ============================================================ */
 
 import { state } from './engine.state.js';
-import { stopChat } from './engine.scripting.chat.js';
-// Other chat functions accessed via window._ze bridge (set by engine.scripting.chat.js)
-// because new Function() sandboxes can't see ES module scope.
-
-// ── Internal console logger ───────────────────────────────────
-function _logConsole(msg, color = '#e0e0e0') {
-    import('./engine.console.js').then(m => m.engineLog(msg,
-        color === '#f87171' ? 'error' :
-        color === '#facc15' ? 'warn'  :
-        color === '#4ade80' ? 'system': 'log'));
-}
-
+import {
+    _showChat, _hideChat, _chatSay, _chatPlayer, _aiChat, stopChat,
+} from './engine.scripting.chat.js';
 
 // ── Re-export editor functions so index.html imports work ────
 export {
@@ -1974,8 +1965,6 @@ function _scanScriptForDangers(code, scriptName, objLabel) {
           msg: `setTimeout() may fire after Play stops. Use wait(seconds, fn) instead for engine-aware delays.` },
         { re: /\bXMLHttpRequest\b|\bfetch\s*\(/,
           msg: `Network calls (fetch/XHR) may not resolve and can slow play mode. Cache data before pressing Play.` },
-        { re: /\bawait\b/,
-          msg: `await works inside async functions in scripts, but onUpdate(fn) must stay synchronous — avoid top-level await outside async functions.` },
         { re: /\bconsole\s*\.\s*log\s*\(/,
           msg: `console.log() output goes to the browser devtools, not the engine console. Use log() instead.` },
         { re: /\balert\s*\(/,
@@ -2146,6 +2135,7 @@ class ScriptInstance {
     _compile(code, api) {
         // ── The full scripting prelude — everything accessible in scripts ──
         const prelude = `
+"use strict";
 var _onStart=null, _onUpdate=null, _onStop=null;
 var _onCollisionEnter=null, _onCollisionStay=null, _onCollisionExit=null;
 var _onOverlapEnter=null, _onOverlapExit=null;
@@ -3036,7 +3026,7 @@ function cloneObject(nameOrProxy, x, y, onReady) {
  *   duration: seconds the bubble stays visible (default 2.5)
  *
  * Rendered as a PIXI.Container attached directly to the game object.
- * Destroyed automatically after {duration} seconds, or when the object is destroyed.
+ * Destroyed automatically after `duration` seconds, or when the object is destroyed.
  */
 function _drawSpeechBubble(obj, text, style, duration) {
     if (!obj || !window.PIXI) return;
@@ -3140,13 +3130,13 @@ function _drawSpeechBubble(obj, text, style, duration) {
  * say("Hello!", 4)           — stays 4 seconds
  * say("Hello!", 0)           — stays until you call say("") or think("")
  */
-function say(text, duration)   { _drawSpeechBubble(api._ref, text, 'say',   duration); }
+function say(text, duration)   { _drawSpeechBubble(obj, text, 'say',   duration); }
 
 /**
  * think("Hmm...")             — cloud thought bubble for 2.5 sec
  * think("Hmm...", 4)          — stays 4 seconds
  */
-function think(text, duration) { _drawSpeechBubble(api._ref, text, 'think', duration); }
+function think(text, duration) { _drawSpeechBubble(obj, text, 'think', duration); }
 
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -3154,10 +3144,10 @@ function think(text, duration) { _drawSpeechBubble(api._ref, text, 'think', dura
 // ══════════════════════════════════════════════════════════════════════════════
 // These thin wrappers are injected into every user script via the prelude.
 // The real implementation (including AI support) lives in engine.scripting.chat.js.
-function showChat(npcName, onInput) { window._ze?.showChat(npcName ?? api.name ?? 'NPC', onInput); }
-function hideChat()                  { window._ze?.hideChat(); }
-function chatSay(text)               { window._ze?.chatSay(text); }
-function chatPlayer(text)            { window._ze?.chatPlayer(text); }
+function showChat(npcName, onInput) { _showChat(npcName ?? obj?.label ?? 'NPC', onInput); }
+function hideChat()                  { _hideChat(); }
+function chatSay(text)               { _chatSay(text); }
+function chatPlayer(text)            { _chatPlayer(text); }
 
 /**
  * Open an AI-powered NPC dialog — the NPC replies using Claude.
@@ -3168,7 +3158,7 @@ function chatPlayer(text)            { window._ze?.chatPlayer(text); }
  *   aiChat("Wizard", "You are Aldric, an ancient wizard. Speak cryptically in 1-2 sentences.");
  *   chatSay("Greetings, seeker...");
  */
-function aiChat(npcName, systemPrompt) { window._ze?.aiChat(npcName ?? api.name ?? 'NPC', systemPrompt); }
+function aiChat(npcName, systemPrompt) { _aiChat(npcName ?? obj?.label ?? 'NPC', systemPrompt); }
 
 
 function launch(vx, vy) {
@@ -3309,20 +3299,9 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
         for (const w of safetyWarnings.messages) _logConsole(w, '#facc15');
 
         try {
-            // Use AsyncFunction so user scripts can use `await` without
-            // "unexpected reserved word" errors in strict mode.
-            const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor; // eslint-disable-line no-new-func
-            const fn = new AsyncFunction('api', '__out', prelude + '\n' + code + '\n' + postlude);
+            const fn = new Function('api', '__out', prelude + '\n' + code + '\n' + postlude); // eslint-disable-line no-new-func
             const out = {};
-            const _compilePromise = fn(api, out);
-            // Catch any top-level async errors from the compile phase
-            if (_compilePromise && typeof _compilePromise.catch === 'function') {
-                _compilePromise.catch(_err => {
-                    const friendly = _friendlyScriptError(_err, code, this.name, this.obj.label, 'compile');
-                    for (const line of friendly) _logConsole(line, '#f87171');
-                    import('./engine.console.js').then(m => m.recordPlayError());
-                });
-            }
+            fn(api, out);
             this._onStart         = out._onStart         ?? null;
             this._onUpdate        = out._onUpdate        ?? null;
             this._onStop          = out._onStop          ?? null;
@@ -4224,123 +4203,3 @@ export function triggerCollisionEnd(objA, objB) {
 }
 
 
-// ══════════════════════════════════════════════════════════════════════════════
-// SCRIPTING API SELF-TEST
-// Verifies: AsyncFunction compile (no "unexpected reserved word"),
-//           say/think bubble construction, chat bridge registration.
-// Run via:  import { runScriptingApiTests } from './engine.scripting.js';
-//           runScriptingApiTests();
-// ══════════════════════════════════════════════════════════════════════════════
-
-export function runScriptingApiTests() {
-    const results = [];
-    const pass = (name) => { results.push(`  ✅ ${name}`); };
-    const fail = (name, err) => { results.push(`  ❌ ${name}: ${err}`); };
-
-    // ── Test 1: AsyncFunction compiles without "unexpected reserved word" ──────
-    try {
-        const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-        const code = `var result = await Promise.resolve(42);`;
-        const fn   = new AsyncFunction('api', '__out', code);
-        pass('AsyncFunction: top-level await compiles OK');
-    } catch (e) {
-        fail('AsyncFunction: top-level await', e.message);
-    }
-
-    // ── Test 2: async/await inside nested function ────────────────────────────
-    try {
-        const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-        const code = `
-            async function fetchData() {
-                const val = await Promise.resolve('hello');
-                return val;
-            }
-        `;
-        const fn = new AsyncFunction('api', '__out', code);
-        pass('AsyncFunction: nested async function compiles OK');
-    } catch (e) {
-        fail('AsyncFunction: nested async function', e.message);
-    }
-
-    // ── Test 3: say() and think() resolve api._ref not bare obj ──────────────
-    try {
-        // Simulate the prelude snippet directly
-        let calledWith = null;
-        function _drawSpeechBubble(ref, text, style, dur) { calledWith = ref; }
-        const api = { _ref: { label: 'TestSprite', addChild: () => {} } };
-        // Replicate the fixed prelude function
-        function say(text, duration) { _drawSpeechBubble(api._ref, text, 'say', duration); }
-        say('Hello!');
-        if (calledWith === api._ref) {
-            pass('say(): passes api._ref correctly');
-        } else {
-            fail('say(): wrong obj', `got ${calledWith}`);
-        }
-    } catch (e) {
-        fail('say() execution', e.message);
-    }
-
-    // ── Test 4: think() same check ────────────────────────────────────────────
-    try {
-        let calledWith = null;
-        function _drawSpeechBubble2(ref, text, style, dur) { calledWith = ref; }
-        const api = { _ref: { label: 'TestSprite' } };
-        function think(text, duration) { _drawSpeechBubble2(api._ref, text, 'think', duration); }
-        think('Hmm...');
-        if (calledWith === api._ref) {
-            pass('think(): passes api._ref correctly');
-        } else {
-            fail('think(): wrong obj', `got ${calledWith}`);
-        }
-    } catch (e) {
-        fail('think() execution', e.message);
-    }
-
-    // ── Test 5: window._ze chat bridge is registered ─────────────────────────
-    try {
-        if (typeof window !== 'undefined') {
-            const hasShowChat   = typeof window._ze?.showChat   === 'function';
-            const hasHideChat   = typeof window._ze?.hideChat   === 'function';
-            const hasChatSay    = typeof window._ze?.chatSay    === 'function';
-            const hasChatPlayer = typeof window._ze?.chatPlayer === 'function';
-            const hasAiChat     = typeof window._ze?.aiChat     === 'function';
-            if (hasShowChat && hasHideChat && hasChatSay && hasChatPlayer && hasAiChat) {
-                pass('window._ze: all 5 chat functions registered');
-            } else {
-                const missing = ['showChat','hideChat','chatSay','chatPlayer','aiChat']
-                    .filter(k => typeof window._ze?.[k] !== 'function');
-                fail('window._ze: missing functions', missing.join(', '));
-            }
-        } else {
-            pass('window._ze: skipped (non-browser environment)');
-        }
-    } catch (e) {
-        fail('window._ze check', e.message);
-    }
-
-    // ── Test 6: showChat uses api.name not bare obj ───────────────────────────
-    try {
-        let receivedName = null;
-        const fakeZe = { showChat: (n) => { receivedName = n; } };
-        const api = { name: 'Knight' };
-        // Replicate the fixed prelude function
-        function showChat(npcName, onInput) { fakeZe.showChat(npcName ?? api.name ?? 'NPC', onInput); }
-        showChat(undefined, null);
-        if (receivedName === 'Knight') {
-            pass('showChat(): falls back to api.name correctly');
-        } else {
-            fail('showChat(): wrong name fallback', `got "${receivedName}"`);
-        }
-    } catch (e) {
-        fail('showChat() name fallback', e.message);
-    }
-
-    // ── Report ────────────────────────────────────────────────────────────────
-    const passed = results.filter(r => r.includes('✅')).length;
-    const total  = results.length;
-    console.group(`%c[Zengine Script API Tests] ${passed}/${total} passed`,
-        passed === total ? 'color:#4ade80;font-weight:bold' : 'color:#f87171;font-weight:bold');
-    results.forEach(r => console.log(r));
-    console.groupEnd();
-    return { passed, total, results };
-}
