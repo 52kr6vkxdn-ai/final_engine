@@ -243,3 +243,13 @@ export function _chatPlayer(text) { _ensureChatEl(); _addMsg(String(text), 'play
 
 /** Hide chat when play mode stops. */
 export function stopChat() { _hideChat(); }
+
+// ── Register on window._ze so new Function() sandboxes can reach them ────────
+// (new Function() has no module scope access, so we use window._ze as a bridge)
+window._ze = window._ze || {};
+window._ze.showChat   = _showChat;
+window._ze.hideChat   = _hideChat;
+window._ze.chatSay    = _chatSay;
+window._ze.chatPlayer = _chatPlayer;
+window._ze.aiChat     = _aiChat;
+window._ze.stopChat   = stopChat;

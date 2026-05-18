@@ -922,7 +922,4 @@ onMessage("heal", (amount) => {
 `;
 }
 
-function _logConsole(msg, color = '#e0e0e0') {
-    const level = color === '#f87171' ? 'error' : color === '#facc15' ? 'warn' : color === '#4ade80' ? 'system' : 'log';
-    import('./engine.console.js').then(m => m.engineLog(msg, level));
-}
+// _logConsole is defined in engine.scripting.js
