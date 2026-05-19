@@ -1307,7 +1307,17 @@ function _buildSandbox(obj, instRef) {
          *   })
          *   cloneSelf(getX() + 2, getY())             — spawn 2 units to the right
          */
-        cloneSelf(wx, wy, onSpawned = null) {
+        /**
+         * Pass initial opts as 3rd arg (object), callback as 4th.
+         * Backward-compatible: 3rd arg can still be the callback function.
+         *   cloneSelf(x, y, { speed:5, damage:2 }, (c) => { ... })
+         *   cloneSelf(x, y, (c) => { c.velocityX = 3 })  — old style still works
+         */
+        cloneSelf(wx, wy, optsOrCb = null, onSpawnedArg = null) {
+            let onSpawned = onSpawnedArg;
+            let initOpts  = null;
+            if (typeof optsOrCb === 'function') { onSpawned = optsOrCb; }
+            else if (optsOrCb && typeof optsOrCb === 'object') { initOpts = optsOrCb; }
             const asset = state.assets.find(a => a.id === obj.assetId);
             if (!asset) {
                 _logConsole(`cloneSelf: object "${obj.label}" has no asset to clone from`, '#facc15');
@@ -1327,6 +1337,8 @@ function _buildSandbox(obj, instRef) {
                 // Track which original spawned this clone
                 newObj._cloneSource = obj;
                 newObj._cloneId     = (obj._cloneCounter = (obj._cloneCounter ?? 0) + 1);
+                // Apply initial opts (set via cloneSelf(x,y,{speed:5},cb))
+                if (initOpts) Object.assign(newObj._opts, initOpts);
 
                 if (onSpawned) {
                     try { onSpawned(_makeProxy(newObj)); }
@@ -1468,6 +1480,17 @@ function _buildSandbox(obj, instRef) {
                     }
                 }
             }
+            // ── Debug laser draw ──────────────────────────────────
+            if (window._zeGizmos?.raycasts) {
+                const gz  = window._zeGizmos;
+                const col = gz.raycastColor    ?? '#00ff44';
+                const dur = gz.raycastDuration ?? 0.12;
+                const wid = gz.raycastWidth    ?? 2;
+                const endPxX = best ? (px1 + bestT * rdx) : px2;
+                const endPxY = best ? (py1 + bestT * rdy) : py2;
+                _debugLines.push({ x1, y1, x2: endPxX / 100, y2: -endPxY / 100, color: col, remaining: dur, width: wid, alpha: 0.92 });
+                if (best) _debugLines.push({ x1: endPxX / 100, y1: -endPxY / 100, x2: endPxX / 100, y2: -endPxY / 100, circle: 0.07, color: '#ffffff', remaining: dur, width: 3, alpha: 1 });
+            }
             if (!best) return null;
             const hitPxX = px1 + bestT * rdx;
             const hitPxY = py1 + bestT * rdy;
@@ -1529,6 +1552,22 @@ function _buildSandbox(obj, instRef) {
                 hits.push({ proxy: result, t });
             }
             hits.sort((a, b) => a.t - b.t);
+            // ── Debug laser draw ──────────────────────────────────
+            if (window._zeGizmos?.raycasts) {
+                const gz  = window._zeGizmos;
+                const col = gz.raycastColor    ?? '#00ff44';
+                const dur = gz.raycastDuration ?? 0.12;
+                const wid = gz.raycastWidth    ?? 2;
+                if (hits.length > 0) {
+                    const firstT   = hits[0].t;
+                    const endPxX   = px1 + firstT * rdx;
+                    const endPxY   = py1 + firstT * rdy;
+                    _debugLines.push({ x1, y1, x2: endPxX / 100, y2: -endPxY / 100, color: col, remaining: dur, width: wid, alpha: 0.92 });
+                    _debugLines.push({ x1: endPxX / 100, y1: -endPxY / 100, x2: endPxX / 100, y2: -endPxY / 100, circle: 0.07, color: '#ffffff', remaining: dur, width: 3, alpha: 1 });
+                } else {
+                    _debugLines.push({ x1, y1, x2, y2, color: col, remaining: dur, width: wid, alpha: 0.45 });
+                }
+            }
             return hits.map(h => h.proxy);
         },
 
@@ -1827,6 +1866,183 @@ function _buildSandbox(obj, instRef) {
         drawDebugCircle(cx, cy, radius, color = '#ffffff', duration = 0, width = 2) {
             _debugLines.push({ x1: cx, y1: cy, x2: cx, y2: cy, circle: radius, color, remaining: Math.max(0.016, duration), width, alpha: 0.85 });
         },
+
+        // ── CLONE OPTS (per-clone local variable bag) ─────────────
+        /** Each clone's own plain-object. Set opts in cloneSelf/cloneObject callback, read in onCloneStart. */
+        get opts()      { return obj._opts ?? (obj._opts = {}); },
+        set opts(v)     { obj._opts = v ?? {}; },
+
+        // ── HEALTH / DAMAGE SYSTEM ────────────────────────────────
+        /**
+         * Set this object's health. Also initialises maxHealth if this is the first call.
+         *   setHealth(100)
+         */
+        setHealth(n)    { obj._health = Math.max(0, n); if (obj._maxHealth == null) obj._maxHealth = n; },
+        /** Current health value (defaults to 100 until setHealth is called). */
+        getHealth()     { return obj._health ?? (obj._health = 100); },
+        get maxHealth() { return obj._maxHealth ?? 100; },
+        set maxHealth(n){ obj._maxHealth = Math.max(1, n); },
+        setMaxHealth(n) { obj._maxHealth = Math.max(1, n); },
+        getMaxHealth()  { return obj._maxHealth ?? 100; },
+        /**
+         * Deal damage. Triggers onDamage callback. If hp reaches 0 triggers onDeath.
+         * Ignored while isInvincible() is true.
+         *   takeDamage(10)          — 10 damage
+         *   takeDamage(10, other)   — 10 damage from another object proxy
+         */
+        takeDamage(amount, source) {
+            if (obj._isInvincible) return;
+            if (obj._health == null) obj._health = 100;
+            const prev = obj._health;
+            obj._health = Math.max(0, prev - amount);
+            const inst = _instances.find(i => i.obj === obj);
+            if (inst?._onDamage) {
+                try { inst._onDamage(amount, source ?? null); }
+                catch(e) { const f = _friendlyScriptError(e, null, inst.name, obj.label, 'onDamage'); for (const l of f) _logConsole(l, '#f87171'); }
+            }
+            if (obj._health <= 0 && prev > 0) {
+                if (inst?._onDeath) {
+                    try { inst._onDeath(source ?? null); }
+                    catch(e) { const f = _friendlyScriptError(e, null, inst.name, obj.label, 'onDeath'); for (const l of f) _logConsole(l, '#f87171'); }
+                }
+            }
+        },
+        /**
+         * Restore health up to maxHealth. Triggers onHeal.
+         *   heal(25)
+         */
+        heal(amount) {
+            if (obj._health == null) obj._health = 0;
+            const max = obj._maxHealth ?? 100;
+            obj._health = Math.min(max, obj._health + amount);
+            const inst = _instances.find(i => i.obj === obj);
+            if (inst?._onHeal) try { inst._onHeal(amount); } catch(_) {}
+        },
+        /** True when current health is 0. */
+        isDead()            { return (obj._health ?? 100) <= 0; },
+        /**
+         * Make this object immune to damage for `duration` seconds (default 1s).
+         *   invincible(2)   — 2 seconds of immunity
+         */
+        invincible(duration = 1) {
+            obj._isInvincible = true;
+            setTimeout(() => { if (obj) obj._isInvincible = false; }, duration * 1000);
+        },
+        isInvincible() { return obj._isInvincible === true; },
+
+        // ── KNOCKBACK ─────────────────────────────────────────────
+        /**
+         * Push this object in a direction (degrees: 0=right, 90=up, 180=left, 270=down).
+         *   knockback(180, 8)          — push left, force 8
+         *   knockback(90, 12, 0.15)    — push up, stop after 0.15s
+         */
+        knockback(angleDeg, force, stopAfter = 0) {
+            const rad = (angleDeg * Math.PI) / 180;
+            _vel.x = Math.cos(rad) * force;
+            _vel.y = Math.sin(rad) * force;
+            if (stopAfter > 0) setTimeout(() => { _vel.x = 0; _vel.y = 0; }, stopAfter * 1000);
+        },
+
+        // ── AMMO SYSTEM ───────────────────────────────────────────
+        /** Set ammo count (also sets maxAmmo on first call). */
+        setAmmo(n)      { obj._ammo = Math.max(0, n); if (obj._maxAmmo == null) obj._maxAmmo = n; },
+        getAmmo()       { return obj._ammo ?? 0; },
+        setMaxAmmo(n)   { obj._maxAmmo = Math.max(0, n); },
+        getMaxAmmo()    { return obj._maxAmmo ?? 0; },
+        /**
+         * Reload ammo to max (or a specific amount). Triggers onReload.
+         *   reload()       — refill to maxAmmo
+         *   reload(30)     — set ammo to 30
+         */
+        reload(amount) {
+            obj._ammo = amount != null ? Math.min(obj._maxAmmo ?? amount, amount) : (obj._maxAmmo ?? 0);
+            const inst = _instances.find(i => i.obj === obj);
+            if (inst?._onReload) try { inst._onReload(); } catch(_) {}
+        },
+
+        // ── FIRE PROJECTILE ───────────────────────────────────────
+        /**
+         * Spawn an asset as a projectile flying in a given direction.
+         * fireProjectile('Bullet', 0, 12)
+         * fireProjectile('Bullet', 90, 15, { damage:10, lifetime:3, tag:'bullet' })
+         * fireProjectile('Arrow', 45, 10, { onSpawned: (b) => b.setTint('#ff0') })
+         * angle: degrees (0=right, 90=up, 180=left, 270=down)
+         */
+        fireProjectile(assetName, angleDeg = 0, speed = 10, opts = {}) {
+            if (obj._ammo != null) {
+                if (obj._ammo <= 0) {
+                    const inst = _instances.find(i => i.obj === obj);
+                    if (inst?._onAmmoEmpty) try { inst._onAmmoEmpty(); } catch(_) {}
+                    return null;
+                }
+                obj._ammo = Math.max(0, obj._ammo - 1);
+            }
+            const rad = (angleDeg * Math.PI) / 180;
+            const pvx = Math.cos(rad) * speed;
+            const pvy = Math.sin(rad) * speed;
+            const sx  = obj.x, sy = obj.y;
+            import('./engine.objects.js').then(async m => {
+                const newObj = await m.createImageObject(assetName, sx, sy);
+                if (!newObj) return;
+                newObj._runtimeSpawned      = true;
+                newObj._isClone             = true;
+                newObj._opts                = {};
+                if (opts.tag)               newObj._scriptTag         = String(opts.tag);
+                if (opts.damage != null)    newObj._projectileDamage  = opts.damage;
+                if (opts.group)             newObj._scriptGroup       = String(opts.group);
+                state.gameObjects.push(newObj);
+                if (state.sceneContainer)   state.sceneContainer.addChild(newObj);
+                const sb = _buildSandbox(newObj, [null]);
+                sb.api._vel.x = pvx;
+                sb.api._vel.y = pvy;
+                if (opts.lifetime > 0) setTimeout(() => { newObj._markedForDestroy = true; }, opts.lifetime * 1000);
+                if (opts.onSpawned) try { opts.onSpawned(_makeProxy(newObj)); } catch(_) {}
+            });
+            return null;
+        },
+
+        // ── STATE MACHINE ─────────────────────────────────────────
+        /**
+         * Change this object's current state. Fires onStateExit on the old state
+         * and onStateEnter on the new state.
+         *   setState("idle")
+         *   setState("attack")
+         */
+        setState(name) {
+            const prev = obj._state ?? null;
+            if (prev === name) return;
+            const inst = _instances.find(i => i.obj === obj);
+            if (inst && prev !== null) {
+                const fn = inst._stateExitHandlers?.get(prev);
+                if (fn) try { fn(prev, name); } catch(_) {}
+            }
+            obj._state = String(name);
+            if (inst) {
+                const fn = inst._stateEnterHandlers?.get(String(name));
+                if (fn) try { fn(String(name), prev); } catch(_) {}
+            }
+        },
+        /** Returns the current state string (null if not set yet). */
+        getState() { return obj._state ?? null; },
+
+        // ── VISUAL GIZMOS ─────────────────────────────────────────
+        /**
+         * Debug visualization toggles. Enable raycast laser draw:
+         *   Gizmos.raycasts = true
+         *   Gizmos.raycastColor = '#ff4444'
+         */
+        get Gizmos() {
+            return {
+                get raycasts()         { return window._zeGizmos?.raycasts ?? false; },
+                set raycasts(v)        { (window._zeGizmos = window._zeGizmos ?? {}).raycasts = !!v; },
+                get raycastColor()     { return window._zeGizmos?.raycastColor ?? '#00ff44'; },
+                set raycastColor(v)    { (window._zeGizmos = window._zeGizmos ?? {}).raycastColor = v; },
+                get raycastWidth()     { return window._zeGizmos?.raycastWidth ?? 2; },
+                set raycastWidth(v)    { (window._zeGizmos = window._zeGizmos ?? {}).raycastWidth = v; },
+                get raycastDuration()  { return window._zeGizmos?.raycastDuration ?? 0.12; },
+                set raycastDuration(v) { (window._zeGizmos = window._zeGizmos ?? {}).raycastDuration = v; },
+            };
+        },
     };
 
     return { api, _keys, _keysJustDown, _keysJustUp, _mouse, _tweens, _repeats, _keyDownHandlers, _keyUpHandlers };
@@ -1838,6 +2054,18 @@ function _buildSandbox(obj, instRef) {
 function _deepCopyObjectProps(src, dst) {
     // Mark as a runtime clone so hierarchy hides it and onStart is skipped
     dst._isClone = true;
+
+    // Each clone gets its own fresh variable bag — never inherited from source
+    dst._opts        = {};
+    // Inherit health settings so clones start at the same health as template
+    dst._health      = src._health    ?? null;
+    dst._maxHealth   = src._maxHealth ?? null;
+    dst._isInvincible= false;
+    // State machine starts fresh
+    dst._state       = null;
+    // Ammo inherits from template (so clones can shoot too)
+    dst._ammo        = src._ammo    ?? null;
+    dst._maxAmmo     = src._maxAmmo ?? null;
 
     // Script
     if (src.scriptName) dst.scriptName = src.scriptName;
@@ -1925,6 +2153,32 @@ function _makeProxy(f) {
         get physicsType() { return f.physicsBody ?? 'none'; },
         /** Z-order / sort layer. */
         get zOrder()  { return f.unityZ ?? 0; },
+
+        /** Per-clone local variable bag (same as c.opts in cloneSelf callback). */
+        get opts()    { return f._opts ?? (f._opts = {}); },
+        set opts(v)   { f._opts = v ?? {}; },
+        /** Current health value (defaults to 100). */
+        get health()  { return f._health ?? 100; },
+        set health(v) { f._health = Math.max(0, v); },
+        /** True if this object is currently invincible. */
+        get isInvincible() { return f._isInvincible === true; },
+        /** Current ammo count. */
+        get ammo()    { return f._ammo ?? 0; },
+        set ammo(v)   { f._ammo = Math.max(0, v); },
+        /** Current state machine state string (null if not set). */
+        get state()   { return f._state ?? null; },
+        set state(v)  { f._state = v ? String(v) : null; },
+        /** True when health is at 0. */
+        get isDead()  { return (f._health ?? 100) <= 0; },
+
+        /**
+         * Deal damage to this specific instance (e.g. other.takeDamage(10)).
+         * Respects invincibility. Triggers onDamage + onDeath if needed.
+         */
+        takeDamage(amount, source) {
+            const inst = _instances.find(i => i.obj === f);
+            if (inst) inst.api.takeDamage(amount, source);
+        },
 
         /**
          * True if this object has the given tag.
@@ -2284,6 +2538,12 @@ var _onCollisionEnter=null, _onCollisionStay=null, _onCollisionExit=null;
 var _onOverlapEnter=null, _onOverlapExit=null;
 var _onVisible=null, _onHide=null, _onMouseClick=null, _onMouseEnter=null, _onMouseLeave=null;
 var _msgHandlers = new Map();
+// ── Extended events ───────────────────────────────────────
+var _onDamage=null, _onDeath=null, _onHeal=null;
+var _onLand=null, _onJump=null;
+var _onScreenExit=null, _onScreenEnter=null;
+var _onAmmoEmpty=null, _onReload=null;
+var _stateEnterHandlers=new Map(), _stateExitHandlers=new Map();
 
 // ═══════════════════════════════════════════════════════════════
 // EVENT REGISTRATION
@@ -2340,6 +2600,51 @@ function onMouseLeave(fn)        { _onMouseLeave     = fn; }
  * Example: onMessage("takeDamage", (amount) => { ... })
  */
 function onMessage(msg, fn)      { _msgHandlers.set(String(msg), fn); }
+
+// ── Health / Combat events ────────────────────────────────
+/** Runs when this object takes damage: onDamage((amount, source) => { }) */
+function onDamage(fn)            { _onDamage = fn; }
+/** Runs when this object's health reaches 0: onDeath((source) => { }) */
+function onDeath(fn)             { _onDeath  = fn; }
+/** Runs when this object is healed: onHeal((amount) => { }) */
+function onHeal(fn)              { _onHeal   = fn; }
+
+// ── Platformer events ─────────────────────────────────────
+/**
+ * Runs the first frame this object lands on the ground after being airborne.
+ * Works with kinematic bodies — check isOnGround() yourself for dynamic bodies.
+ *   onLand(() => { soundPlay("land"); })
+ */
+function onLand(fn)              { _onLand   = fn; }
+/**
+ * Fires when you call jump() or triggerJump() — wire your jump logic here.
+ *   onJump(() => { velocityY = 12; })
+ */
+function onJump(fn)              { _onJump   = fn; }
+
+// ── Screen bounds events ──────────────────────────────────
+/** Runs once when this object moves outside the visible game area. */
+function onScreenExit(fn)        { _onScreenExit  = fn; }
+/** Runs once when this object moves back inside the visible game area. */
+function onScreenEnter(fn)       { _onScreenEnter = fn; }
+
+// ── Shooter events ────────────────────────────────────────
+/** Runs when fireProjectile() is called but ammo is 0. */
+function onAmmoEmpty(fn)         { _onAmmoEmpty = fn; }
+/** Runs when reload() is called. */
+function onReload(fn)            { _onReload    = fn; }
+
+// ── State machine events ──────────────────────────────────
+/**
+ * Runs when this object enters a specific state (via setState()).
+ *   onStateEnter("attack", (newState, prevState) => { playAnimation("swing"); })
+ */
+function onStateEnter(name, fn)  { _stateEnterHandlers.set(String(name), fn); }
+/**
+ * Runs when this object exits a specific state (via setState()).
+ *   onStateExit("attack", (oldState, nextState) => { stopAnimation(); })
+ */
+function onStateExit(name, fn)   { _stateExitHandlers.set(String(name), fn); }
 
 // ═══════════════════════════════════════════════════════════════
 // THIS OBJECT — use "this." prefix for clarity
@@ -2405,12 +2710,15 @@ function _syncVelocityToApi() { api._vel.x = velocityX; api._vel.y = velocityY; 
 
 // ── Manual gravity ────────────────────────────────────────────
 /**
- * Apply gravity to this object (world units/s²).
+ * Set per-object physics gravity direction (world units/s²).
  * Call once in onStart to enable:
- *   this.gravity(0, -9.8)   ← falls downward every frame
- *   this.gravity(0, 0)      ← disable gravity
+ *   setGravity(0, -9.8)   ← falls downward every frame
+ *   setGravity(0, 0)      ← disable gravity
+ *
+ * NOTE: This is distinct from the Game Helper gravity(vy, dt) accumulator,
+ * which is used for Flappy-Bird style manual velocity accumulation.
  */
-function gravity(gx, gy) { api.gravity(gx, gy); }
+function setGravity(gx, gy) { api.gravity(gx, gy); }
 
 // ── Display ───────────────────────────────────────────────────
 function show()           { api.visible = true; }
@@ -2509,8 +2817,11 @@ function overlapsAllWithTag(tag)    { return api.overlapsAllWithTag(tag); }
 // ── Destroy ───────────────────────────────────────────────────
 /** Remove this object from the scene */
 function destroySelf()              { api.destroySelf(); }
-/** Remove another object (pass a proxy from find/findWithTag) */
-function destroy(other)             { api.destroy(other); }
+/**
+ * Remove another specific object from the scene (pass a proxy from find/findWithTag).
+ * To destroy THIS object use destroy() or destroySelf() instead.
+ */
+function destroyObject(other)       { api.destroy(other); }
 
 // ── Scene management ──────────────────────────────────────────
 /**
@@ -3036,23 +3347,7 @@ function getPhysicsVelX()   { return api.getPhysicsVelX(); }
 function getPhysicsVelY()   { return api.getPhysicsVelY(); }
 /** Change this object's gravity scale (0 = floats, 2 = 2× gravity). Dynamic bodies only. */
 function setGravityScale(n) { api.setGravityScale(n); }
-/**
- * isOnGround() — true if this kinematic body is resting on a floor this frame.
- * Use this to stop gravity from building up:
- *   if (isOnGround()) velocityY = 0;
- *   if (isOnGround() && isKeyJustDown("space")) velocityY = 10; // jump
- */
-function isOnGround()   { return physics.isOnGround; }
-/**
- * isOnCeiling() — true if this kinematic body just hit a ceiling.
- * Use to cancel upward velocity: if (isOnCeiling()) velocityY = 0;
- */
-function isOnCeiling()  { return physics.isOnCeiling; }
-/**
- * isOnWall() — true if this kinematic body is pressed against a wall.
- * Use to stop horizontal velocity: if (isOnWall()) velocityX = 0;
- */
-function isOnWall()     { return physics.isOnWall; }
+// isOnGround(), isOnCeiling(), isOnWall() are defined in the Physics section above.
 
 // ── Extra math ────────────────────────────────────────────────
 /** Smooth S-curve between lo and hi. */
@@ -3172,8 +3467,15 @@ function spawnCopy(name, x, y, onReady) {
  *   cloneSelf(getX() + 2, getY())               — clone 2 units to the right
  *   cloneSelf(5, 0, (c) => { c.velocityX = 3; }) — clone and give it a velocity
  */
-function cloneSelf(x, y, onReady) {
-    return api.cloneSelf(x, y, onReady);
+/**
+ * Clone this object at world (x, y).
+ *   cloneSelf(x, y)                          — plain clone
+ *   cloneSelf(x, y, (c) => { ... })          — clone with callback
+ *   cloneSelf(x, y, { speed:5 }, (c) => { }) — clone with initial opts + callback
+ * Each clone gets its own opts object. Read opts in onCloneStart.
+ */
+function cloneSelf(x, y, optsOrCb, cb) {
+    return api.cloneSelf(x, y, optsOrCb, cb);
 }
 
 /**
@@ -3186,7 +3488,7 @@ function cloneInPlace(onReady) {
 }
 
 /** Returns true if this object was created by cloneSelf() or cloneObject(). */
-function isClone() { return api.isClone; }
+function isClone() { return api.isClone(); }
 
 /** Destroy this object after {seconds} seconds. */
 function destroyAfter(secs) { api.destroyAfter(secs); }
@@ -3506,7 +3808,160 @@ function objectShake(amplitude, duration) {
  */
 var sceneSettings = api.sceneSettings;
 
+// ── CLONE OPTS — per-clone local variables ────────────────
+/**
+ * This clone's own variable bag. Set it in cloneSelf/cloneObject callback,
+ * then read it in onCloneStart and anywhere in the script.
+ *   cloneSelf(x, y, (c) => { c.opts.speed = 5; c.opts.damage = 2; });
+ *   onCloneStart(() => { velocityX = opts.speed; })
+ */
+var opts = api.opts;
+
+// ── HEALTH / DAMAGE ───────────────────────────────────────
+/** Set this object's health. setHealth(100) */
+function setHealth(n)              { api.setHealth(n); }
+/** Current health. getHealth() */
+function getHealth()               { return api.getHealth(); }
+/** Set the maximum health limit. setMaxHealth(200) */
+function setMaxHealth(n)           { api.setMaxHealth(n); }
+/** Current max health. getMaxHealth() */
+function getMaxHealth()            { return api.getMaxHealth(); }
+/**
+ * Deal damage. Triggers onDamage (and onDeath if hp reaches 0).
+ *   takeDamage(10)          — generic damage
+ *   takeDamage(10, other)   — damage from another object
+ */
+function takeDamage(amount, src)   { api.takeDamage(amount, src); }
+/** Restore health up to maxHealth. Triggers onHeal. */
+function heal(amount)              { api.heal(amount); }
+/** True when health is at 0. */
+function isDead()                  { return api.isDead(); }
+/**
+ * Become immune to damage for 'duration' seconds (default 1s).
+ *   invincible()      — 1 second
+ *   invincible(2.5)   — 2.5 seconds
+ */
+function invincible(duration)      { api.invincible(duration); }
+/** True while invincible. */
+function isInvincible()            { return api.isInvincible(); }
+
+// ── KNOCKBACK ─────────────────────────────────────────────
+/**
+ * Push this object away in a direction (degrees: 0=right, 90=up).
+ *   knockback(180, 8)          — push left
+ *   knockback(270, 10, 0.2)    — push down, stop after 0.2s
+ */
+function knockback(angleDeg, force, stopAfter) { api.knockback(angleDeg, force, stopAfter); }
+
+// ── JUMP HELPER ───────────────────────────────────────────
+/**
+ * Trigger a jump by firing the onJump event, which you handle yourself.
+ *   onJump(() => { velocityY = 14; })   — define the jump behaviour
+ *   if (isKeyJustDown("Space") && isOnGround()) triggerJump();
+ */
+function triggerJump() {
+    if (_onJump) try { _onJump(); } catch(_) {}
+}
+
+// ── AMMO SYSTEM ───────────────────────────────────────────
+/** Set ammo count (also sets maxAmmo on first call). setAmmo(30) */
+function setAmmo(n)     { api.setAmmo(n); }
+/** Current ammo. getAmmo() */
+function getAmmo()      { return api.getAmmo(); }
+/** Set the maximum ammo capacity. */
+function setMaxAmmo(n)  { api.setMaxAmmo(n); }
+/** Max ammo. getMaxAmmo() */
+function getMaxAmmo()   { return api.getMaxAmmo(); }
+/**
+ * Reload ammo. Triggers onReload.
+ *   reload()    — refill to maxAmmo
+ *   reload(30)  — set ammo to 30
+ */
+function reload(amount) { api.reload(amount); }
+
+// ── FIRE PROJECTILE ───────────────────────────────────────
+/**
+ * Spawn an asset as a projectile in a direction.
+ *   fireProjectile('Bullet', 0, 12)
+ *   fireProjectile('Bullet', 90, 15, { damage:10, lifetime:3, tag:'bullet' })
+ *   fireProjectile('Arrow',  45, 10, { onSpawned: (b) => b.setTint('#ff0') })
+ * angle: 0=right, 90=up, 180=left, 270=down
+ */
+function fireProjectile(assetName, angleDeg, speed, opts2) {
+    return api.fireProjectile(assetName, angleDeg, speed, opts2);
+}
+
+// ── STATE MACHINE ─────────────────────────────────────────
+/**
+ * Change this object's current state (fires onStateExit → onStateEnter).
+ *   setState("idle")
+ *   setState("attack")
+ *   setState("dead")
+ */
+function setState(name)  { api.setState(name); }
+/** Returns the current state string. getState() */
+function getState()      { return api.getState(); }
+
+// ── CLONE IDENTITY ────────────────────────────────────────
+/** True if this object was spawned as a clone (not the original). */
+function isClone()       { return api.isClone(); }
+/** Returns this clone's numeric ID (0 for originals). */
+function getCloneId()    { return obj._cloneId ?? 0; }
+
+// ── RAYCAST WRAPPERS ──────────────────────────────────────
+// offScreen() and boundsClamp() are defined in the Game Helpers section above.
+/**
+ * Cast a ray from (x1,y1) to (x2,y2). Returns first hit or null.
+ * If Gizmos.raycasts is true, draws a green laser line.
+ *   var hit = raycast(0, 0, 10, 0);
+ *   var hit = raycast(0, 0, 10, 0, "wall");
+ */
+function raycast(x1, y1, x2, y2, tag)    { return api.raycast(x1, y1, x2, y2, tag); }
+/**
+ * Cast a ray and return ALL hits sorted nearest→farthest.
+ *   var hits = raycastAll(0, 0, 10, 0);
+ */
+function raycastAll(x1, y1, x2, y2, tag) { return api.raycastAll(x1, y1, x2, y2, tag); }
+/**
+ * Cast a ray from THIS object in a direction (degrees: 0=right, 90=up).
+ *   var hit = raycastFromSelf(0, 8);              — rightward 8 units
+ *   var hit = raycastFromSelf(90, 5, "wall");     — upward, only walls
+ */
+function raycastFromSelf(angleDeg, distance, tag) { return api.raycastFromSelf(angleDeg, distance, tag); }
+
+// ── GIZMOS ───────────────────────────────────────────────
+/**
+ * Debug visualization toggles. Available anywhere in scripts.
+ *   Gizmos.raycasts = true          — show raycast lasers
+ *   Gizmos.raycastColor = '#ff4444' — change laser color
+ *   Gizmos.raycastWidth = 3         — thicker laser
+ *   Gizmos.raycastDuration = 0.2    — how long each laser stays visible (seconds)
+ */
+var Gizmos = api.Gizmos;
+
+// ── DISTANCE CHECK ────────────────────────────────────────
+/**
+ * Check proximity at runtime — call in onUpdate for live sensing.
+ *   if (inRangeOf(find("Player"), 3)) { setState("chase"); }
+ */
+function inRangeOf(target, radius) {
+    if (!target) return false;
+    const tx = target.x ?? 0;
+    const ty = target.y ?? 0;
+    return dist(api.x, api.y, tx, ty) <= radius;
+}
+
+// ── ONE-SHOT TIMER ────────────────────────────────────────
+/**
+ * Call fn once after 'seconds' seconds. Non-blocking.
+ *   onceAfter(2, () => { destroySelf(); })
+ */
+function onceAfter(seconds, fn) {
+    api.wait(seconds).then(() => { try { fn(); } catch(_) {} });
+}
+
 `;
+
 
         const postlude = `
 ;__out._onStart          = _onStart;
@@ -3525,6 +3980,17 @@ __out._onMouseLeave      = _onMouseLeave;
 __out._onCloneStart      = _onCloneStart;
 __out._onDestroy         = _onDestroy;
 __out._msgHandlers       = _msgHandlers;
+__out._onDamage          = _onDamage;
+__out._onDeath           = _onDeath;
+__out._onHeal            = _onHeal;
+__out._onLand            = _onLand;
+__out._onJump            = _onJump;
+__out._onScreenExit      = _onScreenExit;
+__out._onScreenEnter     = _onScreenEnter;
+__out._onAmmoEmpty       = _onAmmoEmpty;
+__out._onReload          = _onReload;
+__out._stateEnterHandlers= _stateEnterHandlers;
+__out._stateExitHandlers = _stateExitHandlers;
 __out._initVX            = typeof velocityX !== 'undefined' ? velocityX : 0;
 __out._initVY            = typeof velocityY !== 'undefined' ? velocityY : 0;
 __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelocityToApi : null;
@@ -3577,8 +4043,19 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
             this._onMouseClick    = out._onMouseClick     ?? null;
             this._onMouseEnter    = out._onMouseEnter     ?? null;
             this._onMouseLeave    = out._onMouseLeave     ?? null;
-            this._messageHandlers = out._msgHandlers      ?? new Map();
-            this._syncVel         = out._syncVel          ?? null;
+            this._messageHandlers    = out._msgHandlers         ?? new Map();
+            this._syncVel            = out._syncVel             ?? null;
+            this._onDamage           = out._onDamage            ?? null;
+            this._onDeath            = out._onDeath             ?? null;
+            this._onHeal             = out._onHeal              ?? null;
+            this._onLand             = out._onLand              ?? null;
+            this._onJump             = out._onJump              ?? null;
+            this._onScreenExit       = out._onScreenExit        ?? null;
+            this._onScreenEnter      = out._onScreenEnter       ?? null;
+            this._onAmmoEmpty        = out._onAmmoEmpty         ?? null;
+            this._onReload           = out._onReload            ?? null;
+            this._stateEnterHandlers = out._stateEnterHandlers  ?? new Map();
+            this._stateExitHandlers  = out._stateExitHandlers   ?? new Map();
             // Apply initial velocity values from top-level declarations
             api._vel.x = out._initVX ?? 0;
             api._vel.y = out._initVY ?? 0;
@@ -3714,6 +4191,31 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
             // ── No physics body — pure scripting movement ──────────────
             if (vel.x !== 0) obj.x +=  vel.x * dt * 100;
             if (vel.y !== 0) obj.y -= vel.y * dt * 100;
+        }
+
+        // ── 5. onLand detection (kinematic only) ───────────────────
+        if (this._onLand && obj.physicsBody === 'kinematic') {
+            const grounded = this.api.isOnGround?.() ?? false;
+            const wasAirborne = this._wasAirborne ?? false;
+            if (wasAirborne && grounded) {
+                try { this._onLand(); } catch(e) {}
+            }
+            this._wasAirborne = !grounded;
+        }
+
+        // ── 6. onScreenExit / onScreenEnter detection ──────────────
+        if (this._onScreenExit || this._onScreenEnter) {
+            const gw   = (this.api.sceneSettings?.gameWidth  ?? 1280) / 2;
+            const gh   = (this.api.sceneSettings?.gameHeight ?? 720)  / 2;
+            const px   = obj.x;
+            const py   = obj.y;
+            const half = (obj.width ?? 50) / 2;
+            const off  = Math.abs(px) > gw + half || Math.abs(py) > gh + half;
+            if (off !== (this._wasOffScreen ?? false)) {
+                if (off && this._onScreenExit)  try { this._onScreenExit();  } catch(e) {}
+                if (!off && this._onScreenEnter) try { this._onScreenEnter(); } catch(e) {}
+                this._wasOffScreen = off;
+            }
         }
 
         // Destroy queue — fire onDestroy before removing

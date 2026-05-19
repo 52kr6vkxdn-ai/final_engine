@@ -39,21 +39,42 @@ function _loadAce() {
 
 // ── Ace autocomplete — only the allowed scripting API ─────────
 const COMPLETIONS = [
-    // Events
-    { n:'onStart',           m:'● event',     v:"onStart(() => {\n  \n});" },
-    { n:'onUpdate',          m:'● event',     v:"onUpdate((dt) => {\n  \n});" },
-    { n:'onStop',            m:'● event',     v:"onStop(() => {\n  \n});" },
-    { n:'onCollisionEnter',  m:'● event',     v:"onCollisionEnter((other) => {\n  // other.name, other.x, other.y\n});" },
-    { n:'onCollisionStay',   m:'● event',     v:"onCollisionStay((other) => {\n  \n});" },
-    { n:'onCollisionExit',   m:'● event',     v:"onCollisionExit((other) => {\n  \n});" },
-    { n:'onOverlapEnter',    m:'● event',     v:"onOverlapEnter((other) => {\n  \n});" },
-    { n:'onOverlapExit',     m:'● event',     v:"onOverlapExit((other) => {\n  \n});" },
-    { n:'onMessage',         m:'● event',     v:"onMessage('${1:messageName}', (data) => {\n  \n});" },
-    { n:'onBecomeVisible',   m:'● event',     v:"onBecomeVisible(() => {\n  \n});" },
-    { n:'onBecomeHidden',    m:'● event',     v:"onBecomeHidden(() => {\n  \n});" },
-    { n:'onMouseClick',      m:'● event',     v:"onMouseClick(() => {\n  \n});" },
-    { n:'onMouseEnter',      m:'● event',     v:"onMouseEnter(() => {\n  \n});" },
-    { n:'onMouseLeave',      m:'● event',     v:"onMouseLeave(() => {\n  \n});" },
+    // ── Core lifecycle events ─────────────────────────────
+    { n:'onStart',           m:'● event',          v:"onStart(() => {\n  \n});" },
+    { n:'onUpdate',          m:'● event',          v:"onUpdate((dt) => {\n  \n});" },
+    { n:'onStop',            m:'● event',          v:"onStop(() => {\n  \n});" },
+    { n:'onCloneStart',      m:'● event',          v:"onCloneStart(() => {\n  // Runs on clones only\n});" },
+    { n:'onDestroy',         m:'● event',          v:"onDestroy(() => {\n  // Runs just before this object is destroyed\n});" },
+    // ── Collision / Overlap events ─────────────────────────
+    { n:'onCollisionEnter',  m:'● event collision', v:"onCollisionEnter((other) => {\n  // other.name, other.tag, other.x, other.y\n});" },
+    { n:'onCollisionStay',   m:'● event collision', v:"onCollisionStay((other) => {\n  \n});" },
+    { n:'onCollisionExit',   m:'● event collision', v:"onCollisionExit((other) => {\n  \n});" },
+    { n:'onOverlapEnter',    m:'● event overlap',   v:"onOverlapEnter((other) => {\n  \n});" },
+    { n:'onOverlapExit',     m:'● event overlap',   v:"onOverlapExit((other) => {\n  \n});" },
+    // ── Messaging ─────────────────────────────────────────
+    { n:'onMessage',         m:'● event',          v:"onMessage('${1:messageName}', (data) => {\n  \n});" },
+    // ── Mouse events ──────────────────────────────────────
+    { n:'onMouseClick',      m:'● event mouse',    v:"onMouseClick(() => {\n  \n});" },
+    { n:'onMouseEnter',      m:'● event mouse',    v:"onMouseEnter(() => {\n  \n});" },
+    { n:'onMouseLeave',      m:'● event mouse',    v:"onMouseLeave(() => {\n  \n});" },
+    { n:'onBecomeVisible',   m:'● event',          v:"onBecomeVisible(() => {\n  \n});" },
+    { n:'onBecomeHidden',    m:'● event',          v:"onBecomeHidden(() => {\n  \n});" },
+    // ── Health / Combat events (shooting games, beat-em-ups, RPGs) ──
+    { n:'onDamage',          m:'● event combat',   v:"onDamage((amount, source) => {\n  // fired when takeDamage() is called\n  hitFlash();\n  log('took', amount, 'damage');\n});" },
+    { n:'onDeath',           m:'● event combat',   v:"onDeath((source) => {\n  // fired when health reaches 0\n  soundPlay('die');\n  destroySelf();\n});" },
+    { n:'onHeal',            m:'● event combat',   v:"onHeal((amount) => {\n  log('healed', amount);\n});" },
+    // ── Platformer events (Mario, Celeste, etc.) ───────────
+    { n:'onLand',            m:'● event platform', v:"onLand(() => {\n  // fired the frame this object touches the ground after being airborne\n  soundPlay('land');\n});" },
+    { n:'onJump',            m:'● event platform', v:"onJump(() => {\n  // define jump here — called by triggerJump()\n  velocityY = 14;\n  soundPlay('jump');\n});" },
+    // ── Screen bounds events ───────────────────────────────
+    { n:'onScreenExit',      m:'● event bounds',   v:"onScreenExit(() => {\n  // fired when object leaves the visible area\n  destroySelf();\n});" },
+    { n:'onScreenEnter',     m:'● event bounds',   v:"onScreenEnter(() => {\n  // fired when object re-enters the visible area\n});" },
+    // ── Shooter events ─────────────────────────────────────
+    { n:'onAmmoEmpty',       m:'● event shooter',  v:"onAmmoEmpty(() => {\n  // fired by fireProjectile() when ammo is 0\n  say('Out of ammo!', 1);\n});" },
+    { n:'onReload',          m:'● event shooter',  v:"onReload(() => {\n  soundPlay('reload');\n  log('Reloaded:', getAmmo());\n});" },
+    // ── State machine events ───────────────────────────────
+    { n:'onStateEnter',      m:'● event state',    v:"onStateEnter('${1:idle}', (newState, prevState) => {\n  playAnimation('${1:idle}');\n});" },
+    { n:'onStateExit',       m:'● event state',    v:"onStateExit('${1:attack}', (oldState, nextState) => {\n  stopAnimation();\n});" },
     // this.x / this.y position
     { n:'getX',              m:'↔ position',  v:'getX()' },
     { n:'setX',              m:'↔ position',  v:'setX(${1:value})' },
@@ -75,7 +96,8 @@ const COMPLETIONS = [
     { n:'bounceX',           m:'⚡ velocity',  v:'bounceX()' },
     { n:'bounceY',           m:'⚡ velocity',  v:'bounceY()' },
     // Gravity
-    { n:'gravity',           m:'↓ gravity',   v:'gravity(${1:0}, ${2:-9.8})' },
+    { n:'setGravity',        m:'↓ gravity',   v:'setGravity(${1:0}, ${2:-9.8})' },
+    { n:'gravity',           m:'↓ gravity',   v:'gravity(${1:vy}, ${2:dt})  // accumulator: vy=gravity(vy,dt)' },
     // Rotation / Scale
     { n:'getRotation',       m:'↻ rotation',  v:'getRotation()' },
     { n:'setRotation',       m:'↻ rotation',  v:'setRotation(${1:degrees})' },
@@ -132,7 +154,9 @@ const COMPLETIONS = [
     { n:'other.distanceTo',  m:'🔍 proxy',     v:'other.distanceTo(${1:target})' },
     // Destroy
     { n:'destroySelf',       m:'💥 destroy',   v:'destroySelf()' },
-    { n:'destroy',           m:'💥 destroy',   v:'destroy(${1:other})' },
+    { n:'destroy',           m:'💥 destroy',   v:'destroy()  // removes THIS object' },
+    { n:'destroyObject',     m:'💥 destroy',   v:'destroyObject(${1:other})' },
+    { n:'destroyAfter',      m:'💥 destroy',   v:'destroyAfter(${1:secs})' },
     // Scene
     { n:'gotoScene',         m:'🎬 scene',     v:"gotoScene('${1:SceneName}')" },
     { n:'pauseScene',        m:'⏸ scene',      v:'pauseScene()' },
@@ -320,10 +344,88 @@ const COMPLETIONS = [
     { n:'angleTo',           m:'∑ math',     v:'angleTo(${1:x1}, ${2:y1}, ${3:x2}, ${4:y2})' },
     // Debug draw
     { n:'drawDebugLine',     m:'🖊 debug draw',v:'drawDebugLine(${1:x1}, ${2:y1}, ${3:x2}, ${4:y2})' },
+    { n:'drawDebugLine opts',m:'🖊 debug draw',v:"drawDebugLine(${1:x1}, ${2:y1}, ${3:x2}, ${4:y2}, '${5:#ff0000}', ${6:0.5})" },
     { n:'drawDebugCircle',   m:'🖊 debug draw',v:'drawDebugCircle(${1:cx}, ${2:cy}, ${3:radius})' },
     // Scene transitions
     { n:'gotoScene fade',    m:'🎬 scene',    v:"gotoScene('${1:Level2}', 'fade')" },
     { n:'gotoScene slide',   m:'🎬 scene',    v:"gotoScene('${1:Level2}', 'slide-left')" },
+
+    // ── Health / Damage ────────────────────────────────────
+    { n:'setHealth',         m:'❤ health',    v:'setHealth(${1:100})' },
+    { n:'getHealth',         m:'❤ health',    v:'getHealth()' },
+    { n:'setMaxHealth',      m:'❤ health',    v:'setMaxHealth(${1:100})' },
+    { n:'getMaxHealth',      m:'❤ health',    v:'getMaxHealth()' },
+    { n:'takeDamage',        m:'❤ health',    v:'takeDamage(${1:10})' },
+    { n:'takeDamage src',    m:'❤ health',    v:'takeDamage(${1:10}, other)' },
+    { n:'heal',              m:'❤ health',    v:'heal(${1:25})' },
+    { n:'isDead',            m:'❤ health',    v:'isDead()' },
+    { n:'invincible',        m:'❤ health',    v:'invincible(${1:1})' },
+    { n:'isInvincible',      m:'❤ health',    v:'isInvincible()' },
+
+    // ── Knockback ──────────────────────────────────────────
+    { n:'knockback',         m:'💥 combat',   v:'knockback(${1:180}, ${2:8})' },
+    { n:'knockback timed',   m:'💥 combat',   v:'knockback(${1:180}, ${2:8}, ${3:0.2})' },
+
+    // ── Ammo System ────────────────────────────────────────
+    { n:'setAmmo',           m:'🔫 ammo',     v:'setAmmo(${1:30})' },
+    { n:'getAmmo',           m:'🔫 ammo',     v:'getAmmo()' },
+    { n:'setMaxAmmo',        m:'🔫 ammo',     v:'setMaxAmmo(${1:30})' },
+    { n:'getMaxAmmo',        m:'🔫 ammo',     v:'getMaxAmmo()' },
+    { n:'reload',            m:'🔫 ammo',     v:'reload()' },
+
+    // ── Fire Projectile ────────────────────────────────────
+    { n:'fireProjectile',    m:'🔫 shoot',    v:"fireProjectile('${1:Bullet}', ${2:0}, ${3:12})" },
+    { n:'fireProjectile opts',m:'🔫 shoot',   v:"fireProjectile('${1:Bullet}', ${2:0}, ${3:12}, {\n  damage: ${4:10},\n  lifetime: ${5:3},\n  tag: '${6:bullet}',\n})" },
+
+    // ── State Machine ──────────────────────────────────────
+    { n:'setState',          m:'🔀 state',    v:"setState('${1:idle}')" },
+    { n:'getState',          m:'🔀 state',    v:'getState()' },
+
+    // ── Platformer helpers ─────────────────────────────────
+    { n:'triggerJump',       m:'🏃 platform', v:'triggerJump()' },
+    { n:'isOnGround',        m:'🏃 platform', v:'isOnGround()' },
+    { n:'isOnCeiling',       m:'🏃 platform', v:'isOnCeiling()' },
+    { n:'isOnWall',          m:'🏃 platform', v:'isOnWall()' },
+
+    // ── Clone opts ─────────────────────────────────────────
+    { n:'opts',              m:'📦 clone opts',v:'opts.${1:myVar}' },
+    { n:'opts set (clone)',  m:'📦 clone opts',v:"cloneSelf(getX(), getY(), (c) => {\n  c.opts.${1:speed} = ${2:5};\n  c.opts.${3:damage} = ${4:1};\n});" },
+    { n:'opts read (clone)', m:'📦 clone opts',v:"onCloneStart(() => {\n  // read opts set by spawner\n  velocityX = opts.${1:speed};\n});" },
+    { n:'isClone',           m:'📦 clone',    v:'isClone()' },
+    { n:'getCloneId',        m:'📦 clone',    v:'getCloneId()' },
+    { n:'destroyAfter',      m:'📦 clone',    v:'destroyAfter(${1:3})' },
+    { n:'cloneInPlace',      m:'📦 clone',    v:"cloneInPlace((c) => {\n  ${1:c.velocityX = 2;}\n})" },
+
+    // ── Screen / Proximity helpers ─────────────────────────
+    { n:'inRangeOf',         m:'📐 proximity',v:'inRangeOf(find("${1:Player}"), ${2:3})' },
+    { n:'offScreen',         m:'📐 bounds',   v:'offScreen(${1:1})' },
+    { n:'boundsClamp',       m:'📐 bounds',   v:'boundsClamp(${1:0})' },
+    { n:'onceAfter',         m:'⏳ timer',    v:'onceAfter(${1:2}, () => {\n  ${2:destroySelf();}\n})' },
+
+    // ── Raycast (extended) ─────────────────────────────────
+    { n:'raycast',           m:'🔦 raycast',  v:'raycast(${1:x1}, ${2:y1}, ${3:x2}, ${4:y2})' },
+    { n:'raycast tag',       m:'🔦 raycast',  v:"raycast(${1:x1}, ${2:y1}, ${3:x2}, ${4:y2}, '${5:enemy}')" },
+    { n:'raycastAll',        m:'🔦 raycast',  v:'raycastAll(${1:x1}, ${2:y1}, ${3:x2}, ${4:y2})' },
+    { n:'raycastFromSelf',   m:'🔦 raycast',  v:'raycastFromSelf(${1:0}, ${2:8})' },
+    { n:'raycastFromSelf tag',m:'🔦 raycast', v:"raycastFromSelf(${1:0}, ${2:8}, '${3:wall}')" },
+    { n:'hit._rayHit',       m:'🔦 raycast',  v:'hit._rayHit.distance' },
+    { n:'hit.point',         m:'🔦 raycast',  v:'hit._rayHit.point.x' },
+    { n:'hit.normal',        m:'🔦 raycast',  v:'hit._rayHit.normal.x' },
+
+    // ── Gizmos / Debug visualization ───────────────────────
+    { n:'Gizmos.raycasts',      m:'🖊 gizmos', v:'Gizmos.raycasts = ${1:true}' },
+    { n:'Gizmos.raycastColor',  m:'🖊 gizmos', v:"Gizmos.raycastColor = '${1:#00ff44}'" },
+    { n:'Gizmos.raycastWidth',  m:'🖊 gizmos', v:'Gizmos.raycastWidth = ${1:2}' },
+    { n:'Gizmos.raycastDuration',m:'🖊 gizmos',v:'Gizmos.raycastDuration = ${1:0.12}' },
+
+    // ── Proxy (other.*) extended ───────────────────────────
+    { n:'other.health',      m:'🔍 proxy',    v:'other.health' },
+    { n:'other.ammo',        m:'🔍 proxy',    v:'other.ammo' },
+    { n:'other.state',       m:'🔍 proxy',    v:'other.state' },
+    { n:'other.isDead',      m:'🔍 proxy',    v:'other.isDead' },
+    { n:'other.isInvincible',m:'🔍 proxy',    v:'other.isInvincible' },
+    { n:'other.opts',        m:'🔍 proxy',    v:'other.opts.${1:myVar}' },
+    { n:'other.takeDamage',  m:'🔍 proxy',    v:'other.takeDamage(${1:10})' },
 ].map(c => ({ caption:c.n, value:c.v, meta:c.m, score:950 }));
 
 
@@ -400,6 +502,7 @@ export async function openScriptEditor(obj, scriptName, initialCode) {
     let editor;
     try {
         editor = ace.edit(aceEl);
+        window._seAceEditor = editor; // expose for sidebar click-to-insert
     } catch(initErr) {
         console.error('[Zengine] Ace editor failed to initialize:', initErr);
         if (aceEl) aceEl.innerHTML = `<div style="color:#f87171;padding:20px;font-family:monospace;font-size:13px;">
@@ -576,10 +679,12 @@ export async function openScriptEditor(obj, scriptName, initialCode) {
     overlay.querySelector('#se-close').addEventListener('click', async () => {
         if (_dirty && !confirm('Unsaved changes — save before closing?')) { overlay.remove(); return; }
         if (_dirty) await _doSave();
+        window._seAceEditor = null;
         overlay.remove();
     });
     overlay.querySelector('#se-detach')?.addEventListener('click', () => {
         if (obj) { obj.scriptName = null; _logConsole(`✂️ Script detached from "${obj.label}"`, '#facc15'); import('./engine.ui.js').then(m => m.syncPixiToInspector()); }
+        window._seAceEditor = null;
         overlay.remove();
     });
 
@@ -731,55 +836,522 @@ function _modal() {
 }
 
 function _sidebarHTML() {
+    // ── sidebar data: [category, [snippets...]]
+    // Snippets starting with "//" are non-clickable comments/headers
     const G = [
-        ['Events',         ['onStart(fn)', 'onUpdate(fn)', 'onStop(fn)', 'onCollisionEnter((other) => {})', 'onCollisionStay(fn)', 'onCollisionExit(fn)', 'onOverlapEnter((other) => {})', 'onOverlapExit(fn)', 'onMessage("msg",fn)', 'onMouseClick(fn)']],
-        ['this.position',  ['getX() / setX(v)', 'getY() / setY(v)', 'moveTo(x, y)', 'move(dx, dy)', 'moveForward(speed)', 'lookAt(tx, ty)', 'flipX() / flipY()']],
-        ['this.velocity',  ['velocityX / vx', 'velocityY / vy', 'setVelocity(vx,vy)', 'stopMovement()', 'bounceX() / bounceY()']],
-        ['this.gravity',   ['gravity(gx, gy)', '  gravity(0,-9.8) = fall down', '  gravity(0, 9.8) = float up']],
-        ['Rotation/Scale', ['getRotation()', 'setRotation(deg)', 'lockRotation()', 'unlockRotation()', 'setRotationLocked(bool)', 'getScaleX/Y()', 'setScaleX/Y(v)']],
-        ['Display',        ['show() / hide()', 'setVisible(v)', 'getAlpha() / setAlpha(v)', 'fadeIn(t, dt)', 'fadeOut(t, dt)', 'setTint("#ff0000")', 'getTint()']],
-        ['Tag & Group',    ['setTag("name") / getTag()', 'setGroup("name") / getGroup()']],
-        ['Messaging',      ['sendMessage(tag, msg, data)', 'broadcast(tag, msg)', 'broadcastGroup(grp, msg)', 'broadcastAll(msg)', 'onMessage("msg", fn)']],
-        ['Find objects',   ['find("label")', 'findWithTag("tag")', 'findAllWithTag("tag")', 'findAllInGroup("grp")']],
-        ['Overlap (AABB)', ['overlaps(other)', 'overlapsTag("tag")', 'overlapsAllWithTag("tag")', 'onOverlapEnter(fn)', 'onOverlapExit(fn)']],
-        ['Distance',       ['distanceTo("tag")', 'distanceTo(x, y)', 'distanceTo(find("label"))']],
-        ['Destroy',        ['destroySelf()', 'destroy(other)']],
-        ['Scene',          ['gotoScene("Name") / gotoScene(1)', 'gotoScene("Level2", "fade")', 'gotoScene("Level2", "slide-left")', 'gotoScene("Level2", "zoom")', 'pauseScene()  →  pause', 'pauseScene(false)  →  resume', 'restartScene()  →  restart from beginning', 'currentScene()', 'currentSceneIndex()', 'sceneCount()']],
-        ['Text Objects',   ['drawText("Hello", x, y, { fontSize:32, fill:"#fff" })', 'var t = drawText("Score: 0", 0, 3)', 't.text = "Score: " + n', 'find("Label").text = "New text"', 'find("Label").setText("text")', 'find("Label").setTextStyle({ fontSize:48, fill:"#f00" })']],
-        ['Camera',         ['cameraFollow(obj, smooth)', 'cameraUnfollow()', 'cameraMoveTo(x, y)', 'getCameraX/Y()', 'cameraShake(amp, dur)']],
-        ['Input',          ['isKeyDown("w")', 'isKeyJustDown("Space")', 'isKeyJustUp("w")', 'axisH() → -1/0/1', 'axisV() → -1/0/1', 'mouseX() / mouseY()  ← world units', 'screenMouseX() / screenMouseY()  ← screen px', 'mouseDown() / mouseJustDown()', 'onKeyDown("a", fn)', 'onKeyUp("a", fn)']],
-        ['Mobile / Touch', ['isTouching()  — any finger?', 'touchJustStarted()  — new touch this frame?', 'getTouches() → [{id,x,y,screenX,screenY},…]', 'touchCount()  → int', 'onSwipe("left"|"right"|"up"|"down", fn)', 'onTap(fn)', 'onPinch(fn)  — fn(scale)', 'onMouseClick(fn)']],
-
-        ['Virtual Joystick', ['var joy = createJoystick()  — floating (spawns at touch)', 'var joy = createJoystick({fixed:true, x:150, y:150})', 'joy.axisH  → -1…1  joy.axisV  → -1…1', 'joy.angle  → degrees  joy.magnitude  → 0…1', 'joy.active  → bool', 'joy.setStyle({baseColor,knobColor,size})', 'joy.destroy()  destroyAllJoysticks()']],
-        ['Animation',      ['playAnimation("name")', 'stopAnimation()', 'currentAnimation()']],
-        ['Speech & Chat',   ['say("Hello!")  — speech bubble 2.5 sec', 'say("Hello!", 4)  — 4 seconds', 'say("")  — clear bubble', 'think("Hmm...")  — cloud thought bubble', 'showChat("Guard", (input) => { return "reply"; })', 'showChat: return null = no reply, "" = no reply', 'chatSay("Opening line")  — NPC speaks first', 'hideChat()  — close the panel', 'aiChat("Wizard", "systemPrompt")  — AI-powered NPC dialog (Claude)', 'aiChat: 2nd arg is the persona system prompt']],
-        ['Tween',          ['tween({ alpha:0 }, 0.5)', 'tween({ x:5 }, 1, "easeOut")', 'tween({ scaleX:2 }, 1, "linear", () => {})', 'Easings: linear easeIn easeOut easeInOut', '  easeInCubic easeOutCubic elastic', '  elasticOut bounce steps2 steps4']],
-        ['Repeat / Timer', ['repeat(1.5, fn) → id', 'cancelRepeat(id)', 'wait(seconds, fn)']],
-        ['Spawn / Clone',  ['spawnObject("Asset", x, y)  — fresh default copy', 'spawnObject("Asset", x, y, (obj)=>{})', 'cloneSelf(x, y)  — clone yourself: copies scale, physics, script', 'cloneSelf(x, y, (c) => { c.velocityX=3 })', 'cloneObject("Enemy", x, y)  — clone first instance of name or tag', 'cloneObject(find("Boss"), x, y)  — clone a specific proxy', 'raycast(x1,y1, x2,y2)', 'raycast(x1,y1, x2,y2, "tag")', 'getObjectsInRadius(cx,cy, r)', 'getObjectsInRadius(cx,cy, r, "tag")']],
-        ['Z-order / Coords',['setZOrder(n) / getZOrder()', 'screenToWorld(sx, sy) → {x,y}', 'worldToScreen(wx, wy) → {x,y}']],
-        ['Physics (readable helpers)', ['applyForce(fx, fy)  — push every frame (dynamic only)', 'applyImpulse(ix, iy)  — instant hit / jump (dynamic only)', 'setPhysicsVelocity(vx, vy)  — set speed directly (dynamic only)', 'setAngularVelocity(rad/s)  — spin speed, +cw (dynamic only)', 'applyAngularImpulse(n)  — one-time spin kick (dynamic only)', 'getVelX() / getVelY()  — read current speed', 'stopPhysics()  — freeze body', 'setImmovable(true/false)', 'isOnGround() / isOnCeiling() / isOnWall()  (kinematic only)', 'setGravityScale(n)']],
-        ['Physics (advanced)', ['physics.setVelocity(vx,vy)  (dynamic)', 'physics.applyForce(fx,fy)  (dynamic)', 'physics.applyImpulse(ix,iy)  (dynamic)', 'physics.setAngularVelocity(rad/s)  (dynamic)', 'physics.applyAngularImpulse(n)  (dynamic)', 'physics.angularVelocity  (dynamic, read)', 'physics.stop()', 'physics.velX / velY', 'physics.isOnGround / isOnCeiling / isOnWall  (kinematic)', 'physics.setImmovable(v) / physics.immovable']],
-        ['Physics control',['setPhysicsType("static"|"kinematic"|"dynamic"|"none")', 'setCollision(true/false)', 'setSensor(true)', 'setCollisionCategory(n)', 'setCollisionMask(n)']],
-        ['Sound',          ['soundPlay("name")', "soundPlay('n', {loop,volume,range})", 'soundStop("name")', 'soundStopAll()']],
-        ['Shared vars',    ['sceneVar.myVar (scene-wide)', 'globalVar.myVar (all scenes)', 'store.set/get (private)']],
-        ['Time',           ['getTime() → seconds']],
-        ['Math',           ['lerp(a,b,t)  — interpolate', 'clamp(v,lo,hi)', 'rand(min,max)  — float', 'randInt(min,max)  — integer', 'pick([a,b,c])  — random choice', 'dist(x1,y1,x2,y2)', 'chance(0.25)  → true 25% of the time', 'mapRange(v,a1,b1,a2,b2)', 'abs / sign / floor / ceil / round / PI', 'smoothstep / normalize / angleTo']],
-        ['Game Helpers',   ['gravity(vy, dt)  — simple fall (no physics body needed)', 'launch(vx, vy)  — set this object velocity', 'addImpulse(vx, vy)  — add to velocity', 'destroy()  — remove this object', 'cloneSelf(x, y)  — clone THIS object (copies scale/physics/script)', 'cloneSelf(x, y, (c) => {})', 'cloneObject("Name", x, y)  — clone any object by name or tag', 'spawnCopy("Name", x, y)  — fresh default copy (no property cloning)', 'boundsClamp(margin)  — keep inside canvas', 'offScreen(margin)  → bool  (fell off screen?)', 'trackTarget(obj, speed, dt)  — move toward object', 'hitFlash("#ff0000", 0.2)  — tint flash on hit', 'objectShake(amp, dur)  — wiggle this object']],
-        ['Debug draw',     ['drawDebugLine(x1,y1, x2,y2)', 'drawDebugLine(x1,y1, x2,y2, "#f00", 1, 2)', 'drawDebugCircle(cx,cy, radius)', 'drawDebugCircle(cx,cy, r, "#f00", 1)']],
-        ['Debug',          ['log(...)', 'warn(...)', 'error(...)']],
+        // ── LIFECYCLE EVENTS ──────────────────────────────────────────
+        ['Events', [
+            'onStart(() => { })',
+            'onUpdate((dt) => { })',
+            'onStop(() => { })',
+            'onDestroy(() => { })',
+            'onCloneStart(() => { })',
+            'onCollisionEnter((other) => { })',
+            'onCollisionStay((other) => { })',
+            'onCollisionExit((other) => { })',
+            'onOverlapEnter((other) => { })',
+            'onOverlapExit((other) => { })',
+            'onMessage("msg", (data) => { })',
+            'onMouseClick(() => { })',
+            'onMouseEnter(() => { })',
+            'onMouseLeave(() => { })',
+            'onBecomeVisible(() => { })',
+            'onBecomeHidden(() => { })',
+            'onScreenEnter(() => { })',
+            'onScreenExit(() => { })',
+            'onLand(() => { })',
+            'onJump(() => { })',
+        ]],
+        // ── POSITION & MOVEMENT ───────────────────────────────────────
+        ['Position', [
+            'getX() / setX(v)',
+            'getY() / setY(v)',
+            'moveTo(x, y)',
+            'move(dx, dy)',
+            'moveForward(speed)',
+            'lookAt(tx, ty)',
+            'flipX() / flipY()',
+            'getWidth() / getHeight()',
+            'translate(dx, dy)',
+        ]],
+        // ── VELOCITY ─────────────────────────────────────────────────
+        ['Velocity', [
+            'velocityX = 5  /  vx = 5',
+            'velocityY = 3  /  vy = 3',
+            'setVelocity(vx, vy)',
+            'stopMovement()',
+            'bounceX() / bounceY()',
+        ]],
+        // ── ROTATION & SCALE ─────────────────────────────────────────
+        ['Rotation / Scale', [
+            'getRotation() / setRotation(deg)',
+            'lockRotation() / unlockRotation()',
+            'setRotationLocked(bool)',
+            'getScaleX() / setScaleX(v)',
+            'getScaleY() / setScaleY(v)',
+        ]],
+        // ── DISPLAY ───────────────────────────────────────────────────
+        ['Display', [
+            'show() / hide()',
+            'setVisible(bool)',
+            'getAlpha() / setAlpha(v)',
+            'fadeIn(t, dt)',
+            'fadeOut(t, dt)',
+            'setTint("#ff0000") / getTint()',
+            'clearTint()',
+            'setZOrder(n) / getZOrder()',
+            'selfName()  \u2192 this object\'s label',
+        ]],
+        // ── TAGS & GROUPS ─────────────────────────────────────────────
+        ['Tags & Groups', [
+            'setTag("name") / getTag()',
+            'setGroup("name") / getGroup()',
+            'other.hasTag("enemy")  \u2192 bool',
+        ]],
+        // ── FIND OBJECTS ──────────────────────────────────────────────
+        ['Find Objects', [
+            'find("Label")',
+            'findWithTag("tag")',
+            'findAllWithTag("tag")',
+            'findAllInGroup("grp")',
+            'getObjectsInRadius(cx, cy, r)',
+            'getObjectsInRadius(cx, cy, r, "tag")',
+        ]],
+        // ── MESSAGING ────────────────────────────────────────────────
+        ['Messaging', [
+            'sendMessage("tag", "msg", data)',
+            'broadcast("tag", "msg")',
+            'broadcastGroup("grp", "msg")',
+            'broadcastAll("msg")',
+            'onMessage("msg", (data) => { })',
+        ]],
+        // ── OVERLAP (AABB) ────────────────────────────────────────────
+        ['Overlap (AABB)', [
+            'overlaps(other)',
+            'overlapsTag("tag")',
+            'overlapsAllWithTag("tag")',
+            'onOverlapEnter((other) => { })',
+            'onOverlapExit((other) => { })',
+        ]],
+        // ── DISTANCE ─────────────────────────────────────────────────
+        ['Distance', [
+            'distanceTo("tag")',
+            'distanceTo(x, y)',
+            'distanceTo(find("Label"))',
+            'inRangeOf(find("Player"), 3)  \u2192 bool',
+        ]],
+        // ── DESTROY ──────────────────────────────────────────────────
+        ['Destroy', [
+            'destroy()  \u2014 remove THIS object',
+            'destroySelf()  \u2014 alias for destroy()',
+            'destroyObject(other)  \u2014 remove another object',
+            'destroyAfter(secs)',
+        ]],
+        // ── SCENE ────────────────────────────────────────────────────
+        ['Scene', [
+            'gotoScene("Name") / gotoScene(1)',
+            'gotoScene("Level2", "fade")',
+            'gotoScene("Level2", "slide-left")',
+            'gotoScene("Level2", "zoom")',
+            'pauseScene()  \u2192 pause',
+            'pauseScene(false)  \u2192 resume',
+            'restartScene()',
+            'currentScene() / currentSceneIndex()',
+            'sceneCount() / getSceneName(i)',
+        ]],
+        // ── CAMERA ───────────────────────────────────────────────────
+        ['Camera', [
+            'cameraFollow(obj, smooth)',
+            'cameraUnfollow()',
+            'cameraMoveTo(x, y)',
+            'getCameraX() / getCameraY()',
+            'cameraShake(amp, dur)',
+        ]],
+        // ── TEXT OBJECTS ──────────────────────────────────────────────
+        ['Text Objects', [
+            'drawText("Hello", x, y, { fontSize:32, fill:"#fff" })',
+            'var t = drawText("Score: 0", 0, 3)',
+            't.text = "Score: " + n',
+            'find("Label").text = "New text"',
+            'find("Label").setText("text")',
+            'find("Label").setTextStyle({ fontSize:48, fill:"#f00" })',
+        ]],
+        // ── INPUT ────────────────────────────────────────────────────
+        ['Input', [
+            'isKeyDown("w")',
+            'isKeyJustDown("Space")',
+            'isKeyJustUp("w")',
+            'axisH()  \u2192 -1 / 0 / 1',
+            'axisV()  \u2192 -1 / 0 / 1',
+            'mouseX() / mouseY()  \u2190 world units',
+            'screenMouseX() / screenMouseY()  \u2190 px',
+            'mouseDown() / mouseJustDown()',
+            'onKeyDown("a", fn)',
+            'onKeyUp("a", fn)',
+        ]],
+        // ── MOBILE / TOUCH ────────────────────────────────────────────
+        ['Mobile / Touch', [
+            'isTouching()  \u2014 any finger?',
+            'touchJustStarted()',
+            'getTouches()  \u2192 [{id,x,y,\u2026},\u2026]',
+            'touchCount()  \u2192 int',
+            'onSwipe("left"|"right"|"up"|"down", fn)',
+            'onTap(fn)',
+            'onPinch(fn)  \u2014 fn(scale)',
+            'onMouseClick(fn)',
+        ]],
+        // ── VIRTUAL JOYSTICK ──────────────────────────────────────────
+        ['Virtual Joystick', [
+            'var joy = createJoystick()',
+            'var joy = createJoystick({fixed:true, x:150, y:150})',
+            'joy.axisH  /  joy.axisV  \u2192 -1\u20261',
+            'joy.angle  /  joy.magnitude  \u2192 0\u20261',
+            'joy.active  \u2192 bool',
+            'joy.setStyle({baseColor, knobColor, size})',
+            'joy.destroy()  /  destroyAllJoysticks()',
+        ]],
+        // ── DRAG ─────────────────────────────────────────────────────
+        ['Drag', [
+            'makeDraggable()  \u2014 make this object draggable',
+            'makeDraggable({ onDrop: (x,y) => {} })',
+            'dragObject(find("Box"))  \u2014 drag another object',
+            'stopDrag()',
+            'isDragging()  \u2192 bool',
+        ]],
+        // ── ANIMATION ────────────────────────────────────────────────
+        ['Animation', [
+            'playAnimation("name")',
+            'stopAnimation()',
+            'pauseAnimation()',
+            'currentAnimation()',
+        ]],
+        // ── SPEECH & CHAT ─────────────────────────────────────────────
+        ['Speech & Chat', [
+            'say("Hello!")  \u2014 speech bubble 2.5 sec',
+            'say("Hello!", 4)  \u2014 4 seconds',
+            'say("")  \u2014 clear bubble',
+            'think("Hmm\u2026")  \u2014 cloud thought bubble',
+            'showChat("Guard", (input) => { return "reply"; })',
+            'chatSay("Opening line")  \u2014 NPC speaks first',
+            'chatPlayer("text")  \u2014 inject player message',
+            'hideChat()',
+            'aiChat("Wizard", "system prompt", "sk-...")',
+        ]],
+        // ── TWEEN ────────────────────────────────────────────────────
+        ['Tween', [
+            'tween({ alpha:0 }, 0.5)',
+            'tween({ x:5 }, 1, "easeOut")',
+            'tween({ scaleX:2 }, 1, "linear", () => {})',
+            '// Easings: linear easeIn easeOut easeInOut',
+            '//   easeInCubic easeOutCubic elastic',
+            '//   elasticOut bounce steps2 steps4',
+        ]],
+        // ── REPEAT / TIMER ────────────────────────────────────────────
+        ['Repeat / Timer', [
+            'wait(seconds, fn)',
+            'onceAfter(seconds, fn)  \u2014 one-shot wait',
+            'repeat(1.5, fn)  \u2192 id',
+            'cancelRepeat(id)',
+            'getTime()  \u2192 seconds since start',
+        ]],
+        // ── SPAWN / CLONE ─────────────────────────────────────────────
+        ['Spawn / Clone', [
+            'spawnObject("Asset", x, y)',
+            'spawnObject("Asset", x, y, (obj) => {})',
+            'spawnCopy("Name", x, y)  \u2014 fresh default copy',
+            'cloneSelf(x, y)',
+            'cloneSelf(x, y, (c) => { c.velocityX = 3; })',
+            'cloneInPlace()  \u2014 clone at current position',
+            'cloneObject("Enemy", x, y)',
+            'cloneObject(find("Boss"), x, y)',
+            'isClone()  \u2192 bool',
+            'getCloneId()  \u2192 number',
+            'onCloneStart(() => { })',
+            'opts  \u2014 per-clone variable bag',
+        ]],
+        // ── COORDINATE UTILS ─────────────────────────────────────────
+        ['Coords / Z-Order', [
+            'screenToWorld(sx, sy)  \u2192 {x, y}',
+            'worldToScreen(wx, wy)  \u2192 {x, y}',
+            'setZOrder(n) / getZOrder()',
+        ]],
+        // ── PHYSICS (HELPERS) ─────────────────────────────────────────
+        ['Physics (helpers)', [
+            'applyForce(fx, fy)  \u2014 push every frame (dynamic)',
+            'applyImpulse(ix, iy)  \u2014 instant kick (dynamic)',
+            'setPhysicsVelocity(vx, vy)  (dynamic)',
+            'setAngularVelocity(rad/s)  (dynamic)',
+            'applyAngularImpulse(n)  (dynamic)',
+            'getVelX() / getVelY()',
+            'getPhysicsVelX() / getPhysicsVelY()',
+            'stopPhysics()',
+            'setImmovable(true/false)',
+            'isOnGround() / isOnCeiling() / isOnWall()',
+            'setGravityScale(n)  (dynamic)',
+            'setGravity(gx, gy)  \u2014 per-object gravity dir',
+        ]],
+        // ── PHYSICS (ADVANCED) ────────────────────────────────────────
+        ['Physics (advanced)', [
+            'physics.setVelocity(vx, vy)  (dynamic)',
+            'physics.applyForce(fx, fy)  (dynamic)',
+            'physics.applyImpulse(ix, iy)  (dynamic)',
+            'physics.setAngularVelocity(rad/s)',
+            'physics.applyAngularImpulse(n)',
+            'physics.angularVelocity  (read)',
+            'physics.velX / physics.velY',
+            'physics.stop()',
+            'physics.isOnGround / isOnCeiling / isOnWall',
+            'physics.setImmovable(v) / physics.immovable',
+        ]],
+        // ── PHYSICS SETUP ─────────────────────────────────────────────
+        ['Physics Setup', [
+            'setPhysicsType("static"|"kinematic"|"dynamic"|"none")',
+            'setCollision(true/false)',
+            'setSensor(true)',
+            'setCollisionCategory(n)',
+            'setCollisionMask(n)',
+        ]],
+        // ── RAYCASTING ────────────────────────────────────────────────
+        ['Raycasting', [
+            'raycast(x1, y1, x2, y2)',
+            'raycast(x1, y1, x2, y2, "tag")',
+            'raycastAll(x1, y1, x2, y2)',
+            'raycastFromSelf(angleDeg, distance)',
+            'raycastFromSelf(90, 5, "wall")',
+            '// result: { obj, x, y, distance } or null',
+            'Gizmos.raycasts = true  \u2014 visualize rays',
+        ]],
+        // ── HEALTH / DAMAGE ───────────────────────────────────────────
+        ['Health / Damage', [
+            'setHealth(100) / getHealth()',
+            'setMaxHealth(200) / getMaxHealth()',
+            'takeDamage(10)',
+            'takeDamage(10, other)  \u2014 with source',
+            'heal(25)',
+            'isDead()  \u2192 bool',
+            'invincible()  \u2014 1 sec',
+            'invincible(2.5)  \u2014 2.5 secs',
+            'isInvincible()  \u2192 bool',
+            'onDamage((amount, src) => { })',
+            'onDeath(() => { })',
+            'onHeal((amount) => { })',
+        ]],
+        // ── KNOCKBACK ─────────────────────────────────────────────────
+        ['Knockback', [
+            'knockback(180, 8)  \u2014 push left',
+            'knockback(270, 10, 0.2)  \u2014 push down, stop 0.2s',
+            '// angle: 0=right 90=up 180=left 270=down',
+        ]],
+        // ── AMMO ─────────────────────────────────────────────────────
+        ['Ammo', [
+            'setAmmo(30) / getAmmo()',
+            'setMaxAmmo(90) / getMaxAmmo()',
+            'reload()  \u2014 refill to max',
+            'reload(30)  \u2014 set to 30',
+            'onAmmoEmpty(() => { })',
+            'onReload(() => { })',
+        ]],
+        // ── PROJECTILES ───────────────────────────────────────────────
+        ['Projectiles', [
+            'fireProjectile("Bullet", 0, 12)',
+            'fireProjectile("Bullet", 90, 15, { damage:10, lifetime:3 })',
+            'fireProjectile("Arrow", 45, 10, { tag:"arrow" })',
+            '// angle: 0=right 90=up 180=left 270=down',
+        ]],
+        // ── STATE MACHINE ─────────────────────────────────────────────
+        ['State Machine', [
+            'setState("idle")',
+            'getState()  \u2192 string',
+            'onStateEnter("attack", () => { })',
+            'onStateExit("attack", () => { })',
+        ]],
+        // ── JUMP HELPER ──────────────────────────────────────────────
+        ['Jump Helper', [
+            'triggerJump()  \u2014 fires onJump callback',
+            'onJump(() => { velocityY = 14; })',
+            'onLand(() => { log("landed!"); })',
+            '// Best with kinematic + isOnGround() check',
+        ]],
+        // ── SOUND ─────────────────────────────────────────────────────
+        ['Sound', [
+            'soundPlay("name")',
+            'soundPlay("name", { loop:true, volume:0.6 })',
+            'soundPlay("name", { range:10 })  \u2014 positional',
+            'soundStop("name")',
+            'soundStopAll()',
+        ]],
+        // ── SHARED VARIABLES ──────────────────────────────────────────
+        ['Shared Vars', [
+            'sceneVar.lives = 3  \u2014 scene-wide',
+            'globalVar.score = 0  \u2014 all scenes',
+            'store.set("key", val)  \u2014 persistent',
+            'store.get("key")  \u2192 value',
+        ]],
+        // ── GAME HELPERS ─────────────────────────────────────────────
+        ['Game Helpers', [
+            'gravity(vy, dt)  \u2014 accumulator, returns new vy',
+            '// var vy=0; vy=gravity(vy,dt); move(0,vy*dt);',
+            'setGravity(0, -9.8)  \u2014 physics gravity dir',
+            'launch(vx, vy)  \u2014 set this object velocity',
+            'addImpulse(vx, vy)  \u2014 add to velocity',
+            'destroy()  \u2014 remove THIS object',
+            'destroyObject(other)  \u2014 remove another object',
+            'boundsClamp(margin)',
+            'boundsClamp(0, true)  \u2014 clamp + kill velocity',
+            'offScreen(margin)  \u2192 bool',
+            'trackTarget(find("Player"), 5, dt)',
+            'hitFlash("#ff0000", 0.2)',
+            'objectShake(0.3, 0.4)',
+            'inRangeOf(find("Player"), 3)  \u2192 bool',
+            'onceAfter(2, () => { destroySelf(); })',
+            'sceneSettings.gameWidth / .gameHeight',
+        ]],
+        // ── MATH ─────────────────────────────────────────────────────
+        ['Math', [
+            'lerp(a, b, t)  \u2014 interpolate',
+            'clamp(v, lo, hi)',
+            'rand(min, max)  \u2014 float',
+            'randInt(min, max)  \u2014 integer',
+            'pick([a, b, c])  \u2014 random choice',
+            'chance(0.25)  \u2192 true 25% of time',
+            'dist(x1, y1, x2, y2)',
+            'mapRange(v, a1, b1, a2, b2)',
+            'smoothstep(lo, hi, x)',
+            'normalize(vx, vy)  \u2192 {x, y}',
+            'angleTo(x1, y1, x2, y2)  \u2192 deg',
+            'abs / sign / floor / ceil / round / PI',
+            'sin / cos / tan / atan2 / sqrt / pow',
+            'max / min / wrap / toRad / toDeg',
+        ]],
+        // ── DEBUG DRAW ────────────────────────────────────────────────
+        ['Debug Draw', [
+            'drawDebugLine(x1, y1, x2, y2)',
+            'drawDebugLine(x1, y1, x2, y2, "#f00", 1, 2)',
+            'drawDebugCircle(cx, cy, radius)',
+            'drawDebugCircle(cx, cy, r, "#f00", 1)',
+            'Gizmos.raycasts = true',
+            'Gizmos.raycastColor = "#ff4444"',
+        ]],
+        // ── DEBUG ─────────────────────────────────────────────────────
+        ['Debug', [
+            'log(...)',
+            'warn(...)',
+            'error(...)',
+        ]],
     ];
-    return `<style>
+
+    // Extract plain snippet text (strip the " — description" part for insertion)
+    function _snippetInsert(raw) {
+        if (raw.startsWith('//')) return null; // comment line, not clickable
+        // Strip trailing "  — description" / "  \u2014 description" / "  \u2192 description"
+        return raw.replace(/\s+[\u2014\u2192\u2190]\s.*$/, '').replace(/\s+\(read\)$/, '').trim();
+    }
+
+    const searchId    = 'se-search-' + Math.random().toString(36).slice(2);
+    const containerId = 'se-groups-' + Math.random().toString(36).slice(2);
+
+    const style = `
+        <style>
+        .se-search-wrap { padding:6px 8px; background:#1a1a1a; border-bottom:1px solid #2a2a2a; position:sticky; top:0; z-index:10; }
+        .se-search-wrap input {
+            width:100%; box-sizing:border-box;
+            background:#2d2d2d; border:1px solid #3a3a3a; border-radius:4px;
+            color:#d4d4d4; font-size:11px; padding:4px 8px; outline:none;
+            font-family:"Fira Code","Consolas",monospace;
+        }
+        .se-search-wrap input:focus { border-color:#569cd6; }
+        .se-search-wrap input::placeholder { color:#555; }
         .se-g  { padding:5px 0 2px; border-top:1px solid #2a2a2a; }
         .se-g:first-child { border-top:none; }
-        .se-gt { padding:5px 10px 2px; color:#569cd6; font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:1px; }
-        .se-gi { padding:1px 10px; color:#4e5a6a; font-size:10px; line-height:1.75; font-family:"Fira Code","Consolas",monospace; }
-        .se-gi:hover { color:#9cdcfe; cursor:default; background:#2a2d2e; }
-    </style>` + G.map(([t,items]) => `
-        <div class="se-g">
-            <div class="se-gt">${t}</div>
-            ${items.map(i=>`<div class="se-gi">${i}</div>`).join('')}
+        .se-gt { padding:5px 10px 2px; color:#569cd6; font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:1px; user-select:none; }
+        .se-gi { padding:1px 10px; color:#4e5a6a; font-size:10px; line-height:1.75; font-family:"Fira Code","Consolas",monospace; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .se-gi:not(.se-comment):hover { color:#9cdcfe; cursor:pointer; background:#2a2d2e; }
+        .se-gi:not(.se-comment):active { background:#1e4a7a; color:#fff; }
+        .se-gi:not(.se-comment) { cursor:pointer; }
+        .se-comment { color:#3d4a5a; cursor:default; font-style:italic; }
+        .se-gi-click-hint { color:#3a3a3a; font-size:8px; float:right; margin-top:2px; }
+        </style>
+    `;
+
+    const searchBar = `
+        <div class="se-search-wrap">
+            <input id="${searchId}" type="text" placeholder="\u{1F50D} search functions\u2026" autocomplete="off" spellcheck="false" />
         </div>
-    `).join('');
+    `;
+
+    const groupsHtml = `<div id="${containerId}">` + G.map(([t, items]) => {
+        const rows = items.map(i => {
+            const isComment = i.startsWith('//');
+            return `<div class="se-gi${isComment ? ' se-comment' : ''}" data-snip="${isComment ? '' : i.replace(/"/g, '&quot;')}">${i}</div>`;
+        }).join('');
+        return `<div class="se-g" data-cat="${t.toLowerCase()}"><div class="se-gt">${t}</div>${rows}</div>`;
+    }).join('') + `</div>`;
+
+    const script = `
+        <script>
+        (function() {
+            var sid = ${JSON.stringify(searchId)};
+            var cid = ${JSON.stringify(containerId)};
+
+            // ── Click to insert into Ace editor ──────────────────────
+            function _insertSnippet(raw) {
+                var snip = raw.replace(/\\s+[\u2014\u2192\u2190]\\s.*$/, '').replace(/\\s+\\(read\\)$/, '').trim();
+                if (!snip || snip.startsWith('//')) return;
+                // Find the active Ace editor
+                var aceEl = document.querySelector('#se-ace');
+                var ed    = window._seAceEditor || (aceEl && aceEl.env && aceEl.env.editor);
+                if (ed) {
+                    ed.focus();
+                    ed.insert(snip);
+                } else {
+                    // Fallback: clipboard copy
+                    navigator.clipboard && navigator.clipboard.writeText(snip).then(function() {
+                        // briefly flash the sidebar
+                        var cont = document.getElementById(cid);
+                        if (cont) { cont.style.background='#1e3a1e'; setTimeout(function(){cont.style.background='';},200); }
+                    });
+                }
+            }
+
+            // ── Search filtering ──────────────────────────────────────
+            function _filter(q) {
+                var groups = document.getElementById(cid);
+                if (!groups) return;
+                var ql = q.toLowerCase().trim();
+                groups.querySelectorAll('.se-g').forEach(function(g) {
+                    var cat   = (g.getAttribute('data-cat') || '').toLowerCase();
+                    var items = g.querySelectorAll('.se-gi');
+                    var anyVis = false;
+                    items.forEach(function(row) {
+                        var text = (row.textContent || '').toLowerCase();
+                        var show = !ql || cat.includes(ql) || text.includes(ql);
+                        row.style.display = show ? '' : 'none';
+                        if (show && !row.classList.contains('se-comment')) anyVis = true;
+                    });
+                    g.style.display = (!ql || anyVis || cat.includes(ql)) ? '' : 'none';
+                });
+            }
+
+            // Wire up after DOM settles
+            function _init() {
+                var inp  = document.getElementById(sid);
+                var cont = document.getElementById(cid);
+                if (!inp || !cont) { setTimeout(_init, 80); return; }
+                inp.addEventListener('input', function() { _filter(this.value); });
+                inp.addEventListener('keydown', function(e) { if(e.key==='Escape'){ this.value=''; _filter(''); } });
+                cont.addEventListener('click', function(e) {
+                    var row = e.target.closest('.se-gi');
+                    if (!row || row.classList.contains('se-comment')) return;
+                    var snip = row.getAttribute('data-snip') || '';
+                    if (snip) _insertSnippet(snip);
+                });
+            }
+            setTimeout(_init, 60);
+        })();
+        <\/script>
+    `;
+
+    return style + searchBar + groupsHtml + script;
 }
 
 function _defaultScript(name) {
@@ -798,7 +1370,8 @@ function _defaultScript(name) {
 // PHYSICS:       applyForce(fx, fy)    applyImpulse(ix, iy)   setPhysicsVelocity(vx, vy)
 //                setAngularVelocity(rad/s)   applyAngularImpulse(n)   (dynamic only)
 //                getVelX() / getVelY() stopPhysics()  isOnGround()  isOnWall()
-// GRAVITY:       gravity(0, -9.8)      (call once in onStart)
+// GRAVITY:       setGravity(0, -9.8)   (physics gravity dir, call once in onStart)
+//                gravity(vy, dt)        (Flappy-Bird accumulator — returns updated vy)
 // TAG:           setTag("player")      findWithTag("enemy")
 // MESSAGE:       sendMessage("tag","msg",data)   onMessage("msg",fn)
 // SCENE:         gotoScene("Level2")   currentScene()
@@ -828,7 +1401,7 @@ onStart(() => {
   // cameraFollow(find("${name}"), 6);
 
   // Example: enable gravity (negative Y = down in this engine)
-  // gravity(0, -9.8);
+  // setGravity(0, -9.8);  ← physics gravity direction
 
   // Example: play background music on start
   // soundPlay("Music", { loop: true, volume: 0.6 });
