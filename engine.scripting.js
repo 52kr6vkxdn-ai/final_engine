@@ -1827,11 +1827,12 @@ function _buildSandbox(obj, instRef) {
 
             // Grab fires on MOUSEDOWN (pointer over the object) — NOT on click/up.
             // This makes the object follow immediately from the first press.
-            if (instRef) {
-                instRef._onDragMouseDown = grab;   // new: mousedown hit-test hook
-                instRef._onMouseClick    = null;   // clear any old click grab
-                // Keep a cleanup reference so stopScripts can remove the listener
-                instRef._dragReleaseHook = release;
+            // instRef is the [instance] wrapper array — instRef[0] is the live ScriptInstance.
+            const inst = instRef[0];
+            if (inst) {
+                inst._onDragMouseDown = grab;   // mousedown hit-test hook
+                inst._onMouseClick    = null;   // clear any old click grab
+                inst._dragReleaseHook = release; // cleanup hook
             }
         },
         /**
@@ -3497,13 +3498,6 @@ function drawDebugLine(x1, y1, x2, y2, color, duration, width) {
     api.drawDebugLine(x1, y1, x2, y2, color, duration, width);
 }
 /**
- * Make this object draggable in ONE LINE.
- *   makeDraggable()
- *   makeDraggable({ smooth:16, clamp:true, scale:1.1, onDrop:(x,y)=>{} })
- */
-function makeDraggable(opts) { api.makeDraggable(opts); }
-
-/**
  * Draw a temporary circle outline.
  * drawDebugCircle(x, y, 1.5)
  * drawDebugCircle(x, y, 1.5, "#ff0000", 1.0)
@@ -4474,26 +4468,34 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
     _handleMouseDown()     { this._mouse.down = true;  this._mouse.justDown = true; }
     _handleMouseUp()       { this._mouse.down = false; this._mouse.justUp   = true; }
     _handleDragMouseDown(cx, cy) {
-        // Hit-test on mousedown — used by makeDraggable to start drag immediately
+        // Hit-test on mousedown — used by makeDraggable to start drag immediately.
+        // cx/cy are canvas-relative pixels; PIXI getBounds() returns SCREEN-space pixels,
+        // so subtract the canvas rect offset to align the two coordinate spaces.
         if (!this._onDragMouseDown || !this.obj) return;
         const obj = this.obj;
         if (!obj.visible) return;
         try {
-            const b = obj.getBounds();
-            if (cx >= b.x && cx <= b.x + b.width && cy >= b.y && cy <= b.y + b.height) {
+            const b    = obj.getBounds();
+            const rect = state.app?.view?.getBoundingClientRect?.() ?? { left: 0, top: 0 };
+            const bx   = b.x - rect.left;
+            const by   = b.y - rect.top;
+            if (cx >= bx && cx <= bx + b.width && cy >= by && cy <= by + b.height) {
                 try { this._onDragMouseDown(); } catch(_) {}
             }
         } catch(_) {}
     }
     _handleMouseClick(cx, cy) {
         // Hit-test: does the canvas point (cx,cy) land inside this object?
+        // cx/cy are canvas-relative pixels; getBounds() returns screen-space pixels.
         if (!this._onMouseClick || !this.obj) return;
         const obj = this.obj;
         if (!obj.visible) return;
-        // Use PIXI getBounds on the display object
         try {
-            const b = obj.getBounds();
-            if (cx >= b.x && cx <= b.x + b.width && cy >= b.y && cy <= b.y + b.height) {
+            const b    = obj.getBounds();
+            const rect = state.app?.view?.getBoundingClientRect?.() ?? { left: 0, top: 0 };
+            const bx   = b.x - rect.left;
+            const by   = b.y - rect.top;
+            if (cx >= bx && cx <= bx + b.width && cy >= by && cy <= by + b.height) {
                 try { this._onMouseClick(); }
                 catch (e) {
                     const friendly = _friendlyScriptError(e, null, this.name, obj.label, 'onMouseClick');
@@ -4551,28 +4553,36 @@ function _updateActiveTouches(touchList) {
 // ── Drag & Drop state ─────────────────────────────────────────
 let _activeDragObj  = null;
 let _activeDragOpts = {};
+let _activeDragLastFrameTime = 0;  // for real dt in smooth lerp
 
-function _applyDragThisFrame() {
+function _applyDragThisFrame(dt) {
     if (!_activeDragObj) return;
     const sc = state.sceneContainer;
     if (!sc) return;
-    const inst = _instances[0];
+
+    // Use any live instance for mouse coords — all instances share the same
+    // canvas-relative mouse position (updated by _handleMouseMove/_tm for every instance).
+    // Prefer the instance whose object IS the dragged object for accuracy.
+    let inst = _instances.find(i => i.obj === _activeDragObj) ?? _instances[0];
     if (!inst) return;
-    // _mouse.x / _mouse.y are canvas-relative pixels set by _handleMouseMove / touch relay
+
+    // _mouse.x / _mouse.y are canvas-relative pixels
     const cx = inst._mouse.x;
     const cy = inst._mouse.y;
-    // Convert canvas pixels → world units
+
+    // Convert canvas pixels → world units, applying optional cursor offset
     const targetX =  (cx - sc.x) / (sc.scale.x * 100) + (_activeDragOpts.offsetX ?? 0);
     const targetY = -(cy - sc.y) / (sc.scale.y * 100) + (_activeDragOpts.offsetY ?? 0);
 
-    const smooth = _activeDragOpts.smooth ?? 0; // 0 = instant, e.g. 12 = smooth lag
+    const smooth = _activeDragOpts.smooth ?? 0;
 
     let wx, wy;
     if (smooth > 0) {
-        const dt = (1 / 60); // approximate
-        const t  = Math.min(1, smooth * dt);
-        wx = (_activeDragObj.x / 100)  + (targetX - _activeDragObj.x / 100)  * t;
-        wy = (-_activeDragObj.y / 100) + (targetY - (-_activeDragObj.y / 100)) * t;
+        // Use real dt passed from the game loop — not hardcoded 1/60
+        const realDt = (typeof dt === 'number' && dt > 0) ? dt : (1 / 60);
+        const t = Math.min(1, smooth * realDt);
+        wx = (_activeDragObj.x  / 100) + (targetX - (_activeDragObj.x  /  100)) * t;
+        wy = (-_activeDragObj.y / 100) + (targetY - (-_activeDragObj.y / 100))  * t;
     } else {
         wx = targetX;
         wy = targetY;
@@ -4581,8 +4591,8 @@ function _applyDragThisFrame() {
     if (_activeDragOpts.clampToGameBounds) {
         const gw = (state.sceneSettings?.gameWidth  ?? 1280) / 100 / 2;
         const gh = (state.sceneSettings?.gameHeight ?? 720)  / 100 / 2;
-        wx = Math.max(-gw, Math.min(gw,  wx));
-        wy = Math.max(-gh, Math.min(gh,  wy));
+        wx = Math.max(-gw, Math.min(gw, wx));
+        wy = Math.max(-gh, Math.min(gh, wy));
     }
     _activeDragObj.x =  wx * 100;
     _activeDragObj.y = -wy * 100;
@@ -5043,7 +5053,7 @@ export function startScripts() {
 
         _runOverlapChecks();
         _runCollisionStayChecks();
-        _applyDragThisFrame();
+        _applyDragThisFrame(dt);
         _tickTimers(dt);
         _tickDebugLines(dt);
 

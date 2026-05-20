@@ -621,29 +621,63 @@ onMessage("setOpacity", (o) => {
 {
     name: 'DragFollow',
     code: `// ============================================================
-// DRAG FOLLOW  —  one line to make anything draggable
-// Attach to any object. That's all.
+// DRAG FOLLOW  —  make any object draggable
+// Just attach this script. Works on mouse and touch.
 // ============================================================
 
-// ── The simplest possible drag ────────────────────────────────
-makeDraggable();
+// ── Simplest usage — one line ─────────────────────────────
+onStart(() => {
+    makeDraggable();
+});
 
-// ── Or customise it ───────────────────────────────────────────
-// makeDraggable({ smooth: 0 })           // instant snap, no lag
-// makeDraggable({ smooth: 24 })          // heavy fluid lag
-// makeDraggable({ clamp: true })         // can't leave the screen
-// makeDraggable({ scale: 1.2 })          // grows when picked up
-// makeDraggable({
-//     smooth: 16,
-//     clamp:  true,
-//     scale:  1.1,
-//     onDrop: (x, y) => {
-//         log("Dropped at " + round(x*10)/10 + ", " + round(y*10)/10);
+// ── How it works ──────────────────────────────────────────
+// makeDraggable() must be called inside onStart (or another
+// lifecycle event), NOT at the top level of the script.
+// It registers mouse/touch listeners on this object so it
+// follows the cursor from the moment you press down on it.
+
+// ── Customise the drag behaviour ──────────────────────────
+// Uncomment and replace the simple version above:
+
+// onStart(() => {
+//     makeDraggable({
+//         smooth: 16,       // follow lag: 0 = instant snap, 24 = heavy lag
+//         clamp:  true,     // keep object inside the game canvas
+//         scale:  1.1,      // grow slightly while held (1 = no change)
+//         onDrop: (x, y) => {
+//             log("Dropped at " + round(x*10)/10 + ", " + round(y*10)/10);
+//         }
+//     });
+// });
+
+// ── Drag a DIFFERENT object ───────────────────────────────
+// Call dragObject() when YOU are clicked but you want to
+// move something else instead:
+
+// onMouseClick(() => {
+//     dragObject(find("Crate"));
+// });
+
+// ── Manual drag in onUpdate (advanced) ────────────────────
+// If you need custom logic while dragging:
+
+// var dragging = false;
+// onStart(() => {
+//     makeDraggable({
+//         smooth: 0,
+//         onDrop: (x, y) => {
+//             dragging = false;
+//             log("Released at", x, y);
+//         }
+//     });
+// });
+// onUpdate((dt) => {
+//     if (isDragging()) {
+//         // Object is being dragged — do extra things here
 //     }
 // });
 `,
 },
-
 // ── 11. FlappyBird ───────────────────────────────────────────────────────────
 {
     name: 'FlappyBird',
