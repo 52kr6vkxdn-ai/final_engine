@@ -1440,6 +1440,66 @@ function _buildSandbox(obj, instRef) {
          * raycast(0, 0, 10, 0, "enemy")   — hit only "enemy" tagged objects
          * Returns: { hit, point:{x,y}, normal:{x,y}, distance } or null
          */
+
+        // ── Tilemap tile AABB raycast helper ─────────────────────────────────
+        _raycastTilemapHits(px1, py1, px2, py2, rdx, rdy, rlen, tmObj) {
+            const d   = tmObj.tilemapData;
+            if (!d) return [];
+            const { tileW, tileH, cols, rows, tiles } = d;
+            if (!tiles || cols <= 0 || rows <= 0) return [];
+            // Tilemap origin is top-left in PIXI coords (pixel space)
+            const originX = tmObj.x;                 // px, PIXI x
+            const originY = tmObj.y;                 // px, PIXI y
+            const scaleX  = Math.abs(tmObj.scale?.x ?? 1);
+            const scaleY  = Math.abs(tmObj.scale?.y ?? 1);
+            const tw = tileW * scaleX;
+            const th = tileH * scaleY;
+
+            const hits = [];
+            for (let row = 0; row < rows; row++) {
+                for (let col = 0; col < cols; col++) {
+                    const idx = row * cols + col;
+                    if (tiles[idx] < 0) continue;      // empty cell
+
+                    // PIXI bounding box for this tile (pixels)
+                    const left   = originX + col * tw;
+                    const right  = left  + tw;
+                    const top    = originY + row * th;
+                    const bottom = top   + th;
+
+                    // Slab test in PIXI pixel space (note: rdx/rdy already in px)
+                    const invDx = rdx !== 0 ? 1 / rdx : Infinity;
+                    const invDy = rdy !== 0 ? 1 / rdy : Infinity;
+                    let tx1 = (left   - px1) * invDx;
+                    let tx2 = (right  - px1) * invDx;
+                    let ty1 = (top    - py1) * invDy;
+                    let ty2 = (bottom - py1) * invDy;
+                    if (tx1 > tx2) { const t = tx1; tx1 = tx2; tx2 = t; }
+                    if (ty1 > ty2) { const t = ty1; ty1 = ty2; ty2 = t; }
+                    const tmin = Math.max(tx1, ty1);
+                    const tmax = Math.min(tx2, ty2);
+                    if (tmin > tmax || tmax < 0 || tmin > 1) continue;
+                    const t = Math.max(0, tmin);
+                    let nx = 0, ny = 0;
+                    if (tx1 > ty1) { nx = rdx < 0 ? 1 : -1; }
+                    else           { ny = rdy < 0 ? 1 : -1;  }
+                    const hitPxX = px1 + t * rdx;
+                    const hitPxY = py1 + t * rdy;
+                    hits.push({
+                        isTile: true,
+                        tmObj,
+                        tileRow: row, tileCol: col, tileIndex: tiles[idx],
+                        point:    { x: hitPxX / 100, y: -hitPxY / 100 },
+                        normal:   { x: nx, y: -ny },
+                        distance: t * rlen / 100,
+                        fraction: t,
+                        t,
+                    });
+                }
+            }
+            return hits;
+        },
+
         raycast(x1, y1, x2, y2, tag = null) {
             const px1 = x1 * 100, py1 = -y1 * 100;
             const px2 = x2 * 100, py2 = -y2 * 100;
@@ -1453,10 +1513,26 @@ function _buildSandbox(obj, instRef) {
 
             let best = null, bestT = 1.0001;
             let bestNx = 0, bestNy = 0;
+            let bestIsTile = false, bestTileData = null;
+
+            // ── Regular game objects ──────────────────────────────
             for (const o of candidates) {
                 if (o === obj || !o.visible) continue;
+
+                // ── Tilemap: test every solid tile ─────────────────
+                if (o.isTilemap && !tag) {
+                    const tileHits = this._raycastTilemapHits(px1, py1, px2, py2, rdx, rdy, rlen, o);
+                    for (const h of tileHits) {
+                        if (h.t < bestT) {
+                            bestT = h.t; best = o;
+                            bestNx = h.normal.x; bestNy = -h.normal.y;
+                            bestIsTile = true; bestTileData = h;
+                        }
+                    }
+                    continue;
+                }
+
                 const bb = _getAABB(o);
-                // Slab test
                 const invDx = rdx !== 0 ? 1 / rdx : Infinity;
                 const invDy = rdy !== 0 ? 1 / rdy : Infinity;
                 let tx1 = (bb.left   - px1) * invDx;
@@ -1470,16 +1546,28 @@ function _buildSandbox(obj, instRef) {
                 if (tmin > tmax || tmax < 0 || tmin > 1) continue;
                 const t = Math.max(0, tmin);
                 if (t < bestT) {
-                    bestT = t;
-                    best  = o;
-                    // Compute hit normal from which axis was entered
-                    if (tx1 > ty1) {
-                        bestNx = rdx < 0 ? 1 : -1; bestNy = 0;
-                    } else {
-                        bestNx = 0; bestNy = rdy < 0 ? 1 : -1;
+                    bestT = t; best = o; bestIsTile = false;
+                    if (tx1 > ty1) { bestNx = rdx < 0 ? 1 : -1; bestNy = 0; }
+                    else           { bestNx = 0; bestNy = rdy < 0 ? 1 : -1; }
+                }
+            }
+
+            // ── Tilemap tag filter — test tagged tilemaps too ─────
+            if (tag) {
+                for (const o of state.gameObjects) {
+                    if (!o.isTilemap || !o.visible) continue;
+                    if ((o._scriptTag ?? '') !== String(tag)) continue;
+                    const tileHits = this._raycastTilemapHits(px1, py1, px2, py2, rdx, rdy, rlen, o);
+                    for (const h of tileHits) {
+                        if (h.t < bestT) {
+                            bestT = h.t; best = o;
+                            bestNx = h.normal.x; bestNy = -h.normal.y;
+                            bestIsTile = true; bestTileData = h;
+                        }
                     }
                 }
             }
+
             // ── Debug laser draw ──────────────────────────────────
             if (window._zeGizmos?.raycasts) {
                 const gz  = window._zeGizmos;
@@ -1500,6 +1588,8 @@ function _buildSandbox(obj, instRef) {
                 normal:   { x: bestNx, y: -bestNy },
                 distance: bestT * rlen / 100,
                 fraction: bestT,
+                isTile:   bestIsTile,
+                tile:     bestTileData ? { row: bestTileData.tileRow, col: bestTileData.tileCol, index: bestTileData.tileIndex } : null,
             };
             return result;
         },
@@ -1522,8 +1612,26 @@ function _buildSandbox(obj, instRef) {
                 : state.gameObjects;
 
             const hits = [];
+
             for (const o of candidates) {
                 if (o === obj || !o.visible) continue;
+
+                // ── Tilemap: test every solid tile ─────────────────
+                if (o.isTilemap && !tag) {
+                    const tileHits = this._raycastTilemapHits(px1, py1, px2, py2, rdx, rdy, rlen, o);
+                    for (const h of tileHits) {
+                        const result = _makeProxy(o);
+                        result._rayHit = {
+                            point: h.point, normal: h.normal,
+                            distance: h.distance, fraction: h.t,
+                            isTile: true,
+                            tile: { row: h.tileRow, col: h.tileCol, index: h.tileIndex },
+                        };
+                        hits.push({ proxy: result, t: h.t });
+                    }
+                    continue;
+                }
+
                 const bb = _getAABB(o);
                 const invDx = rdx !== 0 ? 1 / rdx : Infinity;
                 const invDy = rdy !== 0 ? 1 / rdy : Infinity;
@@ -1548,10 +1656,32 @@ function _buildSandbox(obj, instRef) {
                     normal:   { x: nx, y: -ny },
                     distance: t * rlen / 100,
                     fraction: t,
+                    isTile:   false, tile: null,
                 };
                 hits.push({ proxy: result, t });
             }
+
+            // ── Tilemap tag filter — test tagged tilemaps too ─────
+            if (tag) {
+                for (const o of state.gameObjects) {
+                    if (!o.isTilemap || !o.visible) continue;
+                    if ((o._scriptTag ?? '') !== String(tag)) continue;
+                    const tileHits = this._raycastTilemapHits(px1, py1, px2, py2, rdx, rdy, rlen, o);
+                    for (const h of tileHits) {
+                        const result = _makeProxy(o);
+                        result._rayHit = {
+                            point: h.point, normal: h.normal,
+                            distance: h.distance, fraction: h.t,
+                            isTile: true,
+                            tile: { row: h.tileRow, col: h.tileCol, index: h.tileIndex },
+                        };
+                        hits.push({ proxy: result, t: h.t });
+                    }
+                }
+            }
+
             hits.sort((a, b) => a.t - b.t);
+
             // ── Debug laser draw ──────────────────────────────────
             if (window._zeGizmos?.raycasts) {
                 const gz  = window._zeGizmos;
@@ -1559,9 +1689,9 @@ function _buildSandbox(obj, instRef) {
                 const dur = gz.raycastDuration ?? 0.12;
                 const wid = gz.raycastWidth    ?? 2;
                 if (hits.length > 0) {
-                    const firstT   = hits[0].t;
-                    const endPxX   = px1 + firstT * rdx;
-                    const endPxY   = py1 + firstT * rdy;
+                    const firstT = hits[0].t;
+                    const endPxX = px1 + firstT * rdx;
+                    const endPxY = py1 + firstT * rdy;
                     _debugLines.push({ x1, y1, x2: endPxX / 100, y2: -endPxY / 100, color: col, remaining: dur, width: wid, alpha: 0.92 });
                     _debugLines.push({ x1: endPxX / 100, y1: -endPxY / 100, x2: endPxX / 100, y2: -endPxY / 100, circle: 0.07, color: '#ffffff', remaining: dur, width: 3, alpha: 1 });
                 } else {
@@ -3704,9 +3834,10 @@ function aiChat(npcName, description, apiKey, options) {
 
 
 
-function launch(vx, vy) {
-    api.velocityX = vx;
-    api.velocityY = vy;
+function launch(lvx, lvy) {
+    api.velocityX = lvx; api.velocityY = lvy;
+    velocityX = lvx; vx = lvx;
+    velocityY = lvy; vy = lvy;
 }
 
 /**
@@ -3715,9 +3846,12 @@ function launch(vx, vy) {
  *   addImpulse(0, 10)   — jump
  *   addImpulse(-5, 3)   — knockback left + up
  */
-function addImpulse(vx, vy) {
-    api.velocityX = (api.velocityX || 0) + vx;
-    api.velocityY = (api.velocityY || 0) + vy;
+function addImpulse(ivx, ivy) {
+    const nx = (velocityX || api.velocityX || 0) + ivx;
+    const ny = (velocityY || api.velocityY || 0) + ivy;
+    api.velocityX = nx; api.velocityY = ny;
+    velocityX = nx; vx = nx;
+    velocityY = ny; vy = ny;
 }
 
 /**
@@ -3911,23 +4045,7 @@ function getCloneId()    { return obj._cloneId ?? 0; }
 // ── RAYCAST WRAPPERS ──────────────────────────────────────
 // offScreen() and boundsClamp() are defined in the Game Helpers section above.
 /**
- * Cast a ray from (x1,y1) to (x2,y2). Returns first hit or null.
- * If Gizmos.raycasts is true, draws a green laser line.
- *   var hit = raycast(0, 0, 10, 0);
- *   var hit = raycast(0, 0, 10, 0, "wall");
- */
-function raycast(x1, y1, x2, y2, tag)    { return api.raycast(x1, y1, x2, y2, tag); }
-/**
- * Cast a ray and return ALL hits sorted nearest→farthest.
- *   var hits = raycastAll(0, 0, 10, 0);
- */
-function raycastAll(x1, y1, x2, y2, tag) { return api.raycastAll(x1, y1, x2, y2, tag); }
-/**
- * Cast a ray from THIS object in a direction (degrees: 0=right, 90=up).
- *   var hit = raycastFromSelf(0, 8);              — rightward 8 units
- *   var hit = raycastFromSelf(90, 5, "wall");     — upward, only walls
- */
-function raycastFromSelf(angleDeg, distance, tag) { return api.raycastFromSelf(angleDeg, distance, tag); }
+// raycast / raycastAll / raycastFromSelf — defined above, these are the canonical wrappers.
 
 // ── GIZMOS ───────────────────────────────────────────────
 /**

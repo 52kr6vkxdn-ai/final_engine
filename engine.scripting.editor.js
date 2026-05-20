@@ -485,6 +485,7 @@ export async function openScriptEditor(obj, scriptName, initialCode) {
     `;
 
     document.body.appendChild(overlay);
+    _initSidebarBehavior(overlay);  // wire search + click-to-insert after DOM insertion
 
     // Wait two animation frames so the overlay has real pixel dimensions before ace measures it
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
@@ -836,10 +837,7 @@ function _modal() {
 }
 
 function _sidebarHTML() {
-    // ── sidebar data: [category, [snippets...]]
-    // Snippets starting with "//" are non-clickable comments/headers
     const G = [
-        // ── LIFECYCLE EVENTS ──────────────────────────────────────────
         ['Events', [
             'onStart(() => { })',
             'onUpdate((dt) => { })',
@@ -862,7 +860,6 @@ function _sidebarHTML() {
             'onLand(() => { })',
             'onJump(() => { })',
         ]],
-        // ── POSITION & MOVEMENT ───────────────────────────────────────
         ['Position', [
             'getX() / setX(v)',
             'getY() / setY(v)',
@@ -874,50 +871,43 @@ function _sidebarHTML() {
             'getWidth() / getHeight()',
             'translate(dx, dy)',
         ]],
-        // ── VELOCITY ─────────────────────────────────────────────────
         ['Velocity', [
             'velocityX = 5  /  vx = 5',
             'velocityY = 3  /  vy = 3',
             'setVelocity(vx, vy)',
             'stopMovement()',
             'bounceX() / bounceY()',
+            'launch(vx, vy)',
+            'addImpulse(vx, vy)',
         ]],
-        // ── ROTATION & SCALE ─────────────────────────────────────────
         ['Rotation / Scale', [
             'getRotation() / setRotation(deg)',
             'lockRotation() / unlockRotation()',
-            'setRotationLocked(bool)',
             'getScaleX() / setScaleX(v)',
             'getScaleY() / setScaleY(v)',
         ]],
-        // ── DISPLAY ───────────────────────────────────────────────────
         ['Display', [
             'show() / hide()',
             'setVisible(bool)',
             'getAlpha() / setAlpha(v)',
             'fadeIn(t, dt)',
             'fadeOut(t, dt)',
-            'setTint("#ff0000") / getTint()',
-            'clearTint()',
+            'setTint("#ff0000") / clearTint()',
             'setZOrder(n) / getZOrder()',
-            'selfName()  \u2192 this object\'s label',
+            'selfName()',
         ]],
-        // ── TAGS & GROUPS ─────────────────────────────────────────────
         ['Tags & Groups', [
             'setTag("name") / getTag()',
             'setGroup("name") / getGroup()',
-            'other.hasTag("enemy")  \u2192 bool',
+            'other.hasTag("enemy")',
         ]],
-        // ── FIND OBJECTS ──────────────────────────────────────────────
         ['Find Objects', [
             'find("Label")',
             'findWithTag("tag")',
             'findAllWithTag("tag")',
             'findAllInGroup("grp")',
             'getObjectsInRadius(cx, cy, r)',
-            'getObjectsInRadius(cx, cy, r, "tag")',
         ]],
-        // ── MESSAGING ────────────────────────────────────────────────
         ['Messaging', [
             'sendMessage("tag", "msg", data)',
             'broadcast("tag", "msg")',
@@ -925,41 +915,31 @@ function _sidebarHTML() {
             'broadcastAll("msg")',
             'onMessage("msg", (data) => { })',
         ]],
-        // ── OVERLAP (AABB) ────────────────────────────────────────────
-        ['Overlap (AABB)', [
+        ['Overlap', [
             'overlaps(other)',
             'overlapsTag("tag")',
             'overlapsAllWithTag("tag")',
-            'onOverlapEnter((other) => { })',
-            'onOverlapExit((other) => { })',
         ]],
-        // ── DISTANCE ─────────────────────────────────────────────────
         ['Distance', [
             'distanceTo("tag")',
             'distanceTo(x, y)',
-            'distanceTo(find("Label"))',
-            'inRangeOf(find("Player"), 3)  \u2192 bool',
+            'inRangeOf(find("Player"), 3)',
         ]],
-        // ── DESTROY ──────────────────────────────────────────────────
         ['Destroy', [
-            'destroy()  \u2014 remove THIS object',
-            'destroySelf()  \u2014 alias for destroy()',
-            'destroyObject(other)  \u2014 remove another object',
+            'destroy()',
+            'destroySelf()',
+            'destroyObject(other)',
             'destroyAfter(secs)',
         ]],
-        // ── SCENE ────────────────────────────────────────────────────
         ['Scene', [
-            'gotoScene("Name") / gotoScene(1)',
+            'gotoScene("Name")',
             'gotoScene("Level2", "fade")',
             'gotoScene("Level2", "slide-left")',
             'gotoScene("Level2", "zoom")',
-            'pauseScene()  \u2192 pause',
-            'pauseScene(false)  \u2192 resume',
+            'pauseScene() / pauseScene(false)',
             'restartScene()',
             'currentScene() / currentSceneIndex()',
-            'sceneCount() / getSceneName(i)',
         ]],
-        // ── CAMERA ───────────────────────────────────────────────────
         ['Camera', [
             'cameraFollow(obj, smooth)',
             'cameraUnfollow()',
@@ -967,391 +947,287 @@ function _sidebarHTML() {
             'getCameraX() / getCameraY()',
             'cameraShake(amp, dur)',
         ]],
-        // ── TEXT OBJECTS ──────────────────────────────────────────────
         ['Text Objects', [
             'drawText("Hello", x, y, { fontSize:32, fill:"#fff" })',
             'var t = drawText("Score: 0", 0, 3)',
             't.text = "Score: " + n',
-            'find("Label").text = "New text"',
             'find("Label").setText("text")',
-            'find("Label").setTextStyle({ fontSize:48, fill:"#f00" })',
+            'find("Label").setTextStyle({ fontSize:48 })',
         ]],
-        // ── INPUT ────────────────────────────────────────────────────
         ['Input', [
             'isKeyDown("w")',
             'isKeyJustDown("Space")',
             'isKeyJustUp("w")',
-            'axisH()  \u2192 -1 / 0 / 1',
-            'axisV()  \u2192 -1 / 0 / 1',
-            'mouseX() / mouseY()  \u2190 world units',
-            'screenMouseX() / screenMouseY()  \u2190 px',
+            'axisH()  /  axisV()',
+            'mouseX() / mouseY()',
             'mouseDown() / mouseJustDown()',
             'onKeyDown("a", fn)',
-            'onKeyUp("a", fn)',
         ]],
-        // ── MOBILE / TOUCH ────────────────────────────────────────────
         ['Mobile / Touch', [
-            'isTouching()  \u2014 any finger?',
+            'isTouching()',
             'touchJustStarted()',
-            'getTouches()  \u2192 [{id,x,y,\u2026},\u2026]',
-            'touchCount()  \u2192 int',
-            'onSwipe("left"|"right"|"up"|"down", fn)',
+            'getTouches()',
+            'touchCount()',
+            'onSwipe("left", fn)',
             'onTap(fn)',
-            'onPinch(fn)  \u2014 fn(scale)',
-            'onMouseClick(fn)',
+            'onPinch(fn)',
         ]],
-        // ── VIRTUAL JOYSTICK ──────────────────────────────────────────
         ['Virtual Joystick', [
             'var joy = createJoystick()',
             'var joy = createJoystick({fixed:true, x:150, y:150})',
-            'joy.axisH  /  joy.axisV  \u2192 -1\u20261',
-            'joy.angle  /  joy.magnitude  \u2192 0\u20261',
-            'joy.active  \u2192 bool',
-            'joy.setStyle({baseColor, knobColor, size})',
-            'joy.destroy()  /  destroyAllJoysticks()',
+            'joy.axisH  /  joy.axisV',
+            'joy.angle  /  joy.magnitude',
+            'joy.active',
+            'joy.destroy()',
         ]],
-        // ── DRAG ─────────────────────────────────────────────────────
         ['Drag', [
-            'makeDraggable()  \u2014 make this object draggable',
+            'makeDraggable()',
             'makeDraggable({ onDrop: (x,y) => {} })',
-            'dragObject(find("Box"))  \u2014 drag another object',
+            'isDragging()',
             'stopDrag()',
-            'isDragging()  \u2192 bool',
         ]],
-        // ── ANIMATION ────────────────────────────────────────────────
         ['Animation', [
             'playAnimation("name")',
             'stopAnimation()',
             'pauseAnimation()',
             'currentAnimation()',
         ]],
-        // ── SPEECH & CHAT ─────────────────────────────────────────────
         ['Speech & Chat', [
-            'say("Hello!")  \u2014 speech bubble 2.5 sec',
-            'say("Hello!", 4)  \u2014 4 seconds',
-            'say("")  \u2014 clear bubble',
-            'think("Hmm\u2026")  \u2014 cloud thought bubble',
+            'say("Hello!")',
+            'say("Hello!", 4)',
+            'say("")',
+            'think("Hmm...")',
             'showChat("Guard", (input) => { return "reply"; })',
-            'chatSay("Opening line")  \u2014 NPC speaks first',
-            'chatPlayer("text")  \u2014 inject player message',
+            'chatSay("Opening line")',
+            'chatPlayer("text")',
             'hideChat()',
-            'aiChat("Wizard", "system prompt", "sk-...")',
+            'aiChat("Wizard", "system prompt")',
         ]],
-        // ── TWEEN ────────────────────────────────────────────────────
         ['Tween', [
             'tween({ alpha:0 }, 0.5)',
             'tween({ x:5 }, 1, "easeOut")',
             'tween({ scaleX:2 }, 1, "linear", () => {})',
-            '// Easings: linear easeIn easeOut easeInOut',
-            '//   easeInCubic easeOutCubic elastic',
-            '//   elasticOut bounce steps2 steps4',
+            '// easeIn easeOut easeInOut elastic bounce',
         ]],
-        // ── REPEAT / TIMER ────────────────────────────────────────────
-        ['Repeat / Timer', [
+        ['Timer', [
             'wait(seconds, fn)',
-            'onceAfter(seconds, fn)  \u2014 one-shot wait',
-            'repeat(1.5, fn)  \u2192 id',
+            'onceAfter(seconds, fn)',
+            'repeat(1.5, fn)',
             'cancelRepeat(id)',
-            'getTime()  \u2192 seconds since start',
+            'getTime()',
         ]],
-        // ── SPAWN / CLONE ─────────────────────────────────────────────
         ['Spawn / Clone', [
             'spawnObject("Asset", x, y)',
             'spawnObject("Asset", x, y, (obj) => {})',
-            'spawnCopy("Name", x, y)  \u2014 fresh default copy',
+            'spawnCopy("Name", x, y)',
             'cloneSelf(x, y)',
             'cloneSelf(x, y, (c) => { c.velocityX = 3; })',
-            'cloneInPlace()  \u2014 clone at current position',
+            'cloneInPlace()',
             'cloneObject("Enemy", x, y)',
-            'cloneObject(find("Boss"), x, y)',
-            'isClone()  \u2192 bool',
-            'getCloneId()  \u2192 number',
+            'isClone()',
+            'getCloneId()',
             'onCloneStart(() => { })',
-            'opts  \u2014 per-clone variable bag',
         ]],
-        // ── COORDINATE UTILS ─────────────────────────────────────────
-        ['Coords / Z-Order', [
-            'screenToWorld(sx, sy)  \u2192 {x, y}',
-            'worldToScreen(wx, wy)  \u2192 {x, y}',
-            'setZOrder(n) / getZOrder()',
-        ]],
-        // ── PHYSICS (HELPERS) ─────────────────────────────────────────
         ['Physics (helpers)', [
-            'applyForce(fx, fy)  \u2014 push every frame (dynamic)',
-            'applyImpulse(ix, iy)  \u2014 instant kick (dynamic)',
-            'setPhysicsVelocity(vx, vy)  (dynamic)',
-            'setAngularVelocity(rad/s)  (dynamic)',
-            'applyAngularImpulse(n)  (dynamic)',
-            'getVelX() / getVelY()',
-            'getPhysicsVelX() / getPhysicsVelY()',
-            'stopPhysics()',
-            'setImmovable(true/false)',
             'isOnGround() / isOnCeiling() / isOnWall()',
-            'setGravityScale(n)  (dynamic)',
-            'setGravity(gx, gy)  \u2014 per-object gravity dir',
+            'applyForce(fx, fy)',
+            'applyImpulse(ix, iy)',
+            'setPhysicsVelocity(vx, vy)',
+            'getVelX() / getVelY()',
+            'stopPhysics()',
+            'setImmovable(true)',
+            'setGravityScale(n)',
+            'setGravity(gx, gy)',
         ]],
-        // ── PHYSICS (ADVANCED) ────────────────────────────────────────
-        ['Physics (advanced)', [
-            'physics.setVelocity(vx, vy)  (dynamic)',
-            'physics.applyForce(fx, fy)  (dynamic)',
-            'physics.applyImpulse(ix, iy)  (dynamic)',
-            'physics.setAngularVelocity(rad/s)',
-            'physics.applyAngularImpulse(n)',
-            'physics.angularVelocity  (read)',
-            'physics.velX / physics.velY',
-            'physics.stop()',
-            'physics.isOnGround / isOnCeiling / isOnWall',
-            'physics.setImmovable(v) / physics.immovable',
-        ]],
-        // ── PHYSICS SETUP ─────────────────────────────────────────────
         ['Physics Setup', [
-            'setPhysicsType("static"|"kinematic"|"dynamic"|"none")',
-            'setCollision(true/false)',
+            'setPhysicsType("static")',
+            'setPhysicsType("kinematic")',
+            'setPhysicsType("dynamic")',
+            'setCollision(true)',
             'setSensor(true)',
             'setCollisionCategory(n)',
             'setCollisionMask(n)',
         ]],
-        // ── RAYCASTING ────────────────────────────────────────────────
         ['Raycasting', [
             'raycast(x1, y1, x2, y2)',
             'raycast(x1, y1, x2, y2, "tag")',
             'raycastAll(x1, y1, x2, y2)',
             'raycastFromSelf(angleDeg, distance)',
             'raycastFromSelf(90, 5, "wall")',
-            '// result: { obj, x, y, distance } or null',
-            'Gizmos.raycasts = true  \u2014 visualize rays',
+            '// hit.point.x  hit.point.y',
+            '// hit.normal.x  hit.normal.y',
+            '// hit.distance  hit.isTile',
+            'Gizmos.raycasts = true',
         ]],
-        // ── HEALTH / DAMAGE ───────────────────────────────────────────
         ['Health / Damage', [
             'setHealth(100) / getHealth()',
             'setMaxHealth(200) / getMaxHealth()',
             'takeDamage(10)',
-            'takeDamage(10, other)  \u2014 with source',
+            'takeDamage(10, other)',
             'heal(25)',
-            'isDead()  \u2192 bool',
-            'invincible()  \u2014 1 sec',
-            'invincible(2.5)  \u2014 2.5 secs',
-            'isInvincible()  \u2192 bool',
+            'isDead()',
+            'invincible() / invincible(2.5)',
+            'isInvincible()',
             'onDamage((amount, src) => { })',
             'onDeath(() => { })',
             'onHeal((amount) => { })',
         ]],
-        // ── KNOCKBACK ─────────────────────────────────────────────────
         ['Knockback', [
-            'knockback(180, 8)  \u2014 push left',
-            'knockback(270, 10, 0.2)  \u2014 push down, stop 0.2s',
-            '// angle: 0=right 90=up 180=left 270=down',
+            'knockback(180, 8)',
+            'knockback(270, 10, 0.2)',
+            '// 0=right 90=up 180=left 270=down',
         ]],
-        // ── AMMO ─────────────────────────────────────────────────────
         ['Ammo', [
             'setAmmo(30) / getAmmo()',
             'setMaxAmmo(90) / getMaxAmmo()',
-            'reload()  \u2014 refill to max',
-            'reload(30)  \u2014 set to 30',
+            'reload()',
             'onAmmoEmpty(() => { })',
             'onReload(() => { })',
         ]],
-        // ── PROJECTILES ───────────────────────────────────────────────
         ['Projectiles', [
             'fireProjectile("Bullet", 0, 12)',
-            'fireProjectile("Bullet", 90, 15, { damage:10, lifetime:3 })',
-            'fireProjectile("Arrow", 45, 10, { tag:"arrow" })',
-            '// angle: 0=right 90=up 180=left 270=down',
+            'fireProjectile("Bullet", 90, 15, { damage:10 })',
+            '// 0=right 90=up 180=left 270=down',
         ]],
-        // ── STATE MACHINE ─────────────────────────────────────────────
         ['State Machine', [
             'setState("idle")',
-            'getState()  \u2192 string',
+            'getState()',
             'onStateEnter("attack", () => { })',
             'onStateExit("attack", () => { })',
         ]],
-        // ── JUMP HELPER ──────────────────────────────────────────────
-        ['Jump Helper', [
-            'triggerJump()  \u2014 fires onJump callback',
-            'onJump(() => { velocityY = 14; })',
-            'onLand(() => { log("landed!"); })',
-            '// Best with kinematic + isOnGround() check',
-        ]],
-        // ── SOUND ─────────────────────────────────────────────────────
         ['Sound', [
             'soundPlay("name")',
             'soundPlay("name", { loop:true, volume:0.6 })',
-            'soundPlay("name", { range:10 })  \u2014 positional',
+            'soundPlay("name", { range:10 })',
             'soundStop("name")',
             'soundStopAll()',
         ]],
-        // ── SHARED VARIABLES ──────────────────────────────────────────
         ['Shared Vars', [
-            'sceneVar.lives = 3  \u2014 scene-wide',
-            'globalVar.score = 0  \u2014 all scenes',
-            'store.set("key", val)  \u2014 persistent',
-            'store.get("key")  \u2192 value',
+            'sceneVar.lives = 3',
+            'globalVar.score = 0',
+            'store.set("key", val)',
+            'store.get("key")',
         ]],
-        // ── GAME HELPERS ─────────────────────────────────────────────
         ['Game Helpers', [
-            'gravity(vy, dt)  \u2014 accumulator, returns new vy',
+            'gravity(vy, dt)',
             '// var vy=0; vy=gravity(vy,dt); move(0,vy*dt);',
-            'setGravity(0, -9.8)  \u2014 physics gravity dir',
-            'launch(vx, vy)  \u2014 set this object velocity',
-            'addImpulse(vx, vy)  \u2014 add to velocity',
-            'destroy()  \u2014 remove THIS object',
-            'destroyObject(other)  \u2014 remove another object',
+            'setGravity(0, -9.8)',
+            'launch(vx, vy)',
+            'addImpulse(vx, vy)',
+            'destroy()',
+            'destroyObject(other)',
             'boundsClamp(margin)',
-            'boundsClamp(0, true)  \u2014 clamp + kill velocity',
-            'offScreen(margin)  \u2192 bool',
+            'boundsClamp(0, true)',
+            'offScreen(margin)',
             'trackTarget(find("Player"), 5, dt)',
             'hitFlash("#ff0000", 0.2)',
             'objectShake(0.3, 0.4)',
-            'inRangeOf(find("Player"), 3)  \u2192 bool',
-            'onceAfter(2, () => { destroySelf(); })',
-            'sceneSettings.gameWidth / .gameHeight',
+            'inRangeOf(find("Player"), 3)',
+            'onceAfter(2, () => { destroy(); })',
         ]],
-        // ── MATH ─────────────────────────────────────────────────────
         ['Math', [
-            'lerp(a, b, t)  \u2014 interpolate',
+            'lerp(a, b, t)',
             'clamp(v, lo, hi)',
-            'rand(min, max)  \u2014 float',
-            'randInt(min, max)  \u2014 integer',
-            'pick([a, b, c])  \u2014 random choice',
-            'chance(0.25)  \u2192 true 25% of time',
+            'rand(min, max)',
+            'randInt(min, max)',
+            'pick([a, b, c])',
+            'chance(0.25)',
             'dist(x1, y1, x2, y2)',
             'mapRange(v, a1, b1, a2, b2)',
             'smoothstep(lo, hi, x)',
-            'normalize(vx, vy)  \u2192 {x, y}',
-            'angleTo(x1, y1, x2, y2)  \u2192 deg',
-            'abs / sign / floor / ceil / round / PI',
-            'sin / cos / tan / atan2 / sqrt / pow',
-            'max / min / wrap / toRad / toDeg',
+            'normalize(vx, vy)',
+            'angleTo(x1, y1, x2, y2)',
+            'abs / sign / floor / ceil / round',
+            'sin / cos / tan / atan2 / sqrt',
+            'max / min / PI / toRad / toDeg',
         ]],
-        // ── DEBUG DRAW ────────────────────────────────────────────────
-        ['Debug Draw', [
-            'drawDebugLine(x1, y1, x2, y2)',
-            'drawDebugLine(x1, y1, x2, y2, "#f00", 1, 2)',
-            'drawDebugCircle(cx, cy, radius)',
-            'drawDebugCircle(cx, cy, r, "#f00", 1)',
-            'Gizmos.raycasts = true',
-            'Gizmos.raycastColor = "#ff4444"',
-        ]],
-        // ── DEBUG ─────────────────────────────────────────────────────
         ['Debug', [
             'log(...)',
             'warn(...)',
-            'error(...)',
+            'drawDebugLine(x1, y1, x2, y2)',
+            'drawDebugLine(x1, y1, x2, y2, "#f00", 1, 2)',
+            'drawDebugCircle(cx, cy, radius)',
+            'Gizmos.raycasts = true',
+            'Gizmos.raycastColor = "#ff4444"',
         ]],
     ];
 
-    // Extract plain snippet text (strip the " — description" part for insertion)
-    function _snippetInsert(raw) {
-        if (raw.startsWith('//')) return null; // comment line, not clickable
-        // Strip trailing "  — description" / "  \u2014 description" / "  \u2192 description"
-        return raw.replace(/\s+[\u2014\u2192\u2190]\s.*$/, '').replace(/\s+\(read\)$/, '').trim();
-    }
-
-    const searchId    = 'se-search-' + Math.random().toString(36).slice(2);
-    const containerId = 'se-groups-' + Math.random().toString(36).slice(2);
-
-    const style = `
-        <style>
-        .se-search-wrap { padding:6px 8px; background:#1a1a1a; border-bottom:1px solid #2a2a2a; position:sticky; top:0; z-index:10; }
-        .se-search-wrap input {
-            width:100%; box-sizing:border-box;
-            background:#2d2d2d; border:1px solid #3a3a3a; border-radius:4px;
-            color:#d4d4d4; font-size:11px; padding:4px 8px; outline:none;
-            font-family:"Fira Code","Consolas",monospace;
-        }
-        .se-search-wrap input:focus { border-color:#569cd6; }
-        .se-search-wrap input::placeholder { color:#555; }
-        .se-g  { padding:5px 0 2px; border-top:1px solid #2a2a2a; }
-        .se-g:first-child { border-top:none; }
-        .se-gt { padding:5px 10px 2px; color:#569cd6; font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:1px; user-select:none; }
-        .se-gi { padding:1px 10px; color:#4e5a6a; font-size:10px; line-height:1.75; font-family:"Fira Code","Consolas",monospace; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-        .se-gi:not(.se-comment):hover { color:#9cdcfe; cursor:pointer; background:#2a2d2e; }
-        .se-gi:not(.se-comment):active { background:#1e4a7a; color:#fff; }
-        .se-gi:not(.se-comment) { cursor:pointer; }
-        .se-comment { color:#3d4a5a; cursor:default; font-style:italic; }
-        .se-gi-click-hint { color:#3a3a3a; font-size:8px; float:right; margin-top:2px; }
-        </style>
-    `;
-
-    const searchBar = `
-        <div class="se-search-wrap">
-            <input id="${searchId}" type="text" placeholder="\u{1F50D} search functions\u2026" autocomplete="off" spellcheck="false" />
-        </div>
-    `;
-
-    const groupsHtml = `<div id="${containerId}">` + G.map(([t, items]) => {
-        const rows = items.map(i => {
-            const isComment = i.startsWith('//');
-            return `<div class="se-gi${isComment ? ' se-comment' : ''}" data-snip="${isComment ? '' : i.replace(/"/g, '&quot;')}">${i}</div>`;
+    // Build HTML — NO <script> tag (scripts in innerHTML never execute)
+    // Wire-up is done via _initSidebarBehavior() called after DOM insertion
+    const rows = G.map(([cat, items]) => {
+        const itemHTML = items.map(s => {
+            const isComment = s.startsWith('//');
+            const safe = s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+            return `<div class="se-gi${isComment?' se-cm':''}" data-s="${isComment?'':safe}">${safe}</div>`;
         }).join('');
-        return `<div class="se-g" data-cat="${t.toLowerCase()}"><div class="se-gt">${t}</div>${rows}</div>`;
-    }).join('') + `</div>`;
+        const safeCat = cat.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+        return `<div class="se-g" data-cat="${cat.toLowerCase()}"><div class="se-gt">${safeCat}</div>${itemHTML}</div>`;
+    }).join('');
 
-    const script = `
-        <script>
-        (function() {
-            var sid = ${JSON.stringify(searchId)};
-            var cid = ${JSON.stringify(containerId)};
+    return `
+<style>
+.se-sw{padding:6px 8px;background:#1a1a1a;border-bottom:1px solid #2a2a2a;position:sticky;top:0;z-index:10}
+.se-sw input{width:100%;box-sizing:border-box;background:#2d2d2d;border:1px solid #3a3a3a;border-radius:4px;color:#d4d4d4;font-size:11px;padding:4px 8px;outline:none;font-family:"Fira Code","Consolas",monospace}
+.se-sw input:focus{border-color:#569cd6}
+.se-sw input::placeholder{color:#555}
+.se-g{border-top:1px solid #2a2a2a}
+.se-g:first-child{border-top:none}
+.se-gt{padding:5px 10px 2px;color:#569cd6;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;user-select:none}
+.se-gi{padding:1px 10px;font-size:10px;line-height:1.8;font-family:"Fira Code","Consolas",monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#5a6a7a;cursor:default}
+.se-gi:not(.se-cm){color:#8fbcd4;cursor:pointer}
+.se-gi:not(.se-cm):hover{color:#fff;background:#2a4060}
+.se-gi:not(.se-cm):active{background:#1e4a7a}
+.se-cm{color:#3d4d5a;font-style:italic}
+</style>
+<div class="se-sw"><input id="se-search" type="text" placeholder="&#128269; search..." autocomplete="off" spellcheck="false"/></div>
+<div id="se-groups">${rows}</div>`;
+}
 
-            // ── Click to insert into Ace editor ──────────────────────
-            function _insertSnippet(raw) {
-                var snip = raw.replace(/\\s+[\u2014\u2192\u2190]\\s.*$/, '').replace(/\\s+\\(read\\)$/, '').trim();
-                if (!snip || snip.startsWith('//')) return;
-                // Find the active Ace editor
-                var aceEl = document.querySelector('#se-ace');
-                var ed    = window._seAceEditor || (aceEl && aceEl.env && aceEl.env.editor);
-                if (ed) {
-                    ed.focus();
-                    ed.insert(snip);
-                } else {
-                    // Fallback: clipboard copy
-                    navigator.clipboard && navigator.clipboard.writeText(snip).then(function() {
-                        // briefly flash the sidebar
-                        var cont = document.getElementById(cid);
-                        if (cont) { cont.style.background='#1e3a1e'; setTimeout(function(){cont.style.background='';},200); }
-                    });
-                }
-            }
+// Called once after overlay is appended to document.body
+function _initSidebarBehavior(overlay) {
+    const inp    = overlay.querySelector('#se-search');
+    const groups = overlay.querySelector('#se-groups');
+    if (!inp || !groups) return;
 
-            // ── Search filtering ──────────────────────────────────────
-            function _filter(q) {
-                var groups = document.getElementById(cid);
-                if (!groups) return;
-                var ql = q.toLowerCase().trim();
-                groups.querySelectorAll('.se-g').forEach(function(g) {
-                    var cat   = (g.getAttribute('data-cat') || '').toLowerCase();
-                    var items = g.querySelectorAll('.se-gi');
-                    var anyVis = false;
-                    items.forEach(function(row) {
-                        var text = (row.textContent || '').toLowerCase();
-                        var show = !ql || cat.includes(ql) || text.includes(ql);
-                        row.style.display = show ? '' : 'none';
-                        if (show && !row.classList.contains('se-comment')) anyVis = true;
-                    });
-                    g.style.display = (!ql || anyVis || cat.includes(ql)) ? '' : 'none';
-                });
-            }
+    // ── Search filter ─────────────────────────────────────
+    inp.addEventListener('input', function() {
+        const q = this.value.toLowerCase().trim();
+        groups.querySelectorAll('.se-g').forEach(g => {
+            const cat  = g.getAttribute('data-cat') || '';
+            const rows = g.querySelectorAll('.se-gi');
+            let any = false;
+            rows.forEach(r => {
+                const show = !q || cat.includes(q) || r.textContent.toLowerCase().includes(q);
+                r.style.display = show ? '' : 'none';
+                if (show && !r.classList.contains('se-cm')) any = true;
+            });
+            g.style.display = (!q || any || cat.includes(q)) ? '' : 'none';
+        });
+    });
+    inp.addEventListener('keydown', e => {
+        if (e.key === 'Escape') { inp.value = ''; inp.dispatchEvent(new Event('input')); }
+    });
 
-            // Wire up after DOM settles
-            function _init() {
-                var inp  = document.getElementById(sid);
-                var cont = document.getElementById(cid);
-                if (!inp || !cont) { setTimeout(_init, 80); return; }
-                inp.addEventListener('input', function() { _filter(this.value); });
-                inp.addEventListener('keydown', function(e) { if(e.key==='Escape'){ this.value=''; _filter(''); } });
-                cont.addEventListener('click', function(e) {
-                    var row = e.target.closest('.se-gi');
-                    if (!row || row.classList.contains('se-comment')) return;
-                    var snip = row.getAttribute('data-snip') || '';
-                    if (snip) _insertSnippet(snip);
-                });
-            }
-            setTimeout(_init, 60);
-        })();
-        <\/script>
-    `;
+    // ── Click to insert ───────────────────────────────────
+    groups.addEventListener('click', e => {
+        const row = e.target.closest('.se-gi');
+        if (!row || row.classList.contains('se-cm')) return;
+        const snip = row.getAttribute('data-s');
+        if (!snip) return;
 
-    return style + searchBar + groupsHtml + script;
+        const ed = window._seAceEditor;
+        if (ed && !ed.destroyed) {
+            ed.focus();
+            ed.insert(snip);
+        } else {
+            // fallback: clipboard
+            navigator.clipboard?.writeText(snip).then(() => {
+                const old = row.style.background;
+                row.style.background = '#1a3a1a';
+                setTimeout(() => row.style.background = old, 300);
+            });
+        }
+    });
 }
 
 function _defaultScript(name) {
