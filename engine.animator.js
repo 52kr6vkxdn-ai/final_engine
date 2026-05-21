@@ -863,6 +863,16 @@ function _applyAnimToObject(obj) {
         try { obj._animSprite.destroy(); } catch (_) {}
         obj._animSprite = null;
     }
+    // Also remove the playmode runtime sprite if present — playAnimation() called from
+    // script during play mode creates a NEW AnimatedSprite via _applyAnimToObject, but
+    // the playmode-created _runtimeSprite is still a child. Remove it to prevent double render.
+    if (obj._runtimeSprite) {
+        obj.removeChild(obj._runtimeSprite);
+        try { obj._runtimeSprite.destroy(); } catch (_) {}
+        obj._runtimeSprite = null;
+        // _savedSpriteGraphic was stashed by playmode; clear it since we're replacing anyway
+        obj._savedSpriteGraphic = null;
+    }
 
     // Build PIXI textures from dataURLs
     const textures = anim.frames.map(f => {

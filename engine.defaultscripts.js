@@ -28,52 +28,48 @@ export const DEFAULT_SCRIPTS = [
 {
     name: 'PlatformerPlayer',
     code: `// ============================================================
-// PLATFORMER PLAYER
+// PLATFORMER PLAYER  (with optional gun)
 // Requires: Kinematic physics body on this object.
 //           A tilemap or static floor below to land on.
 //
 // Controls:
-//   A / D  or  ← →     move left / right
-//   W / Space  or  ↑   jump
+//   A / D  or arrows    move left / right
+//   W / Space / up      jump
+//   Left click / F      shoot (needs a "Bullet" asset in project)
 // ============================================================
 
-// ── Tuning ───────────────────────────────────────────────────
-var SPEED       = 5;     // world units per second
-var JUMP_FORCE  = 12;    // upward velocity applied on jump
-var GRAVITY     = -28;   // downward acceleration per second squared
-var MAX_FALL    = -20;   // terminal velocity (cap)
-var COYOTE_TIME = 0.12;  // seconds you can still jump after leaving a ledge
+var SPEED          = 5;     // move speed (world units/sec)
+var JUMP_FORCE     = 12;    // upward velocity on jump
+var GRAVITY        = -28;   // downward accel per sec²
+var MAX_FALL       = -20;   // terminal velocity
+var COYOTE_TIME    = 0.12;  // grace period to jump after walking off edge
+var BULLET_SPEED   = 18;    // bullet speed (world units/sec)
+var SHOOT_COOLDOWN = 0.18;  // min seconds between shots
 
-// ── State ────────────────────────────────────────────────────
-var grounded    = false;
-var coyote      = 0;
-var facing      = 1;     // 1 = right, -1 = left
+var grounded   = false;
+var coyote     = 0;
+var facing     = 1;   // 1=right, -1=left
+var shootTimer = 0;
 
 onStart(() => {
   setTag("player");
-  setGroup("characters");
-  log("Platformer Player ready — A/D to move, W/Space to jump");
-
-  // Camera follows this object
   cameraFollow(findWithTag("player"), 7);
+  log("Platformer: A/D move, W/Space jump, click/F shoot");
 });
 
 onUpdate((dt) => {
-
-  // ── Gravity ────────────────────────────────────────────────
+  // Gravity
   velocityY = velocityY + GRAVITY * dt;
   if (velocityY < MAX_FALL) velocityY = MAX_FALL;
 
-  // ── Horizontal movement ────────────────────────────────────
+  // Horizontal
   var h = axisH();
   velocityX = h * SPEED;
-  if (h > 0) { facing = 1; setScaleX(1); }
-  if (h < 0) { facing = -1; setScaleX(-1); }
+  if (h >  0) { facing =  1; setScaleX( 1); }
+  if (h < -0) { facing = -1; setScaleX(-1); }
 
-  // ── Jump ──────────────────────────────────────────────────
-  coyote = coyote - dt;
-  if (coyote < 0) coyote = 0;
-
+  // Coyote + jump
+  coyote = max(0, coyote - dt);
   if (isKeyJustDown("w") || isKeyJustDown("arrowup") || isKeyJustDown(" ")) {
     if (grounded || coyote > 0) {
       velocityY = JUMP_FORCE;
@@ -82,7 +78,16 @@ onUpdate((dt) => {
     }
   }
 
-  // ── Animation ─────────────────────────────────────────────
+  // Shoot
+  shootTimer = max(0, shootTimer - dt);
+  if (shootTimer <= 0 && (mouseJustDown() || isKeyJustDown("f"))) {
+    fireProjectile("Bullet", facing > 0 ? 0 : 180, BULLET_SPEED, {
+      tag: "bullet", group: "playerBullets", damage: 1, lifetime: 2,
+    });
+    shootTimer = SHOOT_COOLDOWN;
+  }
+
+  // Animation
   if (!grounded) {
     playAnimation(velocityY > 0 ? "jump" : "fall");
   } else if (abs(velocityX) > 0.1) {
@@ -90,12 +95,10 @@ onUpdate((dt) => {
   } else {
     playAnimation("idle");
   }
-
 });
 
 onCollisionEnter((other) => {
   if (!other) return;
-  // Landing detection — we are above the other object
   if (getY() >= other.y) {
     grounded = true;
     coyote   = COYOTE_TIME;
@@ -103,21 +106,13 @@ onCollisionEnter((other) => {
   }
 });
 
-onCollisionExit((other) => {
-  if (grounded) {
-    grounded = false;
-    coyote   = COYOTE_TIME;
-  }
+onCollisionExit(() => {
+  if (grounded) { grounded = false; coyote = COYOTE_TIME; }
 });
 
-onStop(() => {
-  velocityX = 0;
-  velocityY = 0;
-  grounded  = false;
-});
+onStop(() => { velocityX = 0; velocityY = 0; grounded = false; });
 `,
 },
-
 // ── 2. Top-Down Player ───────────────────────────────────────
 {
     name: 'TopDownPlayer',
@@ -986,38 +981,352 @@ onMessage("entityDied", () => {
 `,
 },
 
+
+// ── Gun ───────────────────────────────────────────────────────
+{
+    name: 'Gun',
+    code: `// ============================================================
+// GUN SCRIPT
+// Attach to any sprite to make it a gun.
+// The gun rotates to face the mouse cursor and fires bullets.
+//
+// Setup:
+//   1. Add a sprite to your scene (this is the gun).
+//   2. Attach this script to it.
+//   3. Make sure you have a "Bullet" asset in your project
+//      (a small circle or rectangle sprite works fine).
+//
+// Works standalone OR parented to a PlatformerPlayer.
+// ============================================================
+
+// ── Tuning ───────────────────────────────────────────────────
+var BULLET_ASSET   = "Bullet";   // asset name of your bullet sprite
+var BULLET_SPEED   = 20;         // world units per second
+var BULLET_DAMAGE  = 1;
+var BULLET_LIFE    = 2.5;        // seconds before auto-destroy
+var FIRE_RATE      = 0.15;       // seconds between shots
+var RECOIL_KICK    = 0.08;       // small visual kick on fire
+var AUTO_FIRE      = false;      // true = hold to fire, false = click to fire
+var MUZZLE_OFFSET  = 0.6;        // how far from center the bullet spawns
+
+// ── State ─────────────────────────────────────────────────────
+var cooldown   = 0;
+var recoil     = 0;
+var baseScaleX = 1;
+
+onStart(() => {
+  setTag("gun");
+  baseScaleX = getScaleX();
+  log("Gun ready — aim with mouse, click to fire");
+});
+
+onUpdate((dt) => {
+  cooldown = max(0, cooldown - dt);
+
+  // ── Rotate to face mouse ─────────────────────────────────
+  var angle = angleTo(getX(), getY(), mouseX(), mouseY());
+  setRotation(-angle);   // engine: 0=right, positive=CCW; negate for visual
+
+  // Flip sprite vertically when aiming left so it doesn't appear upside-down
+  if (mouseX() < getX()) {
+    setScaleY(-abs(getScaleY()));
+  } else {
+    setScaleY( abs(getScaleY()));
+  }
+
+  // ── Recoil spring back ────────────────────────────────────
+  if (recoil > 0) {
+    recoil = max(0, recoil - dt * 6);
+    setScaleX(baseScaleX * (1 - recoil * 0.15));
+  }
+
+  // ── Firing input ──────────────────────────────────────────
+  var wantFire = AUTO_FIRE ? mouseDown() : mouseJustDown();
+  if (wantFire && cooldown <= 0) {
+    _fire(angle);
+    cooldown = FIRE_RATE;
+    recoil   = RECOIL_KICK;
+  }
+});
+
+function _fire(angleDeg) {
+  // Spawn bullet offset from muzzle tip
+  var rad = (angleDeg * PI) / 180;
+  var bx  = getX() + cos(rad) * MUZZLE_OFFSET;
+  var by  = getY() + sin(rad) * MUZZLE_OFFSET;
+
+  spawnObject(BULLET_ASSET, bx, by, (b) => {
+    b.setTag("bullet");
+    b.setGroup("playerBullets");
+    b.setRotation(-angleDeg);
+    // Set velocity in the fire direction
+    var spd = BULLET_SPEED;
+    b.velocityX =  cos(rad) * spd;
+    b.velocityY =  sin(rad) * spd;
+    // Store damage on the bullet for enemy onCollisionEnter to read
+    b._damage = BULLET_DAMAGE;
+  });
+
+  // Muzzle flash — quick white flash on the gun itself
+  hitFlash("#ffffff", 0.06);
+}
+
+onStop(() => {
+  cooldown = 0;
+  recoil   = 0;
+});
+`,
+},
+
+// ── Bullet ────────────────────────────────────────────────────
+{
+    name: 'Bullet',
+    code: `// ============================================================
+// BULLET SCRIPT
+// Attach to your bullet sprite asset.
+// Works with the Gun script and PlatformerPlayer shooting.
+//
+// The bullet travels in the direction set by the Gun,
+// damages enemies tagged "enemy" on contact, and
+// auto-destroys when it hits a collider or times out.
+// ============================================================
+
+var LIFETIME     = 2.5;   // seconds before auto-destroy
+var DAMAGE       = 1;     // damage dealt to enemies
+var HIT_EFFECT   = true;  // flash + shake on hit
+
+var life = 0;
+
+onStart(() => {
+  setTag("bullet");
+  setGroup("playerBullets");
+  life = LIFETIME;
+
+  // Bullets should not collide with each other
+  setCollisionCategory(2);
+  setCollisionMask(1);  // only hit category 1 (default enemies/walls)
+});
+
+onUpdate((dt) => {
+  life = life - dt;
+  if (life <= 0) {
+    destroy();
+    return;
+  }
+});
+
+onCollisionEnter((other) => {
+  if (!other) return;
+
+  // Damage enemies
+  if (other.hasTag("enemy")) {
+    other.takeDamage(DAMAGE, selfName());
+    if (HIT_EFFECT) {
+      other.hitFlash("#ff4444", 0.15);
+    }
+    destroy();
+    return;
+  }
+
+  // Destroy on hitting terrain/walls (anything that isn't another bullet)
+  if (!other.hasTag("bullet") && !other.hasTag("player")) {
+    destroy();
+  }
+});
+
+onStop(() => {
+  life = 0;
+});
+`,
+},
+
+// ── Enemy ─────────────────────────────────────────────────────
+{
+    name: 'Enemy',
+    code: `// ============================================================
+// ENEMY SCRIPT
+// Attach to any sprite to make it a basic enemy.
+// Patrols left/right, chases player when nearby,
+// takes damage from bullets, dies when health reaches 0.
+//
+// Requires: Static or kinematic physics body.
+//           Player tagged "player" in the scene.
+// ============================================================
+
+var MAX_HEALTH    = 3;
+var MOVE_SPEED    = 2.5;
+var CHASE_SPEED   = 4;
+var CHASE_RANGE   = 8;    // world units — start chasing player within this range
+var PATROL_DIST   = 3;    // world units each direction before turning
+var SCORE_VALUE   = 10;   // points awarded on death
+
+var startX  = 0;
+var dir     = 1;
+var chasing = false;
+var hp      = MAX_HEALTH;
+
+onStart(() => {
+  setTag("enemy");
+  startX = getX();
+  setHealth(MAX_HEALTH);
+  setMaxHealth(MAX_HEALTH);
+  log("Enemy ready");
+});
+
+onUpdate((dt) => {
+  var player = findWithTag("player");
+
+  // ── Chase or patrol ─────────────────────────────────────
+  if (player && distanceTo(player) < CHASE_RANGE) {
+    chasing = true;
+    var dx = player.x - getX();
+    dir = dx > 0 ? 1 : -1;
+    velocityX = dir * CHASE_SPEED;
+    setScaleX(dir);
+  } else {
+    chasing   = false;
+    velocityX = dir * MOVE_SPEED;
+    setScaleX(dir);
+    // Patrol boundary
+    if (getX() > startX + PATROL_DIST) dir = -1;
+    if (getX() < startX - PATROL_DIST) dir =  1;
+  }
+
+  // ── Animation ────────────────────────────────────────────
+  playAnimation(chasing ? "run" : "walk");
+});
+
+onDamage((amount) => {
+  hitFlash("#ff4444", 0.12);
+  objectShake(0.15, 0.2);
+});
+
+onDeath(() => {
+  // Award score
+  if (typeof sceneVar !== "undefined") {
+    sceneVar.score = (sceneVar.score || 0) + SCORE_VALUE;
+    // Update score display if one exists
+    var ui = find("ScoreText");
+    if (ui) ui.setText("Score: " + sceneVar.score);
+  }
+  destroyAfter(0);   // remove immediately
+});
+
+onCollisionEnter((other) => {
+  // Push player back on contact
+  if (other && other.hasTag("player")) {
+    other.takeDamage(1, selfName());
+    other.knockback(other.x > getX() ? 0 : 180, 6, 0.2);
+  }
+});
+
+onStop(() => {
+  velocityX = 0;
+  hp        = MAX_HEALTH;
+  chasing   = false;
+});
+`,
+},
+
+// ── ShootingGame ──────────────────────────────────────────────
+{
+    name: 'ShootingGame',
+    code: `// ============================================================
+// SHOOTING GAME MANAGER
+// Attach to an empty object (e.g. "GameManager").
+// Handles: score display, wave spawning, game over, restart.
+//
+// Quick setup:
+//   1. Create a player with PlatformerPlayer or TopDownPlayer script.
+//   2. Create an enemy sprite with the Enemy script.
+//   3. Add a text label called "ScoreText" anywhere on screen.
+//   4. Add a text label called "WaveText" (optional).
+//   5. Attach THIS script to a blank "GameManager" object.
+// ============================================================
+
+// ── Tuning ───────────────────────────────────────────────────
+var ENEMY_TAG        = "enemy";
+var ENEMY_ASSET      = "Enemy";    // asset name to spawn
+var SPAWN_INTERVAL   = 3.0;        // seconds between spawns
+var ENEMIES_PER_WAVE = 3;          // enemies per wave (grows each wave)
+var SPAWN_MARGIN     = 6;          // spawn this many units off-screen edge
+
+// ── State ─────────────────────────────────────────────────────
+var score      = 0;
+var wave       = 0;
+var spawnTimer = 0;
+var gameOver   = false;
+var scoreUI    = null;
+var waveUI     = null;
+
+onStart(() => {
+  sceneVar.score = 0;
+  score = 0; wave = 0; gameOver = false;
+
+  // Find or create score display
+  scoreUI = find("ScoreText");
+  waveUI  = find("WaveText");
+
+  _updateUI();
+  log("ShootingGame started — wave " + (wave + 1));
+});
+
+onUpdate((dt) => {
+  if (gameOver) return;
+
+  // Check if player is dead
+  var player = findWithTag("player");
+  if (!player) {
+    _triggerGameOver();
+    return;
+  }
+
+  // Wave spawning
+  spawnTimer = spawnTimer - dt;
+  if (spawnTimer <= 0) {
+    _spawnWave();
+    spawnTimer = SPAWN_INTERVAL;
+  }
+
+  // Score from sceneVar (enemies update it on death)
+  if (sceneVar.score !== score) {
+    score = sceneVar.score;
+    _updateUI();
+  }
+});
+
+function _spawnWave() {
+  wave = wave + 1;
+  var count = ENEMIES_PER_WAVE + wave - 1;
+  for (var i = 0; i < count; i++) {
+    var side = rand(0, 1) > 0.5 ? 1 : -1;
+    var ex   = getX() + side * (SPAWN_MARGIN + rand(0, 3));
+    var ey   = getY() + rand(-2, 2);
+    spawnObject(ENEMY_ASSET, ex, ey);
+  }
+  if (waveUI) waveUI.setText("Wave " + wave);
+  log("Wave " + wave + " spawned " + count + " enemies");
+}
+
+function _triggerGameOver() {
+  gameOver = true;
+  var msg  = find("ScoreText");
+  if (msg) msg.setText("GAME OVER\nScore: " + score + "\nPress R to restart");
+  log("Game Over! Score: " + score);
+  onKeyDown("r", () => { restartScene(); });
+}
+
+function _updateUI() {
+  if (scoreUI) scoreUI.setText("Score: " + score);
+}
+
+onStop(() => {
+  gameOver   = false;
+  score      = 0;
+  wave       = 0;
+  spawnTimer = 0;
+});
+`,
+},
+
 ];
-
-// ── Inject default scripts into a fresh project ───────────────
-export function injectDefaultScripts(scriptStore) {
-    for (const ds of DEFAULT_SCRIPTS) {
-        if (!scriptStore.find(s => s.name === ds.name)) {
-            scriptStore.push({
-                id:        'default_' + ds.name,
-                name:      ds.name,
-                code:      ds.code,
-                updatedAt: Date.now(),
-                isDefault: true,
-            });
-        }
-    }
-}
-
-// ── Force-refresh default scripts (replaces existing ones) ────
-export function refreshDefaultScripts(scriptStore) {
-    for (const ds of DEFAULT_SCRIPTS) {
-        const existing = scriptStore.find(s => s.name === ds.name && s.isDefault);
-        if (existing) {
-            existing.code      = ds.code;
-            existing.updatedAt = Date.now();
-        } else {
-            scriptStore.push({
-                id:        'default_' + ds.name,
-                name:      ds.name,
-                code:      ds.code,
-                updatedAt: Date.now(),
-                isDefault: true,
-            });
-        }
-    }
-}

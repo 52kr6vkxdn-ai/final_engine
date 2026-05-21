@@ -1440,265 +1440,181 @@ function _buildSandbox(obj, instRef) {
          * raycast(0, 0, 10, 0, "enemy")   — hit only "enemy" tagged objects
          * Returns: { hit, point:{x,y}, normal:{x,y}, distance } or null
          */
-
-        // ── Tilemap tile AABB raycast helper ─────────────────────────────────
+        // ── Tilemap/AutoTilemap AABB per-tile raycast ────────────────────────────
         _raycastTilemapHits(px1, py1, px2, py2, rdx, rdy, rlen, tmObj) {
-            const d   = tmObj.tilemapData;
-            if (!d) return [];
-            const { tileW, tileH, cols, rows, tiles } = d;
-            if (!tiles || cols <= 0 || rows <= 0) return [];
-            // Tilemap origin is top-left in PIXI coords (pixel space)
-            const originX = tmObj.x;                 // px, PIXI x
-            const originY = tmObj.y;                 // px, PIXI y
-            const scaleX  = Math.abs(tmObj.scale?.x ?? 1);
-            const scaleY  = Math.abs(tmObj.scale?.y ?? 1);
-            const tw = tileW * scaleX;
-            const th = tileH * scaleY;
-
-            const hits = [];
-            for (let row = 0; row < rows; row++) {
-                for (let col = 0; col < cols; col++) {
-                    const idx = row * cols + col;
-                    if (tiles[idx] < 0) continue;      // empty cell
-
-                    // PIXI bounding box for this tile (pixels)
-                    const left   = originX + col * tw;
-                    const right  = left  + tw;
-                    const top    = originY + row * th;
-                    const bottom = top   + th;
-
-                    // Slab test in PIXI pixel space (note: rdx/rdy already in px)
-                    const invDx = rdx !== 0 ? 1 / rdx : Infinity;
-                    const invDy = rdy !== 0 ? 1 / rdy : Infinity;
-                    let tx1 = (left   - px1) * invDx;
-                    let tx2 = (right  - px1) * invDx;
-                    let ty1 = (top    - py1) * invDy;
-                    let ty2 = (bottom - py1) * invDy;
-                    if (tx1 > tx2) { const t = tx1; tx1 = tx2; tx2 = t; }
-                    if (ty1 > ty2) { const t = ty1; ty1 = ty2; ty2 = t; }
-                    const tmin = Math.max(tx1, ty1);
-                    const tmax = Math.min(tx2, ty2);
-                    if (tmin > tmax || tmax < 0 || tmin > 1) continue;
-                    const t = Math.max(0, tmin);
-                    let nx = 0, ny = 0;
-                    if (tx1 > ty1) { nx = rdx < 0 ? 1 : -1; }
-                    else           { ny = rdy < 0 ? 1 : -1;  }
-                    const hitPxX = px1 + t * rdx;
-                    const hitPxY = py1 + t * rdy;
-                    hits.push({
-                        isTile: true,
-                        tmObj,
-                        tileRow: row, tileCol: col, tileIndex: tiles[idx],
-                        point:    { x: hitPxX / 100, y: -hitPxY / 100 },
-                        normal:   { x: nx, y: -ny },
-                        distance: t * rlen / 100,
-                        fraction: t,
-                        t,
-                    });
-                }
+            let tileW, tileH, cols, rows, tileCount, isFilled;
+            if (tmObj.isTilemap && tmObj.tilemapData) {
+                const d = tmObj.tilemapData;
+                ({ tileW, tileH, cols, rows } = d);
+                const tiles = d.tiles;
+                if (!tiles || cols <= 0 || rows <= 0) return [];
+                tileCount = cols * rows;
+                isFilled  = i => tiles[i] >= 0;
+            } else if (tmObj.isAutoTilemap && tmObj.autoTileData) {
+                const d = tmObj.autoTileData;
+                ({ tileW, tileH, cols, rows } = d);
+                const cells = d.cells;
+                if (!cells || cols <= 0 || rows <= 0) return [];
+                tileCount = cols * rows;
+                isFilled  = i => Array.isArray(cells[i]) && cells[i].length > 0;
+            } else {
+                return [];
             }
+            const tw = tileW * Math.abs(tmObj.scale?.x ?? 1);
+            const th = tileH * Math.abs(tmObj.scale?.y ?? 1);
+            const ox = tmObj.x, oy = tmObj.y;
+            const hits = [];
+            for (let i = 0; i < tileCount; i++) {
+                if (!isFilled(i)) continue;
+                const col = i % cols, row = Math.floor(i / cols);
+                const left = ox + col*tw, right = left+tw;
+                const top  = oy + row*th, bottom = top+th;
+                const invDx = rdx !== 0 ? 1/rdx : Infinity;
+                const invDy = rdy !== 0 ? 1/rdy : Infinity;
+                let tx1=(left-px1)*invDx, tx2=(right-px1)*invDx;
+                let ty1=(top-py1)*invDy,  ty2=(bottom-py1)*invDy;
+                if (tx1>tx2){const s=tx1;tx1=tx2;tx2=s;}
+                if (ty1>ty2){const s=ty1;ty1=ty2;ty2=s;}
+                const tmin=Math.max(tx1,ty1), tmax=Math.min(tx2,ty2);
+                if (tmin>tmax||tmax<0||tmin>1) continue;
+                const t=Math.max(0,tmin);
+                let nx=0, ny=0;
+                if (tx1>ty1){nx=rdx<0?1:-1;}else{ny=rdy<0?1:-1;}
+                const hx=px1+t*rdx, hy=py1+t*rdy;
+                hits.push({ isTile:true, tmObj, tileRow:row, tileCol:col,
+                    tileIndex: tmObj.isTilemap ? tmObj.tilemapData.tiles[i] : i,
+                    point:{x:hx/100,y:-hy/100}, normal:{x:nx,y:-ny},
+                    distance:t*rlen/100, fraction:t, t });
+            }
+            hits.sort((a,b)=>a.t-b.t);
             return hits;
         },
 
         raycast(x1, y1, x2, y2, tag = null) {
-            const px1 = x1 * 100, py1 = -y1 * 100;
-            const px2 = x2 * 100, py2 = -y2 * 100;
-            const rdx = px2 - px1, rdy = py2 - py1;
-            const rlen = Math.sqrt(rdx * rdx + rdy * rdy);
-            if (rlen === 0) return null;
-
-            const candidates = tag
-                ? [...(_tagRegistry.get(tag) || [])].map(i => i.obj)
+            // tag='colliders' → only physics bodies + tilemaps (skip backgrounds/decorations)
+            const px1=x1*100, py1=-y1*100, px2=x2*100, py2=-y2*100;
+            const rdx=px2-px1, rdy=py2-py1;
+            const rlen=Math.sqrt(rdx*rdx+rdy*rdy);
+            if (rlen===0) return null;
+            const collidersOnly = tag==='colliders';
+            const useTag = !collidersOnly && tag!=null;
+            const passes = o => {
+                if (!o.visible||o===obj) return false;
+                if (collidersOnly) return (o.physicsBody??'none')!=='none'||o.isTilemap||o.isAutoTilemap;
+                if (useTag) return (o._scriptTag??'')===String(tag);
+                return true;
+            };
+            let candidates = useTag
+                ? [...(_tagRegistry.get(tag)||[])].map(i=>i.obj)
                 : state.gameObjects;
-
-            let best = null, bestT = 1.0001;
-            let bestNx = 0, bestNy = 0;
-            let bestIsTile = false, bestTileData = null;
-
-            // ── Regular game objects ──────────────────────────────
+            if (useTag || collidersOnly) {
+                // Include tilemaps/autotilemaps that pass the filter
+                for (const o of state.gameObjects)
+                    if ((o.isTilemap||o.isAutoTilemap)&&passes(o)&&!candidates.includes(o))
+                        candidates.push(o);
+            }
+            let best=null, bestT=1.0001, bestNx=0, bestNy=0;
+            let bestIsTile=false, bestTileData=null;
             for (const o of candidates) {
-                if (o === obj || !o.visible) continue;
-
-                // ── Tilemap: test every solid tile ─────────────────
-                if (o.isTilemap && !tag) {
-                    const tileHits = this._raycastTilemapHits(px1, py1, px2, py2, rdx, rdy, rlen, o);
-                    for (const h of tileHits) {
-                        if (h.t < bestT) {
-                            bestT = h.t; best = o;
-                            bestNx = h.normal.x; bestNy = -h.normal.y;
-                            bestIsTile = true; bestTileData = h;
-                        }
+                if (!passes(o)) continue;
+                if (o.isTilemap||o.isAutoTilemap) {
+                    const hs=this._raycastTilemapHits(px1,py1,px2,py2,rdx,rdy,rlen,o);
+                    if (hs.length>0&&hs[0].t<bestT) {
+                        const h=hs[0]; bestT=h.t; best=o;
+                        bestNx=h.normal.x; bestNy=-h.normal.y;
+                        bestIsTile=true; bestTileData=h;
                     }
                     continue;
                 }
-
-                const bb = _getAABB(o);
-                const invDx = rdx !== 0 ? 1 / rdx : Infinity;
-                const invDy = rdy !== 0 ? 1 / rdy : Infinity;
-                let tx1 = (bb.left   - px1) * invDx;
-                let tx2 = (bb.right  - px1) * invDx;
-                let ty1 = (bb.top    - py1) * invDy;
-                let ty2 = (bb.bottom - py1) * invDy;
-                if (tx1 > tx2) { const tmp = tx1; tx1 = tx2; tx2 = tmp; }
-                if (ty1 > ty2) { const tmp = ty1; ty1 = ty2; ty2 = tmp; }
-                const tmin = Math.max(tx1, ty1);
-                const tmax = Math.min(tx2, ty2);
-                if (tmin > tmax || tmax < 0 || tmin > 1) continue;
-                const t = Math.max(0, tmin);
-                if (t < bestT) {
-                    bestT = t; best = o; bestIsTile = false;
-                    if (tx1 > ty1) { bestNx = rdx < 0 ? 1 : -1; bestNy = 0; }
-                    else           { bestNx = 0; bestNy = rdy < 0 ? 1 : -1; }
+                const bb=_getAABB(o);
+                const iDx=rdx!==0?1/rdx:Infinity, iDy=rdy!==0?1/rdy:Infinity;
+                let tx1=(bb.left-px1)*iDx, tx2=(bb.right-px1)*iDx;
+                let ty1=(bb.top-py1)*iDy,  ty2=(bb.bottom-py1)*iDy;
+                if(tx1>tx2){const s=tx1;tx1=tx2;tx2=s;}
+                if(ty1>ty2){const s=ty1;ty1=ty2;ty2=s;}
+                const tmin=Math.max(tx1,ty1),tmax=Math.min(tx2,ty2);
+                if(tmin>tmax||tmax<0||tmin>1) continue;
+                const t=Math.max(0,tmin);
+                if(t<bestT){
+                    bestT=t; best=o; bestIsTile=false;
+                    if(tx1>ty1){bestNx=rdx<0?1:-1;bestNy=0;}
+                    else{bestNx=0;bestNy=rdy<0?1:-1;}
                 }
             }
-
-            // ── Tilemap tag filter — test tagged tilemaps too ─────
-            if (tag) {
-                for (const o of state.gameObjects) {
-                    if (!o.isTilemap || !o.visible) continue;
-                    if ((o._scriptTag ?? '') !== String(tag)) continue;
-                    const tileHits = this._raycastTilemapHits(px1, py1, px2, py2, rdx, rdy, rlen, o);
-                    for (const h of tileHits) {
-                        if (h.t < bestT) {
-                            bestT = h.t; best = o;
-                            bestNx = h.normal.x; bestNy = -h.normal.y;
-                            bestIsTile = true; bestTileData = h;
-                        }
-                    }
-                }
+            if(window._zeGizmos?.raycasts){
+                const gz=window._zeGizmos, col=gz.raycastColor??'#00ff44';
+                const dur=gz.raycastDuration??0.12, wid=gz.raycastWidth??2;
+                const ex=best?px1+bestT*rdx:px2, ey=best?py1+bestT*rdy:py2;
+                _debugLines.push({x1,y1,x2:ex/100,y2:-ey/100,color:col,remaining:dur,width:wid,alpha:0.92});
+                if(best)_debugLines.push({x1:ex/100,y1:-ey/100,x2:ex/100,y2:-ey/100,circle:0.07,color:'#fff',remaining:dur,width:3,alpha:1});
             }
-
-            // ── Debug laser draw ──────────────────────────────────
-            if (window._zeGizmos?.raycasts) {
-                const gz  = window._zeGizmos;
-                const col = gz.raycastColor    ?? '#00ff44';
-                const dur = gz.raycastDuration ?? 0.12;
-                const wid = gz.raycastWidth    ?? 2;
-                const endPxX = best ? (px1 + bestT * rdx) : px2;
-                const endPxY = best ? (py1 + bestT * rdy) : py2;
-                _debugLines.push({ x1, y1, x2: endPxX / 100, y2: -endPxY / 100, color: col, remaining: dur, width: wid, alpha: 0.92 });
-                if (best) _debugLines.push({ x1: endPxX / 100, y1: -endPxY / 100, x2: endPxX / 100, y2: -endPxY / 100, circle: 0.07, color: '#ffffff', remaining: dur, width: 3, alpha: 1 });
-            }
-            if (!best) return null;
-            const hitPxX = px1 + bestT * rdx;
-            const hitPxY = py1 + bestT * rdy;
-            const result = _makeProxy(best);
-            result._rayHit = {
-                point:    { x: hitPxX / 100, y: -hitPxY / 100 },
-                normal:   { x: bestNx, y: -bestNy },
-                distance: bestT * rlen / 100,
-                fraction: bestT,
-                isTile:   bestIsTile,
-                tile:     bestTileData ? { row: bestTileData.tileRow, col: bestTileData.tileCol, index: bestTileData.tileIndex } : null,
+            if(!best) return null;
+            const hx=px1+bestT*rdx, hy=py1+bestT*rdy;
+            const result=_makeProxy(best);
+            result._rayHit={
+                point:{x:hx/100,y:-hy/100}, normal:{x:bestNx,y:-bestNy},
+                distance:bestT*rlen/100, fraction:bestT,
+                isTile:bestIsTile,
+                tile:bestTileData?{row:bestTileData.tileRow,col:bestTileData.tileCol,index:bestTileData.tileIndex}:null,
             };
             return result;
         },
 
-        /**
-         * Cast a ray and return ALL objects hit, sorted nearest→farthest.
-         * raycastAll(x1, y1, x2, y2)              — all objects
-         * raycastAll(x1, y1, x2, y2, "wall")      — only "wall" tagged
-         * Each result has the same shape as raycast().
-         */
         raycastAll(x1, y1, x2, y2, tag = null) {
-            const px1 = x1 * 100, py1 = -y1 * 100;
-            const px2 = x2 * 100, py2 = -y2 * 100;
-            const rdx = px2 - px1, rdy = py2 - py1;
-            const rlen = Math.sqrt(rdx * rdx + rdy * rdy);
-            if (rlen === 0) return [];
-
-            const candidates = tag
-                ? [...(_tagRegistry.get(tag) || [])].map(i => i.obj)
-                : state.gameObjects;
-
-            const hits = [];
-
-            for (const o of candidates) {
-                if (o === obj || !o.visible) continue;
-
-                // ── Tilemap: test every solid tile ─────────────────
-                if (o.isTilemap && !tag) {
-                    const tileHits = this._raycastTilemapHits(px1, py1, px2, py2, rdx, rdy, rlen, o);
-                    for (const h of tileHits) {
-                        const result = _makeProxy(o);
-                        result._rayHit = {
-                            point: h.point, normal: h.normal,
-                            distance: h.distance, fraction: h.t,
-                            isTile: true,
-                            tile: { row: h.tileRow, col: h.tileCol, index: h.tileIndex },
-                        };
-                        hits.push({ proxy: result, t: h.t });
+            const px1=x1*100,py1=-y1*100,px2=x2*100,py2=-y2*100;
+            const rdx=px2-px1,rdy=py2-py1;
+            const rlen=Math.sqrt(rdx*rdx+rdy*rdy);
+            if(rlen===0) return [];
+            const collidersOnly=tag==='colliders';
+            const useTag=!collidersOnly&&tag!=null;
+            const passes=o=>{
+                if(!o.visible||o===obj)return false;
+                if(collidersOnly)return(o.physicsBody??'none')!=='none'||o.isTilemap||o.isAutoTilemap;
+                if(useTag)return(o._scriptTag??'')===String(tag);
+                return true;
+            };
+            let candidates=useTag?[...(_tagRegistry.get(tag)||[])].map(i=>i.obj):state.gameObjects;
+            if(useTag||collidersOnly){
+                for(const o of state.gameObjects)
+                    if((o.isTilemap||o.isAutoTilemap)&&passes(o)&&!candidates.includes(o))
+                        candidates.push(o);
+            }
+            const hits=[];
+            for(const o of candidates){
+                if(!passes(o)) continue;
+                if(o.isTilemap||o.isAutoTilemap){
+                    const hs=this._raycastTilemapHits(px1,py1,px2,py2,rdx,rdy,rlen,o);
+                    for(const h of hs){
+                        const r=_makeProxy(o);
+                        r._rayHit={point:h.point,normal:h.normal,distance:h.distance,fraction:h.t,isTile:true,tile:{row:h.tileRow,col:h.tileCol,index:h.tileIndex}};
+                        hits.push({proxy:r,t:h.t});
                     }
                     continue;
                 }
-
-                const bb = _getAABB(o);
-                const invDx = rdx !== 0 ? 1 / rdx : Infinity;
-                const invDy = rdy !== 0 ? 1 / rdy : Infinity;
-                let tx1 = (bb.left   - px1) * invDx;
-                let tx2 = (bb.right  - px1) * invDx;
-                let ty1 = (bb.top    - py1) * invDy;
-                let ty2 = (bb.bottom - py1) * invDy;
-                if (tx1 > tx2) { const tmp = tx1; tx1 = tx2; tx2 = tmp; }
-                if (ty1 > ty2) { const tmp = ty1; ty1 = ty2; ty2 = tmp; }
-                const tmin = Math.max(tx1, ty1);
-                const tmax = Math.min(tx2, ty2);
-                if (tmin > tmax || tmax < 0 || tmin > 1) continue;
-                const t = Math.max(0, tmin);
-                let nx = 0, ny = 0;
-                if (tx1 > ty1) { nx = rdx < 0 ? 1 : -1; }
-                else           { ny = rdy < 0 ? 1 : -1;  }
-                const hitPxX = px1 + t * rdx;
-                const hitPxY = py1 + t * rdy;
-                const result = _makeProxy(o);
-                result._rayHit = {
-                    point:    { x: hitPxX / 100, y: -hitPxY / 100 },
-                    normal:   { x: nx, y: -ny },
-                    distance: t * rlen / 100,
-                    fraction: t,
-                    isTile:   false, tile: null,
-                };
-                hits.push({ proxy: result, t });
+                const bb=_getAABB(o);
+                const iDx=rdx!==0?1/rdx:Infinity,iDy=rdy!==0?1/rdy:Infinity;
+                let tx1=(bb.left-px1)*iDx,tx2=(bb.right-px1)*iDx;
+                let ty1=(bb.top-py1)*iDy, ty2=(bb.bottom-py1)*iDy;
+                if(tx1>tx2){const s=tx1;tx1=tx2;tx2=s;}
+                if(ty1>ty2){const s=ty1;ty1=ty2;ty2=s;}
+                const tmin=Math.max(tx1,ty1),tmax=Math.min(tx2,ty2);
+                if(tmin>tmax||tmax<0||tmin>1) continue;
+                const t=Math.max(0,tmin);
+                let nx=0,ny=0;
+                if(tx1>ty1){nx=rdx<0?1:-1;}else{ny=rdy<0?1:-1;}
+                const hx=px1+t*rdx,hy=py1+t*rdy;
+                const r=_makeProxy(o);
+                r._rayHit={point:{x:hx/100,y:-hy/100},normal:{x:nx,y:-ny},distance:t*rlen/100,fraction:t,isTile:false,tile:null};
+                hits.push({proxy:r,t});
             }
-
-            // ── Tilemap tag filter — test tagged tilemaps too ─────
-            if (tag) {
-                for (const o of state.gameObjects) {
-                    if (!o.isTilemap || !o.visible) continue;
-                    if ((o._scriptTag ?? '') !== String(tag)) continue;
-                    const tileHits = this._raycastTilemapHits(px1, py1, px2, py2, rdx, rdy, rlen, o);
-                    for (const h of tileHits) {
-                        const result = _makeProxy(o);
-                        result._rayHit = {
-                            point: h.point, normal: h.normal,
-                            distance: h.distance, fraction: h.t,
-                            isTile: true,
-                            tile: { row: h.tileRow, col: h.tileCol, index: h.tileIndex },
-                        };
-                        hits.push({ proxy: result, t: h.t });
-                    }
-                }
+            hits.sort((a,b)=>a.t-b.t);
+            if(window._zeGizmos?.raycasts){
+                const gz=window._zeGizmos,col=gz.raycastColor??'#00ff44';
+                const dur=gz.raycastDuration??0.12,wid=gz.raycastWidth??2;
+                if(hits.length){const h=hits[0],ft=h.t;const ex=px1+ft*rdx,ey=py1+ft*rdy;_debugLines.push({x1,y1,x2:ex/100,y2:-ey/100,color:col,remaining:dur,width:wid,alpha:0.92});}
+                else _debugLines.push({x1,y1,x2,y2,color:col,remaining:dur,width:wid,alpha:0.45});
             }
-
-            hits.sort((a, b) => a.t - b.t);
-
-            // ── Debug laser draw ──────────────────────────────────
-            if (window._zeGizmos?.raycasts) {
-                const gz  = window._zeGizmos;
-                const col = gz.raycastColor    ?? '#00ff44';
-                const dur = gz.raycastDuration ?? 0.12;
-                const wid = gz.raycastWidth    ?? 2;
-                if (hits.length > 0) {
-                    const firstT = hits[0].t;
-                    const endPxX = px1 + firstT * rdx;
-                    const endPxY = py1 + firstT * rdy;
-                    _debugLines.push({ x1, y1, x2: endPxX / 100, y2: -endPxY / 100, color: col, remaining: dur, width: wid, alpha: 0.92 });
-                    _debugLines.push({ x1: endPxX / 100, y1: -endPxY / 100, x2: endPxX / 100, y2: -endPxY / 100, circle: 0.07, color: '#ffffff', remaining: dur, width: 3, alpha: 1 });
-                } else {
-                    _debugLines.push({ x1, y1, x2, y2, color: col, remaining: dur, width: wid, alpha: 0.45 });
-                }
-            }
-            return hits.map(h => h.proxy);
+            return hits.map(h=>h.proxy);
         },
 
         /**
@@ -1826,13 +1742,12 @@ function _buildSandbox(obj, instRef) {
             };
 
             // Grab fires on MOUSEDOWN (pointer over the object) — NOT on click/up.
-            // This makes the object follow immediately from the first press.
             // instRef is the [instance] wrapper array — instRef[0] is the live ScriptInstance.
             const inst = instRef[0];
             if (inst) {
-                inst._onDragMouseDown = grab;   // mousedown hit-test hook
-                inst._onMouseClick    = null;   // clear any old click grab
-                inst._dragReleaseHook = release; // cleanup hook
+                inst._onDragMouseDown = grab;
+                inst._onMouseClick    = null;
+                inst._dragReleaseHook = release;
             }
         },
         /**
@@ -2121,8 +2036,7 @@ function _buildSandbox(obj, instRef) {
                 if (opts.tag)               newObj._scriptTag         = String(opts.tag);
                 if (opts.damage != null)    newObj._projectileDamage  = opts.damage;
                 if (opts.group)             newObj._scriptGroup       = String(opts.group);
-                state.gameObjects.push(newObj);
-                if (state.sceneContainer)   state.sceneContainer.addChild(newObj);
+                // NOTE: createImageObject({silent:true}) already pushed to gameObjects + sceneContainer
                 const sb = _buildSandbox(newObj, [null]);
                 sb.api._vel.x = pvx;
                 sb.api._vel.y = pvy;
@@ -2841,13 +2755,10 @@ function _syncVelocityToApi() { api._vel.x = velocityX; api._vel.y = velocityY; 
 
 // ── Manual gravity ────────────────────────────────────────────
 /**
- * Set per-object physics gravity direction (world units/s²).
+ * Apply gravity to this object (world units/s²).
  * Call once in onStart to enable:
- *   setGravity(0, -9.8)   ← falls downward every frame
- *   setGravity(0, 0)      ← disable gravity
- *
- * NOTE: This is distinct from the Game Helper gravity(vy, dt) accumulator,
- * which is used for Flappy-Bird style manual velocity accumulation.
+ *   this.gravity(0, -9.8)   ← falls downward every frame
+ *   this.gravity(0, 0)      ← disable gravity
  */
 function setGravity(gx, gy) { api.gravity(gx, gy); }
 
@@ -2948,10 +2859,7 @@ function overlapsAllWithTag(tag)    { return api.overlapsAllWithTag(tag); }
 // ── Destroy ───────────────────────────────────────────────────
 /** Remove this object from the scene */
 function destroySelf()              { api.destroySelf(); }
-/**
- * Remove another specific object from the scene (pass a proxy from find/findWithTag).
- * To destroy THIS object use destroy() or destroySelf() instead.
- */
+/** Remove another specific object from the scene. To destroy THIS object use destroy() instead. */
 function destroyObject(other)       { api.destroy(other); }
 
 // ── Scene management ──────────────────────────────────────────
@@ -3381,33 +3289,68 @@ function spawnObject(assetName, x, y, onSpawned) {
  *   align, bold, italic, dropShadow, wordWrap, wordWrapWidth
  */
 function drawText(text, x, y, styleOpts = {}) {
-    // Convert from world coordinates to PIXI pixels
+    // Runtime-only text creation — no gizmos, no editor hierarchy, no undo stack.
+    // Creates a PIXI.Text directly and adds it to the scene as a game object.
     const px = (x  ?? 0) * 100;
     const py = (-(y ?? 0)) * 100;
-    let result = null;
-    import('./engine.objects.js').then(({ createTextObject }) => {
-        const obj = createTextObject(String(text), px, py, styleOpts);
-        if (obj && result) result._ref = obj;
+
+    const style = new PIXI.TextStyle({
+        fontFamily:      styleOpts.fontFamily      ?? 'Arial',
+        fontSize:        styleOpts.fontSize        ?? 32,
+        fill:            styleOpts.fill            ?? '#ffffff',
+        stroke:          styleOpts.stroke          ?? '#000000',
+        strokeThickness: styleOpts.strokeThickness ?? 0,
+        align:           styleOpts.align           ?? 'left',
+        wordWrap:        styleOpts.wordWrap        ?? false,
+        wordWrapWidth:   styleOpts.wordWrapWidth   ?? 400,
+        fontWeight:      styleOpts.bold            ? 'bold'   : (styleOpts.fontWeight ?? 'normal'),
+        fontStyle:       styleOpts.italic          ? 'italic' : (styleOpts.fontStyle  ?? 'normal'),
+        dropShadow:      styleOpts.dropShadow      ?? false,
     });
-    // Return a live proxy — _ref will be filled in once the async create resolves.
-    // Scripts can store the return value and call .setText() on it later.
-    result = {
-        _ref: null,
-        get text() { return this._ref?.textContent ?? ''; },
+
+    const pixiText = new PIXI.Text(String(text), style);
+    pixiText.anchor.set(0.5);
+
+    const container = new PIXI.Container();
+    container.x = px; container.y = py;
+    container.unityZ       = styleOpts.unityZ ?? 999;
+    container.label        = '_rt_text_' + Math.random().toString(36).slice(2);
+    container.isText       = true;
+    container.isImage      = false;
+    container.isLight      = false;
+    container._pixiText    = pixiText;
+    container.textContent  = String(text);
+    container.spriteGraphic = pixiText;
+    container._runtimeSpawned = true;  // cleaned up on play-stop, never shown in editor
+    container._gizmoContainer = null;  // no gizmos
+
+    container.addChild(pixiText);
+    state.sceneContainer.addChild(container);
+    state.gameObjects.push(container);
+
+    const proxy = {
+        _ref: container,
+        get text()  { return this._ref._pixiText.text ?? ''; },
         set text(v) {
             if (!this._ref?._pixiText) return;
-            this._ref.textContent   = String(v);
+            this._ref.textContent    = String(v);
             this._ref._pixiText.text = String(v);
         },
         setText(v) { this.text = v; },
         setTextStyle(opts) {
-            if (!this._ref) return;
-            import('./engine.objects.js').then(({ setTextStyle }) => setTextStyle(this._ref, opts));
+            if (!this._ref?._pixiText) return;
+            const s = this._ref._pixiText.style;
+            if (opts.fontSize)        s.fontSize        = opts.fontSize;
+            if (opts.fill)            s.fill            = opts.fill;
+            if (opts.fontFamily)      s.fontFamily      = opts.fontFamily;
+            if (opts.strokeThickness != null) s.strokeThickness = opts.strokeThickness;
+            if (opts.stroke)          s.stroke          = opts.stroke;
         },
-        get visible() { return this._ref?.visible ?? true; },
-        set visible(v){ if (this._ref) this._ref.visible = !!v; },
+        get visible()  { return this._ref?.visible ?? true; },
+        set visible(v) { if (this._ref) this._ref.visible = !!v; },
+        destroy()      { if (this._ref) this._ref._markedForDestroy = true; },
     };
-    return result;
+    return proxy;
 }
 
 // ── Raycast (slab AABB) ────────────────────────────────────────
@@ -3478,7 +3421,7 @@ function getPhysicsVelX()   { return api.getPhysicsVelX(); }
 function getPhysicsVelY()   { return api.getPhysicsVelY(); }
 /** Change this object's gravity scale (0 = floats, 2 = 2× gravity). Dynamic bodies only. */
 function setGravityScale(n) { api.setGravityScale(n); }
-// isOnGround(), isOnCeiling(), isOnWall() are defined in the Physics section above.
+// isOnGround/isOnCeiling/isOnWall defined above in Physics section
 
 // ── Extra math ────────────────────────────────────────────────
 /** Smooth S-curve between lo and hi. */
@@ -3830,8 +3773,7 @@ function aiChat(npcName, description, apiKey, options) {
 
 function launch(lvx, lvy) {
     api.velocityX = lvx; api.velocityY = lvy;
-    velocityX = lvx; vx = lvx;
-    velocityY = lvy; vy = lvy;
+    velocityX = lvx; vx = lvx; velocityY = lvy; vy = lvy;
 }
 
 /**
@@ -3841,11 +3783,10 @@ function launch(lvx, lvy) {
  *   addImpulse(-5, 3)   — knockback left + up
  */
 function addImpulse(ivx, ivy) {
-    const nx = (velocityX || api.velocityX || 0) + ivx;
-    const ny = (velocityY || api.velocityY || 0) + ivy;
+    const nx = (velocityX || 0) + ivx;
+    const ny = (velocityY || 0) + ivy;
     api.velocityX = nx; api.velocityY = ny;
-    velocityX = nx; vx = nx;
-    velocityY = ny; vy = ny;
+    velocityX = nx; vx = nx; velocityY = ny; vy = ny;
 }
 
 /**
@@ -4036,10 +3977,13 @@ function isClone()       { return api.isClone(); }
 /** Returns this clone's numeric ID (0 for originals). */
 function getCloneId()    { return obj._cloneId ?? 0; }
 
+// ── SCREEN BOUNDS ─────────────────────────────────────────
+/** True when this object is off the visible game area. offScreen(2) = 2-unit margin. */
+// offScreen() and boundsClamp() are defined above with full implementations.
+
 // ── RAYCAST WRAPPERS ──────────────────────────────────────
-// offScreen() and boundsClamp() are defined in the Game Helpers section above.
 /**
-// raycast / raycastAll / raycastFromSelf — defined above, these are the canonical wrappers.
+// raycast / raycastAll / raycastFromSelf wrappers defined above
 
 // ── GIZMOS ───────────────────────────────────────────────
 /**
@@ -4468,17 +4412,13 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
     _handleMouseDown()     { this._mouse.down = true;  this._mouse.justDown = true; }
     _handleMouseUp()       { this._mouse.down = false; this._mouse.justUp   = true; }
     _handleDragMouseDown(cx, cy) {
-        // Hit-test on mousedown — used by makeDraggable to start drag immediately.
-        // cx/cy are canvas-relative pixels; PIXI getBounds() returns SCREEN-space pixels,
-        // so subtract the canvas rect offset to align the two coordinate spaces.
         if (!this._onDragMouseDown || !this.obj) return;
         const obj = this.obj;
         if (!obj.visible) return;
         try {
             const b    = obj.getBounds();
-            const rect = state.app?.view?.getBoundingClientRect?.() ?? { left: 0, top: 0 };
-            const bx   = b.x - rect.left;
-            const by   = b.y - rect.top;
+            const rect = state.app?.view?.getBoundingClientRect?.() ?? { left:0, top:0 };
+            const bx = b.x - rect.left, by = b.y - rect.top;
             if (cx >= bx && cx <= bx + b.width && cy >= by && cy <= by + b.height) {
                 try { this._onDragMouseDown(); } catch(_) {}
             }
@@ -4486,15 +4426,13 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
     }
     _handleMouseClick(cx, cy) {
         // Hit-test: does the canvas point (cx,cy) land inside this object?
-        // cx/cy are canvas-relative pixels; getBounds() returns screen-space pixels.
         if (!this._onMouseClick || !this.obj) return;
         const obj = this.obj;
         if (!obj.visible) return;
         try {
             const b    = obj.getBounds();
-            const rect = state.app?.view?.getBoundingClientRect?.() ?? { left: 0, top: 0 };
-            const bx   = b.x - rect.left;
-            const by   = b.y - rect.top;
+            const rect = state.app?.view?.getBoundingClientRect?.() ?? { left:0, top:0 };
+            const bx = b.x - rect.left, by = b.y - rect.top;
             if (cx >= bx && cx <= bx + b.width && cy >= by && cy <= by + b.height) {
                 try { this._onMouseClick(); }
                 catch (e) {
@@ -4553,41 +4491,27 @@ function _updateActiveTouches(touchList) {
 // ── Drag & Drop state ─────────────────────────────────────────
 let _activeDragObj  = null;
 let _activeDragOpts = {};
-let _activeDragLastFrameTime = 0;  // for real dt in smooth lerp
 
 function _applyDragThisFrame(dt) {
     if (!_activeDragObj) return;
     const sc = state.sceneContainer;
     if (!sc) return;
-
-    // Use any live instance for mouse coords — all instances share the same
-    // canvas-relative mouse position (updated by _handleMouseMove/_tm for every instance).
-    // Prefer the instance whose object IS the dragged object for accuracy.
-    let inst = _instances.find(i => i.obj === _activeDragObj) ?? _instances[0];
+    const inst = _instances.find(i => i.obj === _activeDragObj) ?? _instances[0];
     if (!inst) return;
-
-    // _mouse.x / _mouse.y are canvas-relative pixels
     const cx = inst._mouse.x;
     const cy = inst._mouse.y;
-
-    // Convert canvas pixels → world units, applying optional cursor offset
     const targetX =  (cx - sc.x) / (sc.scale.x * 100) + (_activeDragOpts.offsetX ?? 0);
     const targetY = -(cy - sc.y) / (sc.scale.y * 100) + (_activeDragOpts.offsetY ?? 0);
-
     const smooth = _activeDragOpts.smooth ?? 0;
-
     let wx, wy;
     if (smooth > 0) {
-        // Use real dt passed from the game loop — not hardcoded 1/60
         const realDt = (typeof dt === 'number' && dt > 0) ? dt : (1 / 60);
         const t = Math.min(1, smooth * realDt);
-        wx = (_activeDragObj.x  / 100) + (targetX - (_activeDragObj.x  /  100)) * t;
-        wy = (-_activeDragObj.y / 100) + (targetY - (-_activeDragObj.y / 100))  * t;
+        wx = (_activeDragObj.x  / 100) + (targetX - (_activeDragObj.x  / 100)) * t;
+        wy = (-_activeDragObj.y / 100) + (targetY - (-_activeDragObj.y / 100)) * t;
     } else {
-        wx = targetX;
-        wy = targetY;
+        wx = targetX; wy = targetY;
     }
-
     if (_activeDragOpts.clampToGameBounds) {
         const gw = (state.sceneSettings?.gameWidth  ?? 1280) / 100 / 2;
         const gh = (state.sceneSettings?.gameHeight ?? 720)  / 100 / 2;
@@ -5058,9 +4982,14 @@ export function startScripts() {
         _tickDebugLines(dt);
 
         // 1. Run all scripts — they write desired velocity into obj._kinematicVx/Vy
+        // Purge dead instances (destroyed objects) — prevents _instances from growing forever
+        for (let i = _instances.length - 1; i >= 0; i--) {
+            if (!state.gameObjects.includes(_instances[i].obj)) {
+                _instances.splice(i, 1);
+            }
+        }
         const snap = [..._instances];
         for (const i of snap) {
-            if (!state.gameObjects.includes(i.obj)) continue;
             i.update(dt);
         }
 
