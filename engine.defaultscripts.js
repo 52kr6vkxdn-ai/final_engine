@@ -1330,3 +1330,20 @@ onStop(() => {
 },
 
 ];
+
+// ── Inject built-in scripts into a project's script list ─────────────────────
+// Called by engine.project.js when creating a new project or loading one with
+// no scripts. Only adds a script if one with the same name doesn't already exist.
+export function injectDefaultScripts(scripts) {
+    for (const ds of DEFAULT_SCRIPTS) {
+        const already = scripts.find(s => s.name === ds.name || s.id === 'default_' + ds.name);
+        if (already) continue;
+        scripts.push({
+            id:        'default_' + ds.name,
+            name:      ds.name,
+            code:      ds.code,
+            updatedAt: Date.now(),
+            isDefault: true,
+        });
+    }
+}
