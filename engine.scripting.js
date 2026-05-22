@@ -2182,8 +2182,10 @@ function _makeProxy(f) {
         get group()   { return f._scriptGroup ?? ''; },
         /** World X position. */
         get x()       { return  f.x  / 100; },
+        set x(v)      { f.x =  v * 100; },
         /** World Y position. */
         get y()       { return -f.y  / 100; },
+        set y(v)      { f.y = -v * 100; },
         /** Horizontal scale (1 = normal, -1 = flipped). */
         get scaleX()  { return f.scale?.x ?? 1; },
         /** Vertical scale. */
@@ -2333,7 +2335,20 @@ function _makeProxy(f) {
          */
         setTextStyle(opts = {}) {
             if (!f.isText || !f._pixiText) return;
-            import('./engine.objects.js').then(({ setTextStyle }) => setTextStyle(f, opts));
+            const s = f._pixiText.style;
+            if (opts.fontSize        != null) s.fontSize        = opts.fontSize;
+            if (opts.fill            != null) s.fill            = opts.fill;
+            if (opts.fontFamily      != null) s.fontFamily      = opts.fontFamily;
+            if (opts.stroke          != null) s.stroke          = opts.stroke;
+            if (opts.strokeThickness != null) s.strokeThickness = opts.strokeThickness;
+            if (opts.align           != null) s.align           = opts.align;
+            if (opts.wordWrap        != null) s.wordWrap        = opts.wordWrap;
+            if (opts.wordWrapWidth   != null) s.wordWrapWidth   = opts.wordWrapWidth;
+            if (opts.letterSpacing   != null) s.letterSpacing   = opts.letterSpacing;
+            if (opts.lineHeight      != null) s.lineHeight      = opts.lineHeight;
+            if (opts.bold            != null) s.fontWeight      = opts.bold   ? 'bold'   : 'normal';
+            if (opts.italic          != null) s.fontStyle       = opts.italic ? 'italic' : 'normal';
+            if (opts.dropShadow      != null) s.dropShadow      = opts.dropShadow;
         },
 
         /** Send a message directly to this specific object */
@@ -3290,7 +3305,6 @@ function spawnObject(assetName, x, y, onSpawned) {
  */
 function drawText(text, x, y, styleOpts = {}) {
     // Runtime-only text creation — no gizmos, no editor hierarchy, no undo stack.
-    // Creates a PIXI.Text directly and adds it to the scene as a game object.
     const px = (x  ?? 0) * 100;
     const py = (-(y ?? 0)) * 100;
 
@@ -3306,49 +3320,150 @@ function drawText(text, x, y, styleOpts = {}) {
         fontWeight:      styleOpts.bold            ? 'bold'   : (styleOpts.fontWeight ?? 'normal'),
         fontStyle:       styleOpts.italic          ? 'italic' : (styleOpts.fontStyle  ?? 'normal'),
         dropShadow:      styleOpts.dropShadow      ?? false,
+        dropShadowColor: styleOpts.dropShadowColor ?? '#000000',
+        dropShadowBlur:  styleOpts.dropShadowBlur  ?? 4,
+        dropShadowDistance: styleOpts.dropShadowDistance ?? 4,
+        letterSpacing:   styleOpts.letterSpacing   ?? 0,
+        lineHeight:      styleOpts.lineHeight      ?? 0,
+        padding:         styleOpts.padding         ?? 4,
     });
 
     const pixiText = new PIXI.Text(String(text), style);
-    pixiText.anchor.set(0.5);
+    pixiText.anchor.set(
+        styleOpts.anchorX ?? 0.5,
+        styleOpts.anchorY ?? 0.5
+    );
 
     const container = new PIXI.Container();
     container.x = px; container.y = py;
-    container.unityZ       = styleOpts.unityZ ?? 999;
-    container.label        = '_rt_text_' + Math.random().toString(36).slice(2);
+    container.alpha        = styleOpts.alpha  ?? 1;
+    container.visible      = styleOpts.visible ?? true;
+    container.unityZ       = styleOpts.zOrder ?? styleOpts.unityZ ?? 999;
+    container.label        = styleOpts.name ?? ('_rt_text_' + Math.random().toString(36).slice(2));
     container.isText       = true;
     container.isImage      = false;
     container.isLight      = false;
     container._pixiText    = pixiText;
     container.textContent  = String(text);
     container.spriteGraphic = pixiText;
-    container._runtimeSpawned = true;  // cleaned up on play-stop, never shown in editor
-    container._gizmoContainer = null;  // no gizmos
+    container._runtimeSpawned = true; // cleaned up on play-stop, never shown in editor
+    container._gizmoContainer = null; // no gizmos
 
     container.addChild(pixiText);
-    state.sceneContainer.addChild(container);
+    if (state.sceneContainer) state.sceneContainer.addChild(container);
     state.gameObjects.push(container);
 
+    // ── Full proxy API ────────────────────────────────────────────────────────
     const proxy = {
         _ref: container,
-        get text()  { return this._ref._pixiText.text ?? ''; },
+
+        // ── Text content ──────────────────────────────────────
+        get text()  { return this._ref._pixiText?.text ?? ''; },
         set text(v) {
             if (!this._ref?._pixiText) return;
             this._ref.textContent    = String(v);
             this._ref._pixiText.text = String(v);
         },
-        setText(v) { this.text = v; },
-        setTextStyle(opts) {
-            if (!this._ref?._pixiText) return;
+        setText(v)  { this.text = v; return this; },
+
+        // ── Style ─────────────────────────────────────────────
+        setTextStyle(opts = {}) {
+            if (!this._ref?._pixiText) return this;
             const s = this._ref._pixiText.style;
-            if (opts.fontSize)        s.fontSize        = opts.fontSize;
-            if (opts.fill)            s.fill            = opts.fill;
-            if (opts.fontFamily)      s.fontFamily      = opts.fontFamily;
+            if (opts.fontSize        != null) s.fontSize        = opts.fontSize;
+            if (opts.fill            != null) s.fill            = opts.fill;
+            if (opts.fontFamily      != null) s.fontFamily      = opts.fontFamily;
+            if (opts.stroke          != null) s.stroke          = opts.stroke;
             if (opts.strokeThickness != null) s.strokeThickness = opts.strokeThickness;
-            if (opts.stroke)          s.stroke          = opts.stroke;
+            if (opts.align           != null) s.align           = opts.align;
+            if (opts.wordWrap        != null) s.wordWrap        = opts.wordWrap;
+            if (opts.wordWrapWidth   != null) s.wordWrapWidth   = opts.wordWrapWidth;
+            if (opts.letterSpacing   != null) s.letterSpacing   = opts.letterSpacing;
+            if (opts.lineHeight      != null) s.lineHeight      = opts.lineHeight;
+            if (opts.bold            != null) s.fontWeight      = opts.bold   ? 'bold'   : 'normal';
+            if (opts.italic          != null) s.fontStyle       = opts.italic ? 'italic' : 'normal';
+            if (opts.dropShadow      != null) s.dropShadow      = opts.dropShadow;
+            if (opts.dropShadowColor != null) s.dropShadowColor = opts.dropShadowColor;
+            return this;
         },
+
+        // ── Position ──────────────────────────────────────────
+        get x()  { return  this._ref.x / 100; },
+        set x(v) { if (this._ref) this._ref.x =  v * 100; },
+        get y()  { return -this._ref.y / 100; },
+        set y(v) { if (this._ref) this._ref.y = -v * 100; },
+        moveTo(wx, wy) {
+            if (!this._ref) return this;
+            this._ref.x =  wx * 100;
+            this._ref.y = -wy * 100;
+            return this;
+        },
+        setX(v) { this.x = v; return this; },
+        setY(v) { this.y = v; return this; },
+
+        // ── Visibility & alpha ────────────────────────────────
         get visible()  { return this._ref?.visible ?? true; },
         set visible(v) { if (this._ref) this._ref.visible = !!v; },
-        destroy()      { if (this._ref) this._ref._markedForDestroy = true; },
+        show() { if (this._ref) this._ref.visible = true;  return this; },
+        hide() { if (this._ref) this._ref.visible = false; return this; },
+        get alpha()    { return this._ref?.alpha ?? 1; },
+        set alpha(v)   { if (this._ref) this._ref.alpha = Math.max(0, Math.min(1, v)); },
+        setAlpha(v)    { this.alpha = v; return this; },
+        fadeIn(t, dt)  {
+            if (!this._ref) return this;
+            this._ref.alpha = Math.min(1, this._ref.alpha + dt / Math.max(0.001, t));
+            return this;
+        },
+        fadeOut(t, dt) {
+            if (!this._ref) return this;
+            this._ref.alpha = Math.max(0, this._ref.alpha - dt / Math.max(0.001, t));
+            return this;
+        },
+
+        // ── Z-order ───────────────────────────────────────────
+        get zOrder()   { return this._ref?.unityZ ?? 999; },
+        set zOrder(v)  { if (this._ref) this._ref.unityZ = v; },
+        setZOrder(v)   { this.zOrder = v; return this; },
+
+        // ── Scale ────────────────────────────────────────────
+        get scaleX()   { return this._ref?.scale?.x ?? 1; },
+        set scaleX(v)  { if (this._ref?.scale) this._ref.scale.x = v; },
+        get scaleY()   { return this._ref?.scale?.y ?? 1; },
+        set scaleY(v)  { if (this._ref?.scale) this._ref.scale.y = v; },
+        setScale(x, y) {
+            if (!this._ref?.scale) return this;
+            this._ref.scale.x = x;
+            this._ref.scale.y = y ?? x;
+            return this;
+        },
+
+        // ── Tween (delegates to global tween with this container) ─
+        tween(props, dur, ease, cb) {
+            if (!this._ref) return this;
+            // map world-unit x/y props to pixel props
+            const pixelProps = {};
+            for (const [k, v] of Object.entries(props)) {
+                if (k === 'x')     pixelProps.x =  v * 100;
+                else if (k === 'y')pixelProps.y = -v * 100;
+                else               pixelProps[k] = v;
+            }
+            // Use the engine's tween on the container directly
+            if (typeof _tweenObject === 'function') {
+                _tweenObject(this._ref, pixelProps, dur, ease, cb);
+            }
+            return this;
+        },
+
+        // ── Destroy ───────────────────────────────────────────
+        destroy() {
+            if (this._ref) {
+                this._ref._markedForDestroy = true;
+                this._ref = null;
+            }
+        },
+
+        // ── Convenience ───────────────────────────────────────
+        toString() { return `[TextProxy "${this.text}"]`; },
     };
     return proxy;
 }

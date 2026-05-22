@@ -350,11 +350,12 @@ function _wire(modal, obj) {
     // ── Close ───────────────────────────────────────────────
     modal.querySelector('#anim-close-btn').addEventListener('click', () => {
         _stopPlay();
-        // Ask about prefab sync once on close, only if something changed
-        if (_dirty && obj?.prefabId) {
-            _askPrefabSyncOnClose(obj);
-        }
-        modal.remove();
+        _checkAnimSizeMismatch(obj, modal, () => {
+            if (_dirty && obj?.prefabId) {
+                _askPrefabSyncOnClose(obj);
+            }
+            modal.remove();
+        }, true /* closingModal */);
     });
 
     // ── Slice Sheet ─────────────────────────────────────────
@@ -470,15 +471,11 @@ function _wire(modal, obj) {
 
     // ── Apply to object ──────────────────────────────────────
     modal.querySelector('#anim-apply-btn').addEventListener('click', () => {
-        _applyAnimToObject(obj);
-        _dirty = true;
-        _showToast(modal, 'Animation applied ✔');
-    });
-
-    modal.querySelector('#anim-apply-btn').addEventListener('click', () => {
-        _applyAnimToObject(obj);
-        _dirty = true;
-        _showToast(modal, 'Animation applied ✔');
+        _checkAnimSizeMismatch(obj, modal, () => {
+            _applyAnimToObject(obj);
+            _dirty = true;
+            _showToast(modal, 'Animation applied ✔');
+        });
     });
 
     // ── Collision section ────────────────────────────────────
@@ -853,6 +850,147 @@ function _updateStats(modal, obj) {
 }
 
 // ── Apply animation to live PIXI object ──────────────────────
+// ── Animation frame-size mismatch checker ─────────────────────────────────
+// Loads every frame across ALL animations on this object, measures their
+// natural pixel dimensions, and if any differ it shows a dialog asking
+// the user whether to auto-resize them to the largest common size.
+// onConfirm() is called once it's safe to proceed (either no mismatch,
+// user chose to resize, or user chose to skip).
+function _checkAnimSizeMismatch(obj, modal, onConfirm, isClosing = false) {
+    const anims = obj?.animations;
+    if (!anims || anims.length < 2) { onConfirm(); return; }
+
+    // Collect all frames across all animations
+    const allFrames = [];
+    for (const anim of anims) {
+        for (const frame of (anim.frames || [])) {
+            if (frame.dataURL) allFrames.push({ frame, animName: anim.name });
+        }
+    }
+    if (allFrames.length < 2) { onConfirm(); return; }
+
+    // Load all frames and measure sizes
+    let loaded = 0;
+    const sizes = [];
+    for (const entry of allFrames) {
+        const img = new Image();
+        img.onload = () => {
+            entry.w = img.naturalWidth;
+            entry.h = img.naturalHeight;
+            sizes.push({ w: img.naturalWidth, h: img.naturalHeight });
+            loaded++;
+            if (loaded === allFrames.length) _evaluate();
+        };
+        img.onerror = () => { loaded++; if (loaded === allFrames.length) _evaluate(); };
+        img.src = entry.frame.dataURL;
+    }
+
+    function _evaluate() {
+        // Check if all sizes match
+        const ws = [...new Set(sizes.map(s => s.w))];
+        const hs = [...new Set(sizes.map(s => s.h))];
+        if (ws.length === 1 && hs.length === 1) { onConfirm(); return; }
+
+        // Build a summary of mismatched animations
+        const maxW = Math.max(...sizes.map(s => s.w));
+        const maxH = Math.max(...sizes.map(s => s.h));
+        const minW = Math.min(...sizes.map(s => s.w));
+        const minH = Math.min(...sizes.map(s => s.h));
+
+        // Group mismatches by animation
+        const badAnims = new Map();
+        for (const entry of allFrames) {
+            if (!entry.w) continue;
+            if (entry.w !== maxW || entry.h !== maxH) {
+                if (!badAnims.has(entry.animName)) badAnims.set(entry.animName, []);
+                badAnims.get(entry.animName).push(`${entry.frame.name} (${entry.w}×${entry.h})`);
+            }
+        }
+
+        const lines = [...badAnims.entries()]
+            .map(([name, frames]) => `• <b>${name}</b>: ${frames.slice(0,3).join(', ')}${frames.length > 3 ? ` +${frames.length-3} more` : ''}`)
+            .join('<br>');
+
+        // Show dialog
+        const overlay = document.createElement('div');
+        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:10000;display:flex;align-items:center;justify-content:center;';
+        overlay.innerHTML = `
+            <div style="background:#1e1e1e;border:1px solid #f59e0b;border-radius:10px;padding:24px 28px;max-width:480px;width:90%;font-family:sans-serif;color:#e0e0e0;">
+                <div style="color:#f59e0b;font-size:16px;font-weight:700;margin-bottom:12px;">⚠️ Animation Frame Size Mismatch</div>
+                <div style="font-size:13px;color:#bbb;margin-bottom:10px;">
+                    Your animations have frames with different sizes.<br>
+                    This can cause <b style="color:#f87171">collision shape misalignment</b> and visual glitches at runtime.
+                </div>
+                <div style="font-size:11px;color:#888;background:#2a2a2a;border-radius:6px;padding:10px;margin-bottom:14px;line-height:1.7;">
+                    Largest frame: <b style="color:#fff">${maxW}×${maxH}</b> &nbsp;|&nbsp; Smallest: <b style="color:#f87171">${minW}×${minH}</b><br>
+                    Frames not matching largest size:<br>${lines}
+                </div>
+                <div style="font-size:12px;color:#9ca3af;margin-bottom:16px;">
+                    <b>Auto-resize</b> will scale all frames to <b>${maxW}×${maxH}</b> using canvas (no quality loss for pixel art).<br>
+                    You can also fix this manually in an image editor before importing.
+                </div>
+                <div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap;">
+                    <button id="sz-skip"  style="padding:7px 16px;background:#2d2d2d;border:1px solid #555;border-radius:6px;color:#ccc;cursor:pointer;font-size:13px;">Keep as-is</button>
+                    <button id="sz-fix"   style="padding:7px 16px;background:#f59e0b;border:none;border-radius:6px;color:#000;cursor:pointer;font-size:13px;font-weight:700;">Auto-resize to ${maxW}×${maxH}</button>
+                </div>
+            </div>`;
+
+        document.body.appendChild(overlay);
+
+        overlay.querySelector('#sz-skip').onclick = () => {
+            overlay.remove();
+            onConfirm();
+        };
+
+        overlay.querySelector('#sz-fix').onclick = () => {
+            overlay.remove();
+            _resizeAllFrames(obj, maxW, maxH, () => {
+                // Refresh the frame strip UI if modal is still open
+                if (modal && document.body.contains(modal)) {
+                    const refreshEvent = new CustomEvent('ze-anim-refresh');
+                    modal.dispatchEvent(refreshEvent);
+                }
+                onConfirm();
+            });
+        };
+    }
+}
+
+// Resize every frame in every animation to targetW × targetH using canvas
+function _resizeAllFrames(obj, targetW, targetH, onDone) {
+    const anims = obj?.animations || [];
+    let pending = 0;
+    for (const anim of anims) {
+        for (const frame of (anim.frames || [])) {
+            if (!frame.dataURL) continue;
+            pending++;
+        }
+    }
+    if (pending === 0) { onDone(); return; }
+    let done = 0;
+    const check = () => { done++; if (done >= pending) onDone(); };
+
+    for (const anim of anims) {
+        for (const frame of (anim.frames || [])) {
+            if (!frame.dataURL) continue;
+            const img = new Image();
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                canvas.width  = targetW;
+                canvas.height = targetH;
+                const ctx = canvas.getContext('2d');
+                // Use nearest-neighbour for pixel art
+                ctx.imageSmoothingEnabled = false;
+                ctx.drawImage(img, 0, 0, targetW, targetH);
+                frame.dataURL = canvas.toDataURL('image/png');
+                check();
+            };
+            img.onerror = check;
+            img.src = frame.dataURL;
+        }
+    }
+}
+
 function _applyAnimToObject(obj) {
     const anim = _currentAnim(obj);
     if (!anim || !anim.frames.length) return;
