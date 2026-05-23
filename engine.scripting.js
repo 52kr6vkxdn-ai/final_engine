@@ -4452,6 +4452,14 @@ function _destroyObject(obj) {
     const idx = state.gameObjects.indexOf(obj);
     if (idx !== -1) state.gameObjects.splice(idx, 1);
     obj._markedForDestroy = false;
+    // Remove the Planck physics body so the collider disappears immediately.
+    // Use the cached module reference if available (avoids an async import mid-frame).
+    if (_physicsModule) {
+        _physicsModule.removePhysicsBody(obj);
+    } else if (obj._physicsBody) {
+        // Fallback: lazy-import if the module hasn't been cached yet
+        import('./engine.physics.js').then(m => m.removePhysicsBody(obj));
+    }
 }
 
 // ── Runtime state ─────────────────────────────────────────────

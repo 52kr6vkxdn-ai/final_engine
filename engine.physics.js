@@ -782,6 +782,32 @@ export function getIsOnCeiling(obj)  { return !!obj._isOnCeiling; }
 export function getIsOnWall(obj)     { return !!obj._isOnWall; }
 
 // ── rebuildBodyForObject ──────────────────────────────────────
+/**
+ * Remove and destroy the Planck physics body for a game object that has been
+ * destroyed at runtime. Called by engine.scripting._destroyObject so the
+ * collision shape disappears the same frame the sprite does.
+ */
+export function removePhysicsBody(obj) {
+    if (!_world || !obj) return;
+    const idx = _bodies.findIndex(e => e.obj === obj);
+    if (idx === -1) return;
+    const { body } = _bodies[idx];
+    if (body) { try { _world.destroyBody(body); } catch (_) {} }
+    delete obj._physicsBody;
+    delete obj._kinematicVx;
+    delete obj._kinematicVy;
+    delete obj._kinematicActualVx;
+    delete obj._kinematicActualVy;
+    delete obj._kinematicPrevX;
+    delete obj._kinematicPrevY;
+    delete obj._pendingKinematicDelta;
+    delete obj._isOnGround;
+    delete obj._isOnCeiling;
+    delete obj._isOnWall;
+    _bodies.splice(idx, 1);
+    _kinematicContacts.delete(obj);
+}
+
 export function rebuildBodyForObject(obj) {
     if (!_world) return;
     const idx = _bodies.findIndex(e => e.obj === obj);
