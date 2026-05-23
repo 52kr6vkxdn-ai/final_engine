@@ -3463,7 +3463,7 @@ function drawText(text, x, y, styleOpts = {}) {
         },
 
         // ── Convenience ───────────────────────────────────────
-        toString() { return `[TextProxy "${this.text}"]`; },
+        toString() { return '[TextProxy "' + this.text + '"]'; },
     };
     return proxy;
 }
