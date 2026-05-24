@@ -506,6 +506,9 @@ function _buildSandbox(obj, instRef) {
         _ref: obj,
         /** True if this object was spawned by cloneSelf/cloneObject at runtime */
         get isClone() { return !!obj._isClone; },
+        // Scene references for prelude helpers (drawText etc) that can't access `state` directly
+        get _sc()          { return state.sceneContainer; },
+        get _gameObjects() { return state.gameObjects; },
         // ANY-key helpers
         _anyKeyDown()     { return _keys.size > 0; },
         _anyKeyJustDown() { return _keysJustDown.size > 0; },
@@ -3318,8 +3321,11 @@ function spawnObject(assetName, x, y, onSpawned) {
  *   align, bold, italic, dropShadow, wordWrap, wordWrapWidth
  */
 function drawText(text, x, y, styleOpts = {}) {
-    // Runtime-only text creation — no gizmos, no editor hierarchy, no undo stack.
-    // Creates a PIXI.Text directly and adds it to the scene as a game object.
+    // Runtime-only text creation. Uses api._sc / api._gameObjects instead of bare
+    // `state` — the `state` module export is not accessible inside AsyncFunction sandbox.
+    const sc = api._sc;
+    if (!sc) { warn('drawText: scene not ready'); return { text: '', setText() {}, setTextStyle() {}, destroy() {} }; }
+
     const px = (x  ?? 0) * 100;
     const py = (-(y ?? 0)) * 100;
 
@@ -3342,24 +3348,24 @@ function drawText(text, x, y, styleOpts = {}) {
 
     const container = new PIXI.Container();
     container.x = px; container.y = py;
-    container.unityZ       = styleOpts.unityZ ?? 999;
-    container.label        = '_rt_text_' + Math.random().toString(36).slice(2);
-    container.isText       = true;
-    container.isImage      = false;
-    container.isLight      = false;
-    container._pixiText    = pixiText;
-    container.textContent  = String(text);
+    container.unityZ        = styleOpts.unityZ ?? 999;
+    container.label         = '_rt_text_' + Math.random().toString(36).slice(2);
+    container.isText        = true;
+    container.isImage       = false;
+    container.isLight       = false;
+    container._pixiText     = pixiText;
+    container.textContent   = String(text);
     container.spriteGraphic = pixiText;
-    container._runtimeSpawned = true;  // cleaned up on play-stop, never shown in editor
-    container._gizmoContainer = null;  // no gizmos
+    container._runtimeSpawned = true;
+    container._gizmoContainer = null;
 
     container.addChild(pixiText);
-    state.sceneContainer.addChild(container);
-    state.gameObjects.push(container);
+    sc.addChild(container);
+    api._gameObjects.push(container);
 
     const proxy = {
         _ref: container,
-        get text()  { return this._ref._pixiText.text ?? ''; },
+        get text()  { return this._ref._pixiText?.text ?? ''; },
         set text(v) {
             if (!this._ref?._pixiText) return;
             this._ref.textContent    = String(v);
@@ -3369,14 +3375,20 @@ function drawText(text, x, y, styleOpts = {}) {
         setTextStyle(opts) {
             if (!this._ref?._pixiText) return;
             const s = this._ref._pixiText.style;
-            if (opts.fontSize)        s.fontSize        = opts.fontSize;
-            if (opts.fill)            s.fill            = opts.fill;
-            if (opts.fontFamily)      s.fontFamily      = opts.fontFamily;
+            if (opts.fontSize        != null) s.fontSize        = opts.fontSize;
+            if (opts.fill            != null) s.fill            = opts.fill;
+            if (opts.fontFamily      != null) s.fontFamily      = opts.fontFamily;
             if (opts.strokeThickness != null) s.strokeThickness = opts.strokeThickness;
-            if (opts.stroke)          s.stroke          = opts.stroke;
+            if (opts.stroke          != null) s.stroke          = opts.stroke;
+            if (opts.bold            != null) s.fontWeight      = opts.bold ? 'bold' : 'normal';
+            if (opts.italic          != null) s.fontStyle       = opts.italic ? 'italic' : 'normal';
         },
         get visible()  { return this._ref?.visible ?? true; },
         set visible(v) { if (this._ref) this._ref.visible = !!v; },
+        get x()        { return this._ref ? this._ref.x / 100 : 0; },
+        set x(v)       { if (this._ref) this._ref.x = v * 100; },
+        get y()        { return this._ref ? -this._ref.y / 100 : 0; },
+        set y(v)       { if (this._ref) this._ref.y = -v * 100; },
         destroy()      { if (this._ref) this._ref._markedForDestroy = true; },
     };
     return proxy;
@@ -4011,7 +4023,6 @@ function getCloneId()    { return obj._cloneId ?? 0; }
 // offScreen() and boundsClamp() are defined above with full implementations.
 
 // ── RAYCAST WRAPPERS ──────────────────────────────────────
-/**
 // raycast / raycastAll / raycastFromSelf wrappers defined above
 
 // ── GIZMOS ───────────────────────────────────────────────

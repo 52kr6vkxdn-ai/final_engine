@@ -455,21 +455,24 @@ window.onload = () => {
         }
 
         engineLog('── Default Scripts ─────────────────────', 'system');
-        import('./engine.state.js').then(({ state }) => {
-            const defaults = (state.scripts || []).filter(s => s.isDefault);
-            const user     = (state.scripts || []).filter(s => !s.isDefault);
-            if (defaults.length) {
-                engineLog(`● Built-in scripts (${defaults.length}): ${defaults.map(s=>s.name).join(', ')}`, 'system');
-            } else {
-                engineLog('⚠ No built-in scripts found — default scripts may not have loaded', 'warn');
-            }
-            if (user.length) {
-                engineLog(`● Your scripts (${user.length}): ${user.map(s=>s.name).join(', ')}`, 'log');
-            }
-            engineLog('══════════════════════════════════════════', 'system');
-            engineLog('  Use ⎘ Copy All above to copy this log', 'log');
-            engineLog('══════════════════════════════════════════', 'system');
-        });
+        // Wait one tick so injectDefaultScripts (async import chain) has time to run
+        setTimeout(() => {
+            import('./engine.state.js').then(({ state }) => {
+                const defaults = (state.scripts || []).filter(s => s.isDefault);
+                const user     = (state.scripts || []).filter(s => !s.isDefault);
+                if (defaults.length) {
+                    engineLog(`● Built-in scripts (${defaults.length}): ${defaults.map(s=>s.name).join(', ')}`, 'system');
+                } else {
+                    engineLog('⚠ No built-in scripts found — default scripts may not have loaded', 'warn');
+                }
+                if (user.length) {
+                    engineLog(`● Your scripts (${user.length}): ${user.map(s=>s.name).join(', ')}`, 'log');
+                }
+                engineLog('══════════════════════════════════════════', 'system');
+                engineLog('  Use ⎘ Copy All above to copy this log', 'log');
+                engineLog('══════════════════════════════════════════', 'system');
+            });
+        }, 500);
     });
 
     // Tab switching

@@ -94,6 +94,14 @@ export function startEngine(opts = {}) {
     initResizePanels();
     initGlobalShortcuts();
 
+    // Inject built-in scripts on fresh startup (newProject/loadProject handle their own injection)
+    if (!state.scripts.length) {
+        import('./engine.defaultscripts.js').then(m => {
+            m.injectDefaultScripts(state.scripts);
+            import('./engine.scripting.js').then(s => s.refreshScriptPanel());
+        });
+    }
+
     // Init collision overlay layer (must be after PIXI app is ready)
     setTimeout(() => initCollisionOverlay(), 100);
 
