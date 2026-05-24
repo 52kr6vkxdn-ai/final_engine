@@ -418,8 +418,10 @@ function _buildSandbox(obj, instRef) {
     const _keysJustUp   = new Set();
     const _mouse        = { x: 0, y: 0, screenX: 0, screenY: 0, down: false, justDown: false, justUp: false };
 
-    // Per-object velocity — integrated each frame
-    const _vel = { x: 0, y: 0 };
+    // Per-object velocity — integrated each frame.
+    // Seeded from _spawnVx/_spawnVy when set by a spawnObject callback BEFORE this
+    // ScriptInstance is constructed, so bullets/clones start moving immediately.
+    const _vel = { x: obj._spawnVx ?? 0, y: obj._spawnVy ?? 0 };
     // Per-object manual gravity (script can call this.gravity(0, 9.8))
     const _grav = { x: 0, y: 0 };
 
@@ -1293,6 +1295,9 @@ function _buildSandbox(obj, instRef) {
                         }
                     }
                 }
+            }).catch(e => {
+                _logConsole(`spawnObject("${assetName}"): module load failed — ${e?.message ?? e}`, '#f87171');
+                import('./engine.console.js').then(m => m.recordPlayError());
             });
         },
 
@@ -1361,6 +1366,8 @@ function _buildSandbox(obj, instRef) {
                         }
                     }
                 }
+            }).catch(e => {
+                _logConsole(`cloneSelf: module load failed — ${e?.message ?? e}`, '#f87171');
             });
         },
 
@@ -1428,6 +1435,8 @@ function _buildSandbox(obj, instRef) {
                         }
                     }
                 }
+            }).catch(e => {
+                _logConsole(`cloneObject: module load failed — ${e?.message ?? e}`, '#f87171');
             });
         },
 
@@ -2042,6 +2051,8 @@ function _buildSandbox(obj, instRef) {
                 sb.api._vel.y = pvy;
                 if (opts.lifetime > 0) setTimeout(() => { newObj._markedForDestroy = true; }, opts.lifetime * 1000);
                 if (opts.onSpawned) try { opts.onSpawned(_makeProxy(newObj)); } catch(_) {}
+            }).catch(e => {
+                _logConsole(`fireProjectile: module load failed — ${e?.message ?? e}`, '#f87171');
             });
             return null;
         },
@@ -2217,6 +2228,22 @@ function _makeProxy(f) {
         get isDead()  { return (f._health ?? 100) <= 0; },
 
         /**
+         * Get/set velocity on a spawned object BEFORE its script starts.
+         * Used in spawnObject callbacks:
+         *   spawnObject("Bullet", x, y, (b) => { b.velocityX = 20; b.velocityY = 0; })
+         * The ScriptInstance reads _spawnVx/_spawnVy when it initialises _vel.
+         */
+        get velocityX()  { return f._spawnVx ?? 0; },
+        set velocityX(v) { f._spawnVx = +v; },
+        get velocityY()  { return f._spawnVy ?? 0; },
+        set velocityY(v) { f._spawnVy = +v; },
+        get vx()         { return f._spawnVx ?? 0; },
+        set vx(v)        { f._spawnVx = +v; },
+        get vy()         { return f._spawnVy ?? 0; },
+        set vy(v)        { f._spawnVy = +v; },
+        setVelocity(vx, vy) { f._spawnVx = +vx; f._spawnVy = +vy; },
+
+        /**
          * Deal damage to this specific instance (e.g. other.takeDamage(10)).
          * Respects invincibility. Triggers onDamage + onDeath if needed.
          */
@@ -2282,6 +2309,8 @@ function _makeProxy(f) {
                         } catch(_) {}
                     }
                 }
+            }).catch(e => {
+                _logConsole(`clone: module load failed — ${e?.message ?? e}`, '#f87171');
             });
         },
 
@@ -2333,7 +2362,7 @@ function _makeProxy(f) {
          */
         setTextStyle(opts = {}) {
             if (!f.isText || !f._pixiText) return;
-            import('./engine.objects.js').then(({ setTextStyle }) => setTextStyle(f, opts));
+            import('./engine.objects.js').then(({ setTextStyle }) => setTextStyle(f, opts)).catch(() => {});
         },
 
         /** Send a message directly to this specific object */
@@ -4069,21 +4098,20 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
             const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor; // eslint-disable-line no-new-func
             const fn = new AsyncFunction('api', '__out', prelude + '\n' + code + '\n' + postlude);
             const out = {};
-            const _compilePromise = fn(api, out);
-            // Catch any top-level async errors from the compile phase
-            if (_compilePromise && typeof _compilePromise.catch === 'function') {
-                _compilePromise.catch(_err => {
-                    const friendly = _friendlyScriptError(_err, code, this.name, this.obj.label, 'compile');
-                    for (const line of friendly) _logConsole(line, '#f87171');
-                    const _rm = _err?.message ?? String(_err);
-                    const _rt = _err?.name ?? 'Error';
-                    const _rs = (_err?.stack ?? '').split('\n').slice(0,5).join(' | ');
-                    _logConsole(`  🔍 RAW ERROR: [${_rt}] ${_rm}`, '#fb923c');
-                    _logConsole(`  📋 STACK: ${_rs}`, '#94a3b8');
-                    console.error('[Zengine async compile error]', _rt + ':', _rm, '\nScript:', this.name, '\nFull error:', _err);
-                    import('./engine.console.js').then(m => m.recordPlayError());
-                });
-            }
+            // Chain .catch IMMEDIATELY on the call — never store then attach separately.
+            // Storing in a variable first creates a window where a synchronous microtask
+            // rejection fires before .catch is attached, causing "Unhandled promise rejection".
+            fn(api, out).catch(_err => {
+                const friendly = _friendlyScriptError(_err, code, this.name, this.obj.label, 'compile');
+                for (const line of friendly) _logConsole(line, '#f87171');
+                const _rm = _err?.message ?? String(_err);
+                const _rt = _err?.name ?? 'Error';
+                const _rs = (_err?.stack ?? '').split('\n').slice(0,5).join(' | ');
+                _logConsole(`  🔍 RAW ERROR: [${_rt}] ${_rm}`, '#fb923c');
+                _logConsole(`  📋 STACK: ${_rs}`, '#94a3b8');
+                console.error('[Zengine async compile error]', _rt + ':', _rm, '\nScript:', this.name, '\nFull error:', _err);
+                import('./engine.console.js').then(m => m.recordPlayError());
+            });
             this._onStart         = out._onStart         ?? null;
             this._onCloneStart    = out._onCloneStart    ?? null;
             this._onDestroy       = out._onDestroy       ?? null;
