@@ -3359,9 +3359,37 @@ function drawText(text, x, y, styleOpts = {}) {
     container._runtimeSpawned = true;
     container._gizmoContainer = null;
 
+    // Store textStyle so downstream code (inspector, playmode restore) can read it
+    container.textStyle = {
+        fontFamily:       style.fontFamily,
+        fontSize:         style.fontSize,
+        fill:             style.fill,
+        stroke:           style.stroke,
+        strokeThickness:  style.strokeThickness,
+        align:            style.align,
+        wordWrap:         style.wordWrap,
+        wordWrapWidth:    style.wordWrapWidth,
+        fontWeight:       style.fontWeight,
+        fontStyle:        style.fontStyle,
+        dropShadow:       style.dropShadow,
+    };
+
     container.addChild(pixiText);
     sc.addChild(container);
     api._gameObjects.push(container);
+
+    // Re-apply Z-order so runtime text with high unityZ appears on top
+    try {
+        const objs = api._gameObjects;
+        const sorted = objs.slice().sort((a, b) => (a.unityZ || 0) - (b.unityZ || 0));
+        sorted.forEach((obj, i) => {
+            try {
+                const cur = sc.getChildIndex(obj);
+                const tgt = Math.min(i, sc.children.length - 1);
+                if (cur !== tgt) sc.setChildIndex(obj, tgt);
+            } catch(_) {}
+        });
+    } catch(_) {}
 
     const proxy = {
         _ref: container,
@@ -3382,6 +3410,16 @@ function drawText(text, x, y, styleOpts = {}) {
             if (opts.stroke          != null) s.stroke          = opts.stroke;
             if (opts.bold            != null) s.fontWeight      = opts.bold ? 'bold' : 'normal';
             if (opts.italic          != null) s.fontStyle       = opts.italic ? 'italic' : 'normal';
+            // Keep container.textStyle in sync so inspector/restore can read it
+            if (this._ref.textStyle) {
+                if (opts.fontSize        != null) this._ref.textStyle.fontSize        = s.fontSize;
+                if (opts.fill            != null) this._ref.textStyle.fill            = s.fill;
+                if (opts.fontFamily      != null) this._ref.textStyle.fontFamily      = s.fontFamily;
+                if (opts.strokeThickness != null) this._ref.textStyle.strokeThickness = s.strokeThickness;
+                if (opts.stroke          != null) this._ref.textStyle.stroke          = s.stroke;
+                if (opts.bold            != null) this._ref.textStyle.fontWeight      = s.fontWeight;
+                if (opts.italic          != null) this._ref.textStyle.fontStyle       = s.fontStyle;
+            }
         },
         get visible()  { return this._ref?.visible ?? true; },
         set visible(v) { if (this._ref) this._ref.visible = !!v; },
