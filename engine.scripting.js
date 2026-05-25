@@ -3322,7 +3322,7 @@ function spawnObject(assetName, x, y, onSpawned) {
  */
 function drawText(text, x, y, styleOpts = {}) {
     // Runtime-only text creation. Uses api._sc / api._gameObjects instead of bare
-    // `state` — the `state` module export is not accessible inside AsyncFunction sandbox.
+    // 'state' — the state module export is not accessible inside AsyncFunction sandbox.
     const sc = api._sc;
     if (!sc) { warn('drawText: scene not ready'); return { text: '', setText() {}, setTextStyle() {}, destroy() {} }; }
 
