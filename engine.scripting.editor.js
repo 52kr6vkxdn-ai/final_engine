@@ -597,56 +597,44 @@ export async function openScriptEditor(obj, scriptName, initialCode) {
     } // end if !ace._zengineThemeDefined
 
     editor.setTheme('ace/theme/zengine');
+    editor.session.setMode('ace/mode/javascript');
 
-    // ── Custom highlighter: colour Zengine engine API functions differently ──
-    // We overlay a custom tokenizer rule on top of the standard JS mode so that
-    // engine API names (onStart, walkTo, spawnObject, etc.) appear in amber,
-    // while math helpers (lerp, clamp, sin…) appear in teal, and all normal JS
-    // syntax stays exactly as VS Code Dark+ defines it.
-    if (!ace._zengineModeDefined) {
-        ace._zengineModeDefined = true;
+    // ── Engine API syntax highlighting ───────────────────────────────────────
+    // Uses Ace's built-in token-rendering pipeline. After each render we walk
+    // the visible scroller DOM and tag <span> elements whose text matches an
+    // engine API name, adding a CSS class that overrides the color.
+    // This is safer than subclassing the Ace tokenizer (which depends on Ace internals).
+    if (!ace._zengineHighlightSets) {
+        ace._zengineHighlightSets = {
+            engine : new Set(["addImpulse", "aiChat", "applyAngularImpulse", "applyForce", "applyImpulse", "axisH", "axisV", "bounceX", "bounceY", "boundsClamp", "broadcast", "broadcastAll", "broadcastGroup", "cameraFollow", "cameraMoveTo", "cameraShake", "cameraUnfollow", "cancelRepeat", "chatPlayer", "chatSay", "cloneInPlace", "cloneObject", "cloneSelf", "createJoystick", "currentAnimation", "currentScene", "currentSceneIndex", "destroy", "destroyAfter", "destroyAllJoysticks", "destroyObject", "destroySelf", "distanceTo", "drawDebugCircle", "drawDebugLine", "drawText", "error", "fadeIn", "fadeOut", "find", "findAllInGroup", "findAllWithTag", "findWithTag", "fireProjectile", "flipX", "flipY", "getAlpha", "getAmmo", "getCameraX", "getCameraY", "getCloneId", "getGroup", "getHealth", "getMaxAmmo", "getMaxHealth", "getObjectsInRadius", "getPhysicsVelX", "getPhysicsVelY", "getRotation", "getScaleX", "getScaleY", "getSceneName", "getState", "getTag", "getTime", "getTint", "getTouches", "getVelX", "getVelY", "getX", "getY", "getZOrder", "globalVar", "gotoScene", "gravity", "heal", "hide", "hideChat", "hitFlash", "inRangeOf", "invincible", "isClone", "isDead", "isInvincible", "isKeyDown", "isKeyJustDown", "isKeyJustUp", "isOnCeiling", "isOnGround", "isOnWall", "isTouching", "isWalking", "knockback", "launch", "lockRotation", "log", "lookAt", "mouseDown", "mouseJustDown", "mouseX", "mouseY", "move", "moveForward", "moveTo", "objectShake", "offScreen", "onAmmoEmpty", "onBecomeHidden", "onBecomeVisible", "onCloneStart", "onCollisionEnter", "onCollisionExit", "onCollisionStay", "onDamage", "onDeath", "onDestroy", "onHeal", "onJump", "onKeyDown", "onKeyUp", "onLand", "onMessage", "onMouseClick", "onMouseEnter", "onMouseLeave", "onOverlapEnter", "onOverlapExit", "onPinch", "onReload", "onScreenEnter", "onScreenExit", "onStart", "onStateEnter", "onStateExit", "onStop", "onSwipe", "onTap", "onUpdate", "onceAfter", "opts", "overlaps", "overlapsAllWithTag", "overlapsTag", "pauseScene", "playAnimation", "raycast", "raycastAll", "raycastFromSelf", "reload", "repeat", "restartScene", "resumeScene", "say", "sceneCount", "sceneSettings", "sceneVar", "screenMouseX", "screenMouseY", "screenToWorld", "sendMessage", "setAlpha", "setAmmo", "setAngularVelocity", "setCollision", "setCollisionCategory", "setCollisionMask", "setGravity", "setGravityScale", "setGroup", "setHealth", "setImmovable", "setMaxAmmo", "setMaxHealth", "setPhysicsType", "setPhysicsVelocity", "setRotation", "setRotationLocked", "setScaleX", "setScaleY", "setSensor", "setState", "setTag", "setTint", "setVelocity", "setVisible", "setX", "setY", "setZOrder", "show", "showChat", "soundPlay", "soundStop", "soundStopAll", "spawnCopy", "spawnObject", "stopAnimation", "stopMovement", "stopPhysics", "stopWalking", "takeDamage", "think", "touchCount", "touchJustStarted", "trackTarget", "triggerJump", "tween", "unlockRotation", "velocityX", "velocityY", "vx", "vy", "wait", "walkTo", "walkToObject", "warn", "worldToScreen"]),
+            math   : new Set(["PI", "abs", "angleTo", "ceil", "chance", "clamp", "cos", "dist", "floor", "lerp", "mapRange", "max", "min", "normalize", "pick", "rand", "randInt", "round", "sign", "sin", "smoothstep", "sqrt", "toDeg", "toRad"]),
+        };
+    }
+    const _Z_ENGINE = ace._zengineHighlightSets.engine;
+    const _Z_MATH   = ace._zengineHighlightSets.math;
 
-        const _ENGINE_NAMES = new Set(["addImpulse", "aiChat", "applyAngularImpulse", "applyForce", "applyImpulse", "axisH", "axisV", "bounceX", "bounceY", "boundsClamp", "broadcast", "broadcastAll", "broadcastGroup", "cameraFollow", "cameraMoveTo", "cameraShake", "cameraUnfollow", "cancelRepeat", "chatPlayer", "chatSay", "cloneInPlace", "cloneObject", "cloneSelf", "createJoystick", "currentAnimation", "currentScene", "currentSceneIndex", "destroy", "destroyAfter", "destroyAllJoysticks", "destroyObject", "destroySelf", "distanceTo", "drawDebugCircle", "drawDebugLine", "drawText", "error", "fadeIn", "fadeOut", "find", "findAllInGroup", "findAllWithTag", "findWithTag", "fireProjectile", "flipX", "flipY", "getAlpha", "getAmmo", "getCameraX", "getCameraY", "getCloneId", "getGroup", "getHealth", "getMaxAmmo", "getMaxHealth", "getObjectsInRadius", "getPhysicsVelX", "getPhysicsVelY", "getRotation", "getScaleX", "getScaleY", "getSceneName", "getState", "getTag", "getTime", "getTint", "getTouches", "getVelX", "getVelY", "getX", "getY", "getZOrder", "globalVar", "gotoScene", "gravity", "heal", "hide", "hideChat", "hitFlash", "inRangeOf", "invincible", "isClone", "isDead", "isInvincible", "isKeyDown", "isKeyJustDown", "isKeyJustUp", "isOnCeiling", "isOnGround", "isOnWall", "isTouching", "isWalking", "knockback", "launch", "lockRotation", "log", "lookAt", "mouseDown", "mouseJustDown", "mouseX", "mouseY", "move", "moveForward", "moveTo", "objectShake", "offScreen", "onAmmoEmpty", "onBecomeHidden", "onBecomeVisible", "onCloneStart", "onCollisionEnter", "onCollisionExit", "onCollisionStay", "onDamage", "onDeath", "onDestroy", "onHeal", "onJump", "onKeyDown", "onKeyUp", "onLand", "onMessage", "onMouseClick", "onMouseEnter", "onMouseLeave", "onOverlapEnter", "onOverlapExit", "onPinch", "onReload", "onScreenEnter", "onScreenExit", "onStart", "onStateEnter", "onStateExit", "onStop", "onSwipe", "onTap", "onUpdate", "onceAfter", "opts", "overlaps", "overlapsAllWithTag", "overlapsTag", "pauseScene", "playAnimation", "raycast", "raycastAll", "raycastFromSelf", "reload", "repeat", "restartScene", "resumeScene", "say", "sceneCount", "sceneSettings", "sceneVar", "screenMouseX", "screenMouseY", "screenToWorld", "sendMessage", "setAlpha", "setAmmo", "setAngularVelocity", "setCollision", "setCollisionCategory", "setCollisionMask", "setGravity", "setGravityScale", "setGroup", "setHealth", "setImmovable", "setMaxAmmo", "setMaxHealth", "setPhysicsType", "setPhysicsVelocity", "setRotation", "setRotationLocked", "setScaleX", "setScaleY", "setSensor", "setState", "setTag", "setTint", "setVelocity", "setVisible", "setX", "setY", "setZOrder", "show", "showChat", "soundPlay", "soundStop", "soundStopAll", "spawnCopy", "spawnObject", "stopAnimation", "stopMovement", "stopPhysics", "stopWalking", "takeDamage", "think", "touchCount", "touchJustStarted", "trackTarget", "triggerJump", "tween", "unlockRotation", "velocityX", "velocityY", "vx", "vy", "wait", "walkTo", "walkToObject", "warn", "worldToScreen"]);
-        const _MATH_NAMES   = new Set(["PI", "abs", "angleTo", "ceil", "chance", "clamp", "cos", "dist", "floor", "lerp", "mapRange", "max", "min", "normalize", "pick", "rand", "randInt", "round", "sign", "sin", "smoothstep", "sqrt", "toDeg", "toRad"]);
+    // Regex that matches a whole word token (Ace splits JS into word tokens already)
+    const _Z_WORD_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
-        ace.define('ace/mode/zengine_js',
-            ['require','exports','module','ace/mode/javascript','ace/mode/javascript_highlight_rules',
-             'ace/mode/behaviour/cstyle','ace/mode/folding/cstyle'],
-            (require, exports) => {
-                const JSMode   = require('ace/mode/javascript').Mode;
-                const JSRules  = require('ace/mode/javascript_highlight_rules').JavaScriptHighlightRules;
-
-                // Subclass the JS highlight rules and prepend our identifier rule
-                function ZengineRules() {
-                    JSRules.call(this);
-                    // Prepend to the 'start' state so our rule fires before JS's identifier rule
-                    const startRules = this.$rules['start'];
-                    startRules.unshift({
-                        token: (val) => {
-                            if (_ENGINE_NAMES.has(val)) return 'zengine_api';
-                            if (_MATH_NAMES.has(val))   return 'zengine_math';
-                            return 'identifier'; // fall through to default JS coloring
-                        },
-                        // Match a whole word that is followed by ( . , ; space newline = ! < > + - * / ] ) or EOL
-                        // The lookahead prevents matching inside longer names (e.g. "myOnStart" won't match "onStart")
-                        regex: /\b([a-zA-Z_][a-zA-Z0-9_]*)\b(?=[\s\t\n\r(,;.=!<>+\-*\/\[\])|&?:]|$)/,
-                    });
-                    this.normalizeRules();
-                }
-                ace.require('ace/lib/oop').inherits(ZengineRules, JSRules);
-
-                function ZengineMode() {
-                    JSMode.call(this);
-                    this.HighlightRules = ZengineRules;
-                }
-                ace.require('ace/lib/oop').inherits(ZengineMode, JSMode);
-                ZengineMode.prototype.$id = 'ace/mode/zengine_js';
-                exports.Mode = ZengineMode;
-            }
-        );
+    function _applyEngineColors() {
+        const scroller = aceEl.querySelector('.ace_scroller');
+        if (!scroller) return;
+        // Walk every text span in the rendered lines
+        const spans = scroller.querySelectorAll('.ace_line span');
+        for (const span of spans) {
+            const t = span.textContent;
+            if (!_Z_WORD_RE.test(t)) continue;
+            // Remove any previous classification so we don't stack classes
+            span.classList.remove('ace_zengine_api', 'ace_zengine_math');
+            if (_Z_ENGINE.has(t))      span.classList.add('ace_zengine_api');
+            else if (_Z_MATH.has(t))   span.classList.add('ace_zengine_math');
+        }
     }
 
-    editor.session.setMode('ace/mode/zengine_js');
+    // Apply after each render cycle (Ace fires 'afterRender' reliably)
+    editor.renderer.on('afterRender', _applyEngineColors);
+    // Also apply once now on initial load
+    requestAnimationFrame(_applyEngineColors);
     // Ensure initialCode is always a valid string — never null/undefined
     const safeCode = (typeof initialCode === 'string' && initialCode.length > 0)
         ? initialCode

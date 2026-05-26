@@ -633,6 +633,14 @@ export function initInspectorListeners() {
             m.openScriptEditor(go, go.scriptName, record?.code ?? '');
         });
     });
+    document.getElementById('btn-script-detach')?.addEventListener('click', () => {
+        const go = state.gameObject;
+        if (!go || !go.scriptName) return;
+        if (!confirm(`Remove script "${go.scriptName}" from "${go.label}"?`)) return;
+        go.scriptName = null;
+        syncPixiToInspector();
+        import('./engine.console.js').then(m => m.engineLog(`✂️ Script detached from "${go.label}"`, 'warn'));
+    });
 }
 
 // ── Gizmo Mode ────────────────────────────────────────────────

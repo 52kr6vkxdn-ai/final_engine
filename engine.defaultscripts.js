@@ -846,7 +846,14 @@ onStop(() => {
 export function injectDefaultScripts(scripts) {
     for (const ds of DEFAULT_SCRIPTS) {
         const already = scripts.find(s => s.name === ds.name || s.id === 'default_' + ds.name);
-        if (already) continue;
+        if (already) {
+            // Always keep code in sync for built-in scripts the user hasn't edited
+            // (detected by isDefault flag still being true on the record)
+            if (already.isDefault) {
+                already.code = ds.code;
+            }
+            continue;
+        }
         scripts.push({
             id:        'default_' + ds.name,
             name:      ds.name,
