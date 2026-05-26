@@ -80,6 +80,9 @@ const COMPLETIONS = [
     { n:'setX',              m:'↔ position',  v:'setX(${1:value})' },
     { n:'getY',              m:'↔ position',  v:'getY()' },
     { n:'setY',              m:'↔ position',  v:'setY(${1:value})' },
+    { n:'walkTo',            m:'🧭 navigate',  v:"walkTo(${1:5}, ${2:3}, { speed: ${3:4}, avoidStatic: true })" },
+    { n:'walkToObject',      m:'🧭 navigate',  v:"walkToObject('${1:Player}', { speed: ${2:4}, avoidStatic: true })" },
+    { n:'stopWalking',       m:'🛑 navigate',  v:'stopWalking()' },
     { n:'moveTo',            m:'↔ position',  v:'moveTo(${1:x}, ${2:y})' },
     { n:'move',              m:'↔ position',  v:'move(${1:dx}, ${2:dy})' },
     { n:'moveForward',       m:'↔ position',  v:'moveForward(${1:speed})' },
@@ -162,7 +165,7 @@ const COMPLETIONS = [
     { n:'pauseScene',        m:'⏸ scene',      v:'pauseScene()' },
     { n:'resumeScene',       m:'▶ scene',      v:'pauseScene(false)' },
     { n:'restartScene',      m:'↺ scene',      v:'restartScene()' },
-    { n:'drawText',          m:'🔤 text',       v:"drawText('${1:Hello}', ${2:0}, ${3:0}, { fontSize: ${4:32}, fill: '${5:#ffffff}' })" },
+    { n:'drawText',          m:'🔤 text',       v:"drawText('${1:Hello}', ${2:0}, ${3:0}, { id: '${4:label1}', fontSize: ${5:32}, fill: '${6:#ffffff}' })" },
     { n:'currentScene',      m:'🎬 scene',     v:'currentScene()' },
     { n:'currentSceneIndex', m:'🎬 scene',     v:'currentSceneIndex()' },
     { n:'sceneCount',        m:'🎬 scene',     v:'sceneCount()' },
@@ -581,6 +584,12 @@ export async function openScriptEditor(obj, scriptName, initialCode) {
 
 /* Meta (import/export) */
 .ace-zengine .ace_meta.ace_tag          { color:#569cd6; }
+
+/* ── Zengine Engine API functions — warm amber so they stand out from JS ── */
+/* Engine lifecycle/gameplay functions: onStart, walkTo, spawnObject, etc. */
+.ace-zengine .ace_zengine_api           { color:#f0a050; font-weight:500; }
+/* Math/util shortcuts: lerp, clamp, rand, sin, cos, dist, etc. */
+.ace-zengine .ace_zengine_math          { color:#4ec9b0; }
 `;
         const dom = require('ace/lib/dom');
         dom.importCssString(exports.cssText, exports.cssClass);
@@ -588,7 +597,56 @@ export async function openScriptEditor(obj, scriptName, initialCode) {
     } // end if !ace._zengineThemeDefined
 
     editor.setTheme('ace/theme/zengine');
-    editor.session.setMode('ace/mode/javascript');
+
+    // ── Custom highlighter: colour Zengine engine API functions differently ──
+    // We overlay a custom tokenizer rule on top of the standard JS mode so that
+    // engine API names (onStart, walkTo, spawnObject, etc.) appear in amber,
+    // while math helpers (lerp, clamp, sin…) appear in teal, and all normal JS
+    // syntax stays exactly as VS Code Dark+ defines it.
+    if (!ace._zengineModeDefined) {
+        ace._zengineModeDefined = true;
+
+        const _ENGINE_NAMES = new Set(["addImpulse", "aiChat", "applyAngularImpulse", "applyForce", "applyImpulse", "axisH", "axisV", "bounceX", "bounceY", "boundsClamp", "broadcast", "broadcastAll", "broadcastGroup", "cameraFollow", "cameraMoveTo", "cameraShake", "cameraUnfollow", "cancelRepeat", "chatPlayer", "chatSay", "cloneInPlace", "cloneObject", "cloneSelf", "createJoystick", "currentAnimation", "currentScene", "currentSceneIndex", "destroy", "destroyAfter", "destroyAllJoysticks", "destroyObject", "destroySelf", "distanceTo", "drawDebugCircle", "drawDebugLine", "drawText", "error", "fadeIn", "fadeOut", "find", "findAllInGroup", "findAllWithTag", "findWithTag", "fireProjectile", "flipX", "flipY", "getAlpha", "getAmmo", "getCameraX", "getCameraY", "getCloneId", "getGroup", "getHealth", "getMaxAmmo", "getMaxHealth", "getObjectsInRadius", "getPhysicsVelX", "getPhysicsVelY", "getRotation", "getScaleX", "getScaleY", "getSceneName", "getState", "getTag", "getTime", "getTint", "getTouches", "getVelX", "getVelY", "getX", "getY", "getZOrder", "globalVar", "gotoScene", "gravity", "heal", "hide", "hideChat", "hitFlash", "inRangeOf", "invincible", "isClone", "isDead", "isInvincible", "isKeyDown", "isKeyJustDown", "isKeyJustUp", "isOnCeiling", "isOnGround", "isOnWall", "isTouching", "isWalking", "knockback", "launch", "lockRotation", "log", "lookAt", "mouseDown", "mouseJustDown", "mouseX", "mouseY", "move", "moveForward", "moveTo", "objectShake", "offScreen", "onAmmoEmpty", "onBecomeHidden", "onBecomeVisible", "onCloneStart", "onCollisionEnter", "onCollisionExit", "onCollisionStay", "onDamage", "onDeath", "onDestroy", "onHeal", "onJump", "onKeyDown", "onKeyUp", "onLand", "onMessage", "onMouseClick", "onMouseEnter", "onMouseLeave", "onOverlapEnter", "onOverlapExit", "onPinch", "onReload", "onScreenEnter", "onScreenExit", "onStart", "onStateEnter", "onStateExit", "onStop", "onSwipe", "onTap", "onUpdate", "onceAfter", "opts", "overlaps", "overlapsAllWithTag", "overlapsTag", "pauseScene", "playAnimation", "raycast", "raycastAll", "raycastFromSelf", "reload", "repeat", "restartScene", "resumeScene", "say", "sceneCount", "sceneSettings", "sceneVar", "screenMouseX", "screenMouseY", "screenToWorld", "sendMessage", "setAlpha", "setAmmo", "setAngularVelocity", "setCollision", "setCollisionCategory", "setCollisionMask", "setGravity", "setGravityScale", "setGroup", "setHealth", "setImmovable", "setMaxAmmo", "setMaxHealth", "setPhysicsType", "setPhysicsVelocity", "setRotation", "setRotationLocked", "setScaleX", "setScaleY", "setSensor", "setState", "setTag", "setTint", "setVelocity", "setVisible", "setX", "setY", "setZOrder", "show", "showChat", "soundPlay", "soundStop", "soundStopAll", "spawnCopy", "spawnObject", "stopAnimation", "stopMovement", "stopPhysics", "stopWalking", "takeDamage", "think", "touchCount", "touchJustStarted", "trackTarget", "triggerJump", "tween", "unlockRotation", "velocityX", "velocityY", "vx", "vy", "wait", "walkTo", "walkToObject", "warn", "worldToScreen"]);
+        const _MATH_NAMES   = new Set(["PI", "abs", "angleTo", "ceil", "chance", "clamp", "cos", "dist", "floor", "lerp", "mapRange", "max", "min", "normalize", "pick", "rand", "randInt", "round", "sign", "sin", "smoothstep", "sqrt", "toDeg", "toRad"]);
+
+        ace.define('ace/mode/zengine_js',
+            ['require','exports','module','ace/mode/javascript','ace/mode/javascript_highlight_rules',
+             'ace/mode/behaviour/cstyle','ace/mode/folding/cstyle'],
+            (require, exports) => {
+                const JSMode   = require('ace/mode/javascript').Mode;
+                const JSRules  = require('ace/mode/javascript_highlight_rules').JavaScriptHighlightRules;
+
+                // Subclass the JS highlight rules and prepend our identifier rule
+                function ZengineRules() {
+                    JSRules.call(this);
+                    // Prepend to the 'start' state so our rule fires before JS's identifier rule
+                    const startRules = this.$rules['start'];
+                    startRules.unshift({
+                        token: (val) => {
+                            if (_ENGINE_NAMES.has(val)) return 'zengine_api';
+                            if (_MATH_NAMES.has(val))   return 'zengine_math';
+                            return 'identifier'; // fall through to default JS coloring
+                        },
+                        // Match a whole word that is followed by ( . , ; space newline = ! < > + - * / ] ) or EOL
+                        // The lookahead prevents matching inside longer names (e.g. "myOnStart" won't match "onStart")
+                        regex: /\b([a-zA-Z_][a-zA-Z0-9_]*)\b(?=[\s\t\n\r(,;.=!<>+\-*\/\[\])|&?:]|$)/,
+                    });
+                    this.normalizeRules();
+                }
+                ace.require('ace/lib/oop').inherits(ZengineRules, JSRules);
+
+                function ZengineMode() {
+                    JSMode.call(this);
+                    this.HighlightRules = ZengineRules;
+                }
+                ace.require('ace/lib/oop').inherits(ZengineMode, JSMode);
+                ZengineMode.prototype.$id = 'ace/mode/zengine_js';
+                exports.Mode = ZengineMode;
+            }
+        );
+    }
+
+    editor.session.setMode('ace/mode/zengine_js');
     // Ensure initialCode is always a valid string — never null/undefined
     const safeCode = (typeof initialCode === 'string' && initialCode.length > 0)
         ? initialCode
@@ -836,6 +894,69 @@ function _modal() {
     return wrap;
 }
 
+
+// ── Sidebar syntax highlighter ───────────────────────────────
+// Applies lightweight colour to reference panel lines so engine API names,
+// strings, numbers, keywords and comments all look like the editor.
+(function() {
+    const _SB_ENGINE = new Set(["addImpulse", "aiChat", "applyAngularImpulse", "applyForce", "applyImpulse", "axisH", "axisV", "bounceX", "bounceY", "boundsClamp", "broadcast", "broadcastAll", "broadcastGroup", "cameraFollow", "cameraMoveTo", "cameraShake", "cameraUnfollow", "cancelRepeat", "chatPlayer", "chatSay", "cloneInPlace", "cloneObject", "cloneSelf", "createJoystick", "currentAnimation", "currentScene", "currentSceneIndex", "destroy", "destroyAfter", "destroyAllJoysticks", "destroyObject", "destroySelf", "distanceTo", "drawDebugCircle", "drawDebugLine", "drawText", "error", "fadeIn", "fadeOut", "find", "findAllInGroup", "findAllWithTag", "findWithTag", "fireProjectile", "flipX", "flipY", "getAlpha", "getAmmo", "getCameraX", "getCameraY", "getCloneId", "getGroup", "getHealth", "getMaxAmmo", "getMaxHealth", "getObjectsInRadius", "getPhysicsVelX", "getPhysicsVelY", "getRotation", "getScaleX", "getScaleY", "getSceneName", "getState", "getTag", "getTime", "getTint", "getTouches", "getVelX", "getVelY", "getX", "getY", "getZOrder", "globalVar", "gotoScene", "gravity", "heal", "hide", "hideChat", "hitFlash", "inRangeOf", "invincible", "isClone", "isDead", "isInvincible", "isKeyDown", "isKeyJustDown", "isKeyJustUp", "isOnCeiling", "isOnGround", "isOnWall", "isTouching", "isWalking", "knockback", "launch", "lockRotation", "log", "lookAt", "mouseDown", "mouseJustDown", "mouseX", "mouseY", "move", "moveForward", "moveTo", "objectShake", "offScreen", "onAmmoEmpty", "onBecomeHidden", "onBecomeVisible", "onCloneStart", "onCollisionEnter", "onCollisionExit", "onCollisionStay", "onDamage", "onDeath", "onDestroy", "onHeal", "onJump", "onKeyDown", "onKeyUp", "onLand", "onMessage", "onMouseClick", "onMouseEnter", "onMouseLeave", "onOverlapEnter", "onOverlapExit", "onPinch", "onReload", "onScreenEnter", "onScreenExit", "onStart", "onStateEnter", "onStateExit", "onStop", "onSwipe", "onTap", "onUpdate", "onceAfter", "opts", "overlaps", "overlapsAllWithTag", "overlapsTag", "pauseScene", "playAnimation", "raycast", "raycastAll", "raycastFromSelf", "reload", "repeat", "restartScene", "resumeScene", "say", "sceneCount", "sceneSettings", "sceneVar", "screenMouseX", "screenMouseY", "screenToWorld", "sendMessage", "setAlpha", "setAmmo", "setAngularVelocity", "setCollision", "setCollisionCategory", "setCollisionMask", "setGravity", "setGravityScale", "setGroup", "setHealth", "setImmovable", "setMaxAmmo", "setMaxHealth", "setPhysicsType", "setPhysicsVelocity", "setRotation", "setRotationLocked", "setScaleX", "setScaleY", "setSensor", "setState", "setTag", "setTint", "setVelocity", "setVisible", "setX", "setY", "setZOrder", "show", "showChat", "soundPlay", "soundStop", "soundStopAll", "spawnCopy", "spawnObject", "stopAnimation", "stopMovement", "stopPhysics", "stopWalking", "takeDamage", "think", "touchCount", "touchJustStarted", "trackTarget", "triggerJump", "tween", "unlockRotation", "velocityX", "velocityY", "vx", "vy", "wait", "walkTo", "walkToObject", "warn", "worldToScreen"]);
+    const _SB_MATH   = new Set(["PI", "abs", "angleTo", "ceil", "chance", "clamp", "cos", "dist", "floor", "lerp", "mapRange", "max", "min", "normalize", "pick", "rand", "randInt", "round", "sign", "sin", "smoothstep", "sqrt", "toDeg", "toRad"]);
+
+    window._sidebarHighlight = function(safe) {
+        // safe is already HTML-escaped. We need to tokenize the raw text.
+        // Re-decode just enough to tokenize, then re-escape each token.
+        const raw = safe
+            .replace(/&amp;/g,'&').replace(/&lt;/g,'<')
+            .replace(/&gt;/g,'>').replace(/&quot;/g,'"');
+
+        // Simple tokenizer: identifiers | strings | numbers | operators | parens
+        const tokens = [];
+        let i = 0;
+        while (i < raw.length) {
+            // String literal (single or double quote)
+            if (raw[i] === '"' || raw[i] === "'") {
+                const q = raw[i]; let j = i+1;
+                while (j < raw.length && raw[j] !== q) j++;
+                tokens.push({ type:'str', val: raw.slice(i, j+1) });
+                i = j+1; continue;
+            }
+            // Number
+            if (/[0-9]/.test(raw[i]) || (raw[i]==='-' && /[0-9]/.test(raw[i+1]||''))) {
+                let j = i; if (raw[j]==='-') j++;
+                while (j < raw.length && /[0-9.]/.test(raw[j])) j++;
+                tokens.push({ type:'num', val: raw.slice(i, j) });
+                i = j; continue;
+            }
+            // Identifier
+            if (/[a-zA-Z_]/.test(raw[i])) {
+                let j = i;
+                while (j < raw.length && /[a-zA-Z0-9_]/.test(raw[j])) j++;
+                const word = raw.slice(i, j);
+                let type = 'id';
+                if (_SB_ENGINE.has(word)) type = 'api';
+                else if (_SB_MATH.has(word)) type = 'math';
+                else if (word === 'true' || word === 'false' || word === 'null' || word === 'undefined') type = 'kw';
+                tokens.push({ type, val: word });
+                i = j; continue;
+            }
+            // Anything else: operators, punctuation, spaces
+            tokens.push({ type:'op', val: raw[i] });
+            i++;
+        }
+
+        // Render tokens to HTML spans
+        return tokens.map(t => {
+            const v = t.val.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+            if (t.type === 'api')  return `<span class="se-api">${v}</span>`;
+            if (t.type === 'math') return `<span class="se-math">${v}</span>`;
+            if (t.type === 'str')  return `<span class="se-str">${v}</span>`;
+            if (t.type === 'num')  return `<span class="se-num">${v}</span>`;
+            if (t.type === 'kw')   return `<span class="se-kw">${v}</span>`;
+            return v;
+        }).join('');
+    };
+})();
+
 function _sidebarHTML() {
     const G = [
         ['Events', [
@@ -956,8 +1077,8 @@ function _sidebarHTML() {
             'cameraShake(amp, dur)',
         ]],
         ['Text (runtime)', [
-            'var t = drawText("Hello", x, y)',
-            'var t = drawText("Score: 0", 0, 3, { fontSize:32, fill:"#fff" })',
+            'drawText("Score: " + score, 0, 3, { id: "score", fontSize:32, fill:"#fff" })  // id prevents duplicates in onUpdate',
+            'var t = drawText("Hello", 0, 0, { id: "hello" })  // same id = same node each frame',
             't.text = "Score: " + n',
             't.setText("new text")',
             't.setTextStyle({ fontSize:48, fill:"#f00" })',
@@ -1186,7 +1307,9 @@ function _sidebarHTML() {
         const itemHTML = items.map(s => {
             const isComment = s.startsWith('//');
             const safe = s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-            return `<div class="se-gi${isComment?' se-cm':''}" data-s="${isComment?'':safe}">${safe}</div>`;
+            if (isComment) return `<div class="se-gi se-cm" data-s="">${safe}</div>`;
+            const highlighted = _sidebarHighlight(safe);
+            return `<div class="se-gi" data-s="${safe}">${highlighted}</div>`;
         }).join('');
         const safeCat = cat.replace(/&/g,'&amp;').replace(/</g,'&lt;');
         return `<div class="se-g" data-cat="${cat.toLowerCase()}"><div class="se-gt">${safeCat}</div>${itemHTML}</div>`;
@@ -1206,6 +1329,11 @@ function _sidebarHTML() {
 .se-gi:not(.se-cm):hover{color:#fff;background:#2a4060}
 .se-gi:not(.se-cm):active{background:#1e4a7a}
 .se-cm{color:#3d4d5a;font-style:italic}
+.se-api{color:#f0a050;font-weight:500}
+.se-math{color:#4ec9b0}
+.se-str{color:#ce9178}
+.se-kw{color:#569cd6}
+.se-num{color:#b5cea8}
 </style>
 <div class="se-sw"><input id="se-search" type="text" placeholder="&#128269; search..." autocomplete="off" spellcheck="false"/></div>
 <div id="se-groups">${rows}</div>`;

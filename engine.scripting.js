@@ -408,6 +408,473 @@ function _clearDebugGfx() {
     if (_debugGfx) { try { _debugGfx.destroy(); } catch(_) {} _debugGfx = null; }
 }
 
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ── PATHFINDING ENGINE (A* on dynamic obstacle grid) ─────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Build an obstacle bitmap for A*.
+ * Returns { grid: Uint8Array, cols, rows, ox, oy, cs }
+ *   grid[row*cols+col] = 1 means blocked
+ *   ox/oy = pixel origin (top-left of grid)
+ *   cs    = cell size in pixels
+ */
+function _navBuildGrid(agentObj, opts) {
+    const gw = (state.sceneSettings?.gameWidth  ?? 1280);
+    const gh = (state.sceneSettings?.gameHeight ?? 720);
+
+    // Auto cell size: ~2.5× agent half-width, clamp to [20,80] px
+    const sprW = agentObj.spriteGraphic?.width  ?? agentObj._bounds?.width  ?? 50;
+    const sprH = agentObj.spriteGraphic?.height ?? agentObj._bounds?.height ?? 50;
+    const agentHW = (Math.min(sprW, sprH) * Math.abs(agentObj.scale?.x ?? 1)) / 2;
+    const agentR  = opts.agentRadius != null ? opts.agentRadius * 100 : agentHW;
+    const cs = opts.cellSize != null
+        ? Math.max(8, opts.cellSize * 100)
+        : Math.max(20, Math.min(80, agentR * 2.5));
+
+    const margin = Math.max(4, gw * 0.4, gh * 0.4); // extend grid past game bounds
+    const ox = -(gw / 2 + margin);
+    const oy = -(gh / 2 + margin);
+    const totalW = gw + margin * 2;
+    const totalH = gh + margin * 2;
+    const cols = Math.ceil(totalW / cs);
+    const rows = Math.ceil(totalH / cs);
+    const grid = new Uint8Array(cols * rows); // 0 = free, 1 = blocked
+
+    // Collect obstacle AABBs
+    const obstacles = _navGetObstacles(agentObj, opts);
+    const pad = agentR; // inflate obstacles by agent radius (minkowski)
+
+    for (const o of obstacles) {
+        const bb = _getAABB(o);
+        // Inflate
+        const left   = bb.left   - pad;
+        const right  = bb.right  + pad;
+        const top    = bb.top    - pad;
+        const bottom = bb.bottom + pad;
+
+        // Convert to grid cells
+        const c0 = Math.max(0, Math.floor((left   - ox) / cs));
+        const c1 = Math.min(cols - 1, Math.ceil((right  - ox) / cs));
+        const r0 = Math.max(0, Math.floor((top    - oy) / cs));
+        const r1 = Math.min(rows - 1, Math.ceil((bottom - oy) / cs));
+        for (let r = r0; r <= r1; r++) {
+            for (let c = c0; c <= c1; c++) {
+                grid[r * cols + c] = 1;
+            }
+        }
+    }
+
+    // Also mark tilemap tiles as blocked
+    for (const tmObj of state.gameObjects) {
+        if (!tmObj.isTilemap && !tmObj.isAutoTilemap) continue;
+        _navMarkTilemapBlocked(grid, cols, rows, ox, oy, cs, pad, tmObj);
+    }
+
+    return { grid, cols, rows, ox, oy, cs };
+}
+
+function _navMarkTilemapBlocked(grid, cols, rows, ox, oy, cs, pad, tmObj) {
+    let tileW, tileH, tmCols, tmRows, isFilled;
+    if (tmObj.isTilemap && tmObj.tilemapData) {
+        const d = tmObj.tilemapData;
+        ({ tileW, tileH } = d);
+        tmCols = d.cols; tmRows = d.rows;
+        const tiles = d.tiles;
+        isFilled = i => tiles && tiles[i] >= 0;
+    } else if (tmObj.isAutoTilemap && tmObj.autoTileData) {
+        const d = tmObj.autoTileData;
+        ({ tileW, tileH } = d);
+        tmCols = d.cols; tmRows = d.rows;
+        const cells = d.cells;
+        isFilled = i => Array.isArray(cells?.[i]) && cells[i].length > 0;
+    } else {
+        return;
+    }
+    const tw = (tileW ?? 32) * Math.abs(tmObj.scale?.x ?? 1);
+    const th = (tileH ?? 32) * Math.abs(tmObj.scale?.y ?? 1);
+    const totalCells = (tmCols ?? 0) * (tmRows ?? 0);
+    for (let i = 0; i < totalCells; i++) {
+        if (!isFilled(i)) continue;
+        const col = i % tmCols, row = Math.floor(i / tmCols);
+        const left   = tmObj.x + col * tw - pad;
+        const right  = left + tw + pad * 2;
+        const top    = tmObj.y + row * th - pad;
+        const bottom = top + th + pad * 2;
+        const c0 = Math.max(0, Math.floor((left   - ox) / cs));
+        const c1 = Math.min(cols - 1, Math.ceil((right  - ox) / cs));
+        const r0 = Math.max(0, Math.floor((top    - oy) / cs));
+        const r1 = Math.min(rows - 1, Math.ceil((bottom - oy) / cs));
+        for (let r = r0; r <= r1; r++) {
+            for (let c = c0; c <= c1; c++) {
+                grid[r * cols + c] = 1;
+            }
+        }
+    }
+}
+
+function _navGetObstacles(agentObj, opts) {
+    const result = [];
+    const avoidTag    = opts.avoidTag;
+    const avoidGroup  = opts.avoidGroup;
+    const avoidStatic = opts.avoidStatic;
+    const avoidAll    = opts.avoidAll;
+    const avoidTags   = avoidTag   ? (Array.isArray(avoidTag)  ? avoidTag   : [avoidTag])   : [];
+    const avoidGroups = avoidGroup ? (Array.isArray(avoidGroup)? avoidGroup : [avoidGroup]) : [];
+
+    for (const o of state.gameObjects) {
+        if (o === agentObj) continue;
+        if (!o.visible) continue;
+        let blocked = false;
+        if (avoidAll && (o.physicsBody ?? 'none') !== 'none') blocked = true;
+        if (!blocked && avoidStatic && (o.physicsBody ?? 'none') === 'static') blocked = true;
+        if (!blocked && avoidTags.length) {
+            const tag = o._scriptTag ?? '';
+            if (avoidTags.includes(tag)) blocked = true;
+        }
+        if (!blocked && avoidGroups.length) {
+            const grp = o._scriptGroup ?? '';
+            if (avoidGroups.includes(grp)) blocked = true;
+        }
+        if (blocked) result.push(o);
+    }
+    return result;
+}
+
+/** World-pixel point → grid cell */
+function _navWorldToCell(wx, wy, ox, oy, cs) {
+    return {
+        c: Math.floor((wx - ox) / cs),
+        r: Math.floor((wy - oy) / cs),
+    };
+}
+
+/** Grid cell centre → world-pixel point */
+function _navCellToWorld(c, r, ox, oy, cs) {
+    return {
+        x: ox + c * cs + cs / 2,
+        y: oy + r * cs + cs / 2,
+    };
+}
+
+/**
+ * A* pathfinding.
+ * Returns array of pixel-space {x,y} waypoints (including start & end),
+ * or null if no path found.
+ */
+function _navAstar(grid, cols, rows, sc, sr, ec, er) {
+    if (sc < 0 || sc >= cols || sr < 0 || sr >= rows) return null;
+    if (ec < 0 || ec >= cols || er < 0 || er >= rows) return null;
+
+    // If target cell is blocked, relax to nearest free neighbour
+    if (grid[er * cols + ec]) {
+        let best = null, bestD = Infinity;
+        for (let dr = -3; dr <= 3; dr++) {
+            for (let dc = -3; dc <= 3; dc++) {
+                const nr = er + dr, nc = ec + dc;
+                if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) continue;
+                if (grid[nr * cols + nc]) continue;
+                const d = dr*dr + dc*dc;
+                if (d < bestD) { bestD = d; best = { r: nr, c: nc }; }
+            }
+        }
+        if (!best) return null;
+        er = best.r; ec = best.c;
+    }
+
+    const idx = (r, c) => r * cols + c;
+    const heur = (r, c) => {
+        const dr = r - er, dc = c - ec;
+        return Math.sqrt(dr * dr + dc * dc); // euclidean
+    };
+
+    // Binary min-heap
+    const openHeap  = [];
+    const gScore    = new Float32Array(cols * rows).fill(Infinity);
+    const fScore    = new Float32Array(cols * rows).fill(Infinity);
+    const cameFrom  = new Int32Array(cols * rows).fill(-1);
+    const inOpen    = new Uint8Array(cols * rows);
+    const inClosed  = new Uint8Array(cols * rows);
+
+    const heapPush = (val) => {
+        openHeap.push(val);
+        let i = openHeap.length - 1;
+        while (i > 0) {
+            const parent = (i - 1) >> 1;
+            if (fScore[openHeap[parent]] <= fScore[openHeap[i]]) break;
+            [openHeap[i], openHeap[parent]] = [openHeap[parent], openHeap[i]];
+            i = parent;
+        }
+    };
+    const heapPop = () => {
+        const top = openHeap[0];
+        const last = openHeap.pop();
+        if (openHeap.length > 0) {
+            openHeap[0] = last;
+            let i = 0;
+            while (true) {
+                let smallest = i;
+                const l = 2*i+1, r = 2*i+2;
+                if (l < openHeap.length && fScore[openHeap[l]] < fScore[openHeap[smallest]]) smallest = l;
+                if (r < openHeap.length && fScore[openHeap[r]] < fScore[openHeap[smallest]]) smallest = r;
+                if (smallest === i) break;
+                [openHeap[i], openHeap[smallest]] = [openHeap[smallest], openHeap[i]];
+                i = smallest;
+            }
+        }
+        return top;
+    };
+
+    const startIdx = idx(sr, sc);
+    gScore[startIdx] = 0;
+    fScore[startIdx] = heur(sr, sc);
+    heapPush(startIdx);
+    inOpen[startIdx] = 1;
+
+    // 8-directional neighbours
+    const DIRS = [
+        [-1, 0, 1], [1, 0, 1], [0, -1, 1], [0, 1, 1],
+        [-1,-1, 1.4142], [-1, 1, 1.4142], [1,-1, 1.4142], [1, 1, 1.4142],
+    ];
+
+    const maxIter = Math.min(cols * rows, 8000); // safety cap
+    let iter = 0;
+
+    while (openHeap.length > 0 && iter++ < maxIter) {
+        const cur = heapPop();
+        const cr  = Math.floor(cur / cols);
+        const cc  = cur - cr * cols;
+        inClosed[cur] = 1;
+
+        if (cr === er && cc === ec) {
+            // Reconstruct path
+            const path = [];
+            let c = cur;
+            while (c !== -1) {
+                path.push(c);
+                c = cameFrom[c];
+            }
+            path.reverse();
+            return path.map(i => ({ r: Math.floor(i / cols), c: i % cols }));
+        }
+
+        for (const [dr, dc, cost] of DIRS) {
+            const nr = cr + dr, nc = cc + dc;
+            if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) continue;
+            const ni = idx(nr, nc);
+            if (grid[ni] || inClosed[ni]) continue;
+            // Diagonal clearance: both cardinal neighbours must be free
+            if (dr !== 0 && dc !== 0) {
+                if (grid[idx(cr + dr, cc)] || grid[idx(cr, cc + dc)]) continue;
+            }
+            const tentative = gScore[cur] + cost;
+            if (tentative < gScore[ni]) {
+                cameFrom[ni] = cur;
+                gScore[ni]   = tentative;
+                fScore[ni]   = tentative + heur(nr, nc);
+                if (!inOpen[ni]) {
+                    inOpen[ni] = 1;
+                    heapPush(ni);
+                }
+            }
+        }
+    }
+    return null; // no path
+}
+
+/**
+ * String-pull (funnel) path smoother using line-of-sight.
+ * Removes unnecessary waypoints when the agent can walk straight.
+ */
+function _navSmoothPath(rawCells, grid, cols, rows, ox, oy, cs) {
+    if (!rawCells || rawCells.length <= 2) return rawCells;
+    const smooth = [rawCells[0]];
+    let cursor = 0;
+    while (cursor < rawCells.length - 1) {
+        let reach = cursor + 1;
+        // Extend as far as we have unobstructed line of sight
+        for (let test = cursor + 2; test < rawCells.length; test++) {
+            if (_navLineOfSight(grid, cols, rows,
+                rawCells[cursor].r, rawCells[cursor].c,
+                rawCells[test].r,   rawCells[test].c)) {
+                reach = test;
+            } else {
+                break; // first obstruction — stop extending
+            }
+        }
+        smooth.push(rawCells[reach]);
+        cursor = reach;
+    }
+    return smooth;
+}
+
+/** Bresenham line-of-sight check on the blocked grid */
+function _navLineOfSight(grid, cols, rows, r0, c0, r1, c1) {
+    let dr = Math.abs(r1 - r0), dc = Math.abs(c1 - c0);
+    let r = r0, c = c0;
+    const sr2 = r0 < r1 ? 1 : -1;
+    const sc2 = c0 < c1 ? 1 : -1;
+    let err = dc - dr;
+    let steps = dr + dc;
+    while (steps-- > 0) {
+        if (r < 0 || r >= rows || c < 0 || c >= cols) return false;
+        if (grid[r * cols + c]) return false;
+        const e2 = 2 * err;
+        if (e2 > -dr) { err -= dr; c += sc2; }
+        if (e2 <  dc) { err += dc; r += sr2; }
+    }
+    return true;
+}
+
+/** Per-instance nav state stored on obj._nav */
+function _navStop(obj) {
+    if (!obj._nav) return;
+    obj._nav.active  = false;
+    obj._nav.path    = [];
+    obj._nav.follow  = false;
+    obj._nav.target  = null;
+}
+
+function _navStartWalk(obj, api, tx, ty, opts) {
+    const wpx = tx * 100, wpy = -ty * 100; // world-pixel
+    if (!obj._nav) obj._nav = {};
+    obj._nav.active       = true;
+    obj._nav.destPx       = { x: wpx, y: wpy };
+    obj._nav.opts         = opts;
+    obj._nav.speed        = (opts.speed ?? 3) * 100; // px/sec
+    obj._nav.stopRadius   = (opts.stopRadius ?? 0.3) * 100;
+    obj._nav.onDone       = opts.onDone   ?? null;
+    obj._nav.onFail       = opts.onFail   ?? null;
+    obj._nav.follow       = false;
+    obj._nav.followTarget = null;
+    obj._nav.repathTimer  = 0;
+    obj._nav.repath       = (opts.repath ?? 0.5);
+    obj._nav.debug        = opts.debug ?? false;
+    obj._nav.smooth       = opts.smooth !== false;
+    obj._nav.path         = [];
+    obj._nav.pathIdx      = 0;
+    obj._nav.api          = api;
+    // Build path immediately
+    _navRepath(obj);
+}
+
+function _navStartFollow(obj, api, target, opts) {
+    _navStartWalk(obj, api, -target.y / 100, target.x / 100, opts); // placeholder
+    obj._nav.follow       = true;
+    obj._nav.followTarget = target;
+    obj._nav.destPx       = { x: target.x, y: target.y };
+    obj._nav.repath       = (opts.repath ?? 0.5);
+    obj._nav.followDone   = opts.follow !== true; // if follow=false, stop on arrival
+    _navRepath(obj);
+}
+
+function _navRepath(obj) {
+    const nav = obj._nav;
+    if (!nav || !nav.active) return;
+
+    const opts   = nav.opts ?? {};
+    const gridInfo = _navBuildGrid(obj, opts);
+    const { grid, cols, rows, ox, oy, cs } = gridInfo;
+
+    const sx = obj.x, sy = obj.y;
+    const ex = nav.destPx.x, ey = nav.destPx.y;
+
+    const start = _navWorldToCell(sx, sy, ox, oy, cs);
+    const end   = _navWorldToCell(ex, ey, ox, oy, cs);
+
+    const rawCells = _navAstar(grid, cols, rows, start.c, start.r, end.c, end.r);
+    if (!rawCells) {
+        _logConsole(`[Nav] No path found for "${obj.label}"`, '#facc15');
+        if (nav.onFail) try { nav.onFail(); } catch(_) {}
+        nav.active = false;
+        return;
+    }
+
+    const cells = nav.smooth ? _navSmoothPath(rawCells, grid, cols, rows, ox, oy, cs) : rawCells;
+
+    // Convert cells to pixel waypoints
+    nav.path    = cells.map(cell => _navCellToWorld(cell.c, cell.r, ox, oy, cs));
+    nav.pathIdx = 1; // skip first node (agent is already there)
+    nav._grid   = gridInfo; // keep for debug draw
+
+    // Debug draw
+    if (nav.debug) {
+        const api = nav.api;
+        if (api && nav.path.length >= 2) {
+            for (let i = 0; i < nav.path.length - 1; i++) {
+                const a = nav.path[i], b = nav.path[i + 1];
+                api.debugLine(a.x / 100, -a.y / 100, b.x / 100, -b.y / 100,
+                    { color: '#00e5ff', width: 2, duration: nav.repath + 0.1 });
+            }
+        }
+    }
+}
+
+/**
+ * Tick navigation for one object every frame.
+ * Called from the update() path inside _navTickAll.
+ */
+function _navTick(inst, dt) {
+    const nav = inst.obj._nav;
+    if (!nav || !nav.active) return;
+
+    const obj = inst.obj;
+    const api = inst.api;
+
+    // Repath timer for follow mode
+    nav.repathTimer = (nav.repathTimer ?? 0) + dt;
+    if (nav.follow && nav.followTarget && nav.repathTimer >= nav.repath) {
+        nav.repathTimer = 0;
+        nav.destPx = { x: nav.followTarget.x, y: nav.followTarget.y };
+        _navRepath(obj);
+    }
+
+    if (!nav.path || nav.path.length === 0) { nav.active = false; return; }
+
+    // Check if we've arrived at final destination
+    const dest = nav.destPx;
+    const dx0 = dest.x - obj.x, dy0 = dest.y - obj.y;
+    if (Math.sqrt(dx0*dx0 + dy0*dy0) <= nav.stopRadius) {
+        api._vel.x = 0;
+        api._vel.y = 0;
+        if (!nav.follow || !nav.followDone) {
+            nav.active = false;
+            if (nav.onDone) try { nav.onDone(); } catch(_) {}
+        }
+        return;
+    }
+
+    // Advance to next waypoint
+    while (nav.pathIdx < nav.path.length) {
+        const wp = nav.path[nav.pathIdx];
+        const dx = wp.x - obj.x, dy = wp.y - obj.y;
+        const dist = Math.sqrt(dx*dx + dy*dy);
+        if (dist < nav.stopRadius * 1.5) {
+            nav.pathIdx++;
+        } else {
+            // Move toward this waypoint
+            const spd  = nav.speed; // px/sec
+            api._vel.x =  (dx / dist) * spd / 100; // world units/sec
+            api._vel.y = -(dy / dist) * spd / 100; // Y flip
+            return;
+        }
+    }
+
+    // All waypoints consumed — repath if still not at dest (dynamic follow)
+    if (nav.follow) {
+        nav.repathTimer = nav.repath; // force immediate repath
+    } else {
+        nav.active = false;
+        api._vel.x = 0;
+        api._vel.y = 0;
+        if (nav.onDone) try { nav.onDone(); } catch(_) {}
+    }
+}
+
+// ── Pathfinding prelude helpers (injected into user scripts) ─────────────
+// These are added to the prelude string so user can call walkTo() directly.
+
 // ── Repeat ID counter ─────────────────────────────────────────
 let _repeatIdCounter = 0;
 
@@ -434,6 +901,9 @@ function _buildSandbox(obj, instRef) {
     const _swipeHandlers   = new Map(); // direction → fn
     let   _pinchHandler    = null;
     let   _tapHandler      = null;
+    // Cache for drawText() calls — keyed by id so onUpdate calls update existing
+    // nodes instead of creating duplicates every frame.
+    const _drawTextCache   = new Map();
 
     const api = {
 
@@ -1249,19 +1719,38 @@ function _buildSandbox(obj, instRef) {
             let asset = state.assets.find(a => a.label === assetName || a.name === assetName || a.id === assetName);
             // Also allow cloning any existing game object by label as a template
             let templateObj = null;
+            let prefabTemplate = null;
             if (!asset) {
+                // Try scene object by label
                 templateObj = state.gameObjects.find(o => o.label === assetName);
                 if (!templateObj) {
                     // Try by tag — use first instance of that tag
                     const tagged = [...(_tagRegistry.get(assetName) ?? [])];
                     if (tagged.length) templateObj = tagged[0].obj;
                 }
-                if (!templateObj) {
-                    _logConsole(`spawnObject: "${assetName}" not found as asset or object`, '#facc15');
+                // Try prefab by name (case-insensitive)
+                if (!templateObj && state.prefabs?.length) {
+                    prefabTemplate = state.prefabs.find(p =>
+                        p.name === assetName ||
+                        p.name?.toLowerCase() === assetName?.toLowerCase() ||
+                        p.id === assetName
+                    );
+                    if (prefabTemplate) {
+                        asset = state.assets.find(a => a.id === prefabTemplate.assetId);
+                        if (!asset) {
+                            _logConsole(`spawnObject: prefab "${assetName}" has no asset`, '#facc15');
+                            return null;
+                        }
+                    }
+                }
+                if (!templateObj && !prefabTemplate) {
+                    _logConsole(`spawnObject: "${assetName}" not found as asset, object, tag, or prefab`, '#facc15');
                     return null;
                 }
-                asset = state.assets.find(a => a.id === templateObj.assetId);
-                if (!asset) { _logConsole(`spawnObject: template "${assetName}" has no asset`, '#facc15'); return null; }
+                if (!asset) {
+                    asset = state.assets.find(a => a.id === templateObj.assetId);
+                    if (!asset) { _logConsole(`spawnObject: template "${assetName}" has no asset`, '#facc15'); return null; }
+                }
             }
 
             import('./engine.objects.js').then(({ createImageObject }) => {
@@ -1269,9 +1758,27 @@ function _buildSandbox(obj, instRef) {
                 if (!newObj) return;
                 if (newObj._gizmoContainer) newObj._gizmoContainer.visible = false;
 
-                // Deep-copy all properties from template if found
+                // Deep-copy all properties from template or prefab if found
                 if (templateObj) {
                     _deepCopyObjectProps(templateObj, newObj);
+                } else if (prefabTemplate) {
+                    // Apply prefab data: script, tag, physics settings, etc.
+                    if (prefabTemplate.scriptName)  newObj.scriptName  = prefabTemplate.scriptName;
+                    if (prefabTemplate.scriptTag)   newObj._scriptTag  = prefabTemplate.scriptTag;
+                    if (prefabTemplate.physicsBody && prefabTemplate.physicsBody !== 'none') {
+                        newObj.physicsBody          = prefabTemplate.physicsBody;
+                        newObj.physicsFriction      = prefabTemplate.physicsFriction      ?? 0.3;
+                        newObj.physicsRestitution   = prefabTemplate.physicsRestitution   ?? 0.1;
+                        newObj.physicsDensity       = prefabTemplate.physicsDensity       ?? 0.001;
+                        newObj.physicsGravityScale  = prefabTemplate.physicsGravityScale  ?? 1;
+                        newObj.physicsLinearDamping = prefabTemplate.physicsLinearDamping ?? 0;
+                        newObj.physicsFixedRotation = !!prefabTemplate.physicsFixedRotation;
+                    }
+                    if (prefabTemplate.animations?.length) {
+                        newObj.animations      = JSON.parse(JSON.stringify(prefabTemplate.animations));
+                        newObj.activeAnimIndex = prefabTemplate.activeAnimIndex || 0;
+                    }
+                    newObj.prefabId = prefabTemplate.id;
                 }
 
                 // Run onSpawned callback first (lets caller override position/velocity/etc.)
@@ -1642,6 +2149,81 @@ function _buildSandbox(obj, instRef) {
             const ex  = sx + Math.cos(rad) * distance;
             const ey  = sy + Math.sin(rad) * distance;
             return this.raycast(sx, sy, ex, ey, tag);
+        },
+
+        // ── PATHFINDING / NAVIGATION ─────────────────────────
+        /**
+         * Walk from current position to a world coordinate, avoiding obstacles.
+         *
+         *   walkTo(5, 3, { speed: 4, avoidTag: "wall", onDone: () => log("arrived") })
+         *   walkTo(5, 3, { speed: 4, avoidStatic: true })
+         *   walkTo(5, 3, { speed: 4, avoidGroup: "walls", avoidTag: "barrier" })
+         *   walkTo(5, 3, { speed: 4, avoidAll: true })   // avoid every physics body
+         *
+         * Options:
+         *   speed        — world units/sec (default 3)
+         *   avoidTag     — tag string (or array) of objects to avoid
+         *   avoidGroup   — group string (or array) of objects to avoid
+         *   avoidStatic  — true → avoid all physicsBody='static' objects
+         *   avoidAll     — true → avoid all objects with any physics body
+         *   stopRadius   — arrival distance in world units (default 0.3)
+         *   onDone       — callback fired on arrival
+         *   onFail       — callback fired if path cannot be found
+         *   agentRadius  — half-size of agent for clearance (default: auto from sprite)
+         *   cellSize     — A* grid cell size in world units (default: auto)
+         *   debug        — true → draw the path with debugLine
+         *   smooth       — false → disable path smoothing (default: true)
+         */
+        walkTo(tx, ty, opts = {}) {
+            _navStartWalk(obj, api, tx, ty, opts);
+        },
+
+        /**
+         * Walk toward another object (or its current position if it moves).
+         *
+         *   walkToObject("Player", { speed: 3, avoidTag: "wall" })
+         *   walkToObject(find("Enemy"), { speed: 5, avoidStatic: true })
+         *   walkToObject("chest", { speed: 4, stopRadius: 1, onDone: () => open() })
+         *
+         * The target position is re-sampled every repath seconds (default 0.5).
+         * Options: same as walkTo plus:
+         *   repath       — how often to recalculate path (default 0.5s)
+         *   follow       — keep following even after arrival (default: false)
+         */
+        walkToObject(targetOrName, opts = {}) {
+            let target = null;
+            if (typeof targetOrName === 'string') {
+                // Try label first, then tag
+                target = state.gameObjects.find(o => o.label === targetOrName);
+                if (!target) {
+                    const tagged = [...(_tagRegistry.get(targetOrName) ?? [])];
+                    if (tagged.length) target = tagged[0].obj;
+                }
+            } else if (targetOrName?._ref) {
+                target = targetOrName._ref;
+            } else if (targetOrName?.label) {
+                target = targetOrName;
+            }
+            if (!target) {
+                _logConsole(`walkToObject: "${targetOrName}" not found`, '#facc15');
+                return;
+            }
+            _navStartFollow(obj, api, target, opts);
+        },
+
+        /** Stop any active walkTo / walkToObject immediately. */
+        stopWalking() {
+            _navStop(obj);
+        },
+
+        /** True if a walkTo or walkToObject is currently in progress. */
+        get isWalking() {
+            return !!obj._nav && obj._nav.active;
+        },
+
+        /** Current navigation path as array of {x,y} world points, or [] */
+        get navPath() {
+            return (obj._nav?.path ?? []).map(p => ({ x: p.x / 100, y: -p.y / 100 }));
         },
 
         // ── RADIUS QUERY ──────────────────────────────────────
@@ -2507,7 +3089,7 @@ function _getErrorHint(msg, stack) {
         const name = msg.match(/(\w+) is not defined/i)?.[1];
         if (name) {
             // Check if it looks like a common typo of an engine function
-            const apiNames = ['log','warn','error','gotoScene','spawnObject','destroy','setPos','getPos',
+            const apiNames = ['log','warn','error','gotoScene','spawnObject','destroy','setPos','getPos','walkTo','walkToObject','stopWalking','isWalking',
                 'velocityX','velocityY','onStart','onUpdate','onStop','onCollisionEnter','isKeyDown',
                 'isKeyJustDown','mouseX','mouseY','sceneVar','globalVar','soundPlay','wait','repeat'];
             const similar = apiNames.find(a => _levenshtein(a.toLowerCase(), name.toLowerCase()) <= 2 && a !== name);
@@ -2742,6 +3324,49 @@ function move(dx, dy)  { api.move(dx, dy); }
 function translate(dx, dy) { api.move(dx, dy); }
 /** Warp this object to exact position */
 function moveTo(x, y)  { api.moveTo(x, y); }
+
+// ── Navigation / Pathfinding ───────────────────────────────────
+/**
+ * Walk to world position (x, y) while avoiding obstacles.
+ *
+ *   walkTo(5, 3, { speed: 4, avoidStatic: true })
+ *   walkTo(5, 3, { speed: 3, avoidTag: "wall", onDone: () => log("arrived!") })
+ *   walkTo(5, 3, { speed: 5, avoidAll: true, debug: true })
+ *
+ * Options:
+ *   speed        — world units/sec (default 3)
+ *   avoidTag     — tag string or array to avoid
+ *   avoidGroup   — group string or array to avoid
+ *   avoidStatic  — true → avoid physicsBody='static' objects
+ *   avoidAll     — true → avoid any object with a physics body
+ *   stopRadius   — arrival distance (default 0.3 units)
+ *   onDone       — callback when arrived
+ *   onFail       — callback if no path found
+ *   debug        — true → visualise path with lines
+ *   smooth       — false → disable path smoothing
+ *   cellSize     — override grid cell size in world units
+ *   agentRadius  — override agent clearance radius in world units
+ */
+function walkTo(x, y, opts)          { api.walkTo(x, y, opts ?? {}); }
+
+/**
+ * Walk toward an object by name, tag, or proxy — re-pathing as it moves.
+ *
+ *   walkToObject("Player", { speed: 3, avoidStatic: true })
+ *   walkToObject("chest",  { speed: 4, stopRadius: 1, onDone: () => openChest() })
+ *   walkToObject(find("Boss"), { speed: 6, follow: true })  // keep following
+ *
+ * Options: same as walkTo, plus:
+ *   repath   — seconds between path recalculations (default 0.5)
+ *   follow   — keep walking even after arrival (default false)
+ */
+function walkToObject(nameOrProxy, opts) { api.walkToObject(nameOrProxy, opts ?? {}); }
+
+/** Stop the current walkTo / walkToObject immediately. */
+function stopWalking()               { api.stopWalking(); }
+
+/** True if a walkTo or walkToObject is currently running. */
+var isWalking = false; // synced each frame via api.isWalking
 /** Move in the direction this object is currently facing */
 function moveForward(speed) { api.moveForward(speed); }
 /** Rotate this object to face a world position */
@@ -3301,9 +3926,13 @@ function cancelRepeat(id)     { api.cancelRepeat(id); }
 
 // ── Spawn object ───────────────────────────────────────────────
 /**
- * Create a new object at a world position.
- * spawnObject("Bullet", x, y)
- * spawnObject("Bullet", x, y, (obj) => { obj.velocityX = 10; })
+ * Create a new object at a world position from an asset name, object name,
+ * object tag, or prefab name.
+ * spawnObject("Bullet", x, y)                          — by asset/prefab name
+ * spawnObject("Bullet", x, y, (b) => { b.velocityX = 10; })  — with velocity
+ * spawnObject("enemy", x, y)                          — by tag (first match)
+ * The callback runs BEFORE the object's script starts, so velocity/tag/etc.
+ * set there will be live when onStart fires.
  */
 function spawnObject(assetName, x, y, onSpawned) {
     return api.spawnObject(assetName, x, y, onSpawned);
@@ -3313,18 +3942,36 @@ function spawnObject(assetName, x, y, onSpawned) {
  * Create a text object in the scene from a script.
  * Returns a proxy so you can immediately update it.
  *
- * Example:
- *   var score = drawText("Score: 0", 0, 3, { fontSize: 36, fill: "#fff" });
- *   score.text = "Score: " + points;
+ * Safe to call every frame in onUpdate — pass an `id` option to deduplicate:
+ *   drawText("Score: " + score, 0, 3, { id: "score", fontSize: 36, fill: "#fff" });
+ * Without an id, text is auto-deduplicated by position (same x/y = same node).
  *
  * Style options: fontSize, fontFamily, fill, stroke, strokeThickness,
- *   align, bold, italic, dropShadow, wordWrap, wordWrapWidth
+ *   align, bold, italic, dropShadow, wordWrap, wordWrapWidth, id
  */
 function drawText(text, x, y, styleOpts = {}) {
     // Runtime-only text creation. Uses api._sc / api._gameObjects instead of bare
     // 'state' — the state module export is not accessible inside AsyncFunction sandbox.
     const sc = api._sc;
     if (!sc) { warn('drawText: scene not ready'); return { text: '', setText() {}, setTextStyle() {}, destroy() {} }; }
+
+    // ── Deduplication: same id or same x/y reuses the existing node ──────────
+    // This prevents duplicate text nodes when drawText is called every frame.
+    const cacheKey = styleOpts.id != null
+        ? String(styleOpts.id)
+        : `_auto_${x}_${y}`;
+    if (_drawTextCache.has(cacheKey)) {
+        const existing = _drawTextCache.get(cacheKey);
+        if (!existing._ref || existing._ref._markedForDestroy || !existing._ref._pixiText) {
+            _drawTextCache.delete(cacheKey); // stale — fall through to recreate
+        } else {
+            // Already exists — just update text content, return same proxy
+            existing.text = String(text);
+            existing.x = x ?? 0;
+            existing.y = y ?? 0;
+            return existing;
+        }
+    }
 
     const px = (x  ?? 0) * 100;
     const py = (-(y ?? 0)) * 100;
@@ -3427,8 +4074,10 @@ function drawText(text, x, y, styleOpts = {}) {
         set x(v)       { if (this._ref) this._ref.x = v * 100; },
         get y()        { return this._ref ? -this._ref.y / 100 : 0; },
         set y(v)       { if (this._ref) this._ref.y = -v * 100; },
-        destroy()      { if (this._ref) this._ref._markedForDestroy = true; },
+        destroy()      { if (this._ref) { this._ref._markedForDestroy = true; _drawTextCache.delete(cacheKey); } },
     };
+    // Store in cache for deduplication on subsequent calls
+    _drawTextCache.set(cacheKey, proxy);
     return proxy;
 }
 
@@ -4125,6 +4774,7 @@ __out._onAmmoEmpty       = _onAmmoEmpty;
 __out._onReload          = _onReload;
 __out._stateEnterHandlers= _stateEnterHandlers;
 __out._stateExitHandlers = _stateExitHandlers;
+__out._syncIsWalking     = typeof isWalking !== 'undefined' ? () => { isWalking = api.isWalking; } : null;
 __out._initVX            = typeof velocityX !== 'undefined' ? velocityX : 0;
 __out._initVY            = typeof velocityY !== 'undefined' ? velocityY : 0;
 __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelocityToApi : null;
@@ -4178,6 +4828,7 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
             this._onMouseLeave    = out._onMouseLeave     ?? null;
             this._messageHandlers    = out._msgHandlers         ?? new Map();
             this._syncVel            = out._syncVel             ?? null;
+            this._syncIsWalking      = out._syncIsWalking       ?? null;
             this._onDamage           = out._onDamage            ?? null;
             this._onDeath            = out._onDeath             ?? null;
             this._onHeal             = out._onHeal              ?? null;
@@ -4189,9 +4840,13 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
             this._onReload           = out._onReload            ?? null;
             this._stateEnterHandlers = out._stateEnterHandlers  ?? new Map();
             this._stateExitHandlers  = out._stateExitHandlers   ?? new Map();
-            // Apply initial velocity values from top-level declarations
-            api._vel.x = out._initVX ?? 0;
-            api._vel.y = out._initVY ?? 0;
+            // Apply initial velocity: _spawnVx/Vy (set by spawnObject callback) takes
+            // priority over top-level var declarations (_initVX/VY) so bullets move
+            // in the direction the spawner set before this script compiled.
+            const spawnVx = obj._spawnVx;
+            const spawnVy = obj._spawnVy;
+            api._vel.x = (spawnVx != null && spawnVx !== 0) ? spawnVx : (out._initVX ?? 0);
+            api._vel.y = (spawnVy != null && spawnVy !== 0) ? spawnVy : (out._initVY ?? 0);
         } catch (err) {
             const friendly = _friendlyScriptError(err, code, this.name, this.obj.label, 'compile');
             for (const line of friendly) _logConsole(line, '#f87171');
@@ -4290,6 +4945,11 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
                 r.elapsed = r.interval;
             }
         }
+
+        // ── 2b. Tick navigation agent (sets vel before it's applied) ──
+        if (obj._nav?.active) _navTick(this, dt);
+        // Sync isWalking local var into script scope via the api
+        if (this._syncIsWalking) try { this._syncIsWalking(); } catch(_) {}
 
         // ── 3. Apply manual gravity accumulation ───────────────────────
         if (grav.x !== 0) vel.x += grav.x * dt;

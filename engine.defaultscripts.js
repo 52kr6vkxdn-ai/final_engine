@@ -734,6 +734,110 @@ onStop(() => {
 `,
 },
 
+
+{
+    name: 'Pathfinder',
+    code: `
+// ── Pathfinder ─────────────────────────────────────────────────
+// Smart pathfinding script: walk to a world position or an object
+// while navigating around obstacles.
+//
+// HOW TO USE
+// ──────────
+// 1. Attach this script to any object (no physics body needed).
+// 2. Call any of these from another script or from this script:
+//
+//   walkTo(5, 3, { speed: 4, avoidStatic: true })
+//     → Walk to world (5,3), avoiding physicsBody=static obstacles.
+//
+//   walkTo(5, 3, { speed: 4, avoidTag: "wall" })
+//     → Avoid only objects tagged "wall".
+//
+//   walkTo(5, 3, { speed: 4, avoidGroup: "terrain", avoidTag: "rock" })
+//     → Avoid multiple obstacle types.
+//
+//   walkTo(5, 3, { speed: 4, avoidAll: true, debug: true })
+//     → Avoid ALL physics objects and visualise the path.
+//
+//   walkToObject("Player", { speed: 5, avoidStatic: true })
+//     → Walk toward the "Player" object, recalculating path every 0.5s.
+//
+//   walkToObject("chest", { speed: 3, stopRadius: 1, onDone: () => log("at chest!") })
+//     → Stop 1 unit away, fire callback on arrival.
+//
+//   walkToObject("Ally", { speed: 4, follow: true, repath: 0.3 })
+//     → Keep following the Ally, recalculating every 0.3s.
+//
+//   stopWalking()  — cancel current path immediately.
+//   isWalking      — true while a path is active.
+
+var SPEED      = 4;      // world units / second
+var TARGET_X   = 8;      // destination world X
+var TARGET_Y   = 0;      // destination world Y
+var AVOID_STATIC = true; // avoid physicsBody=static objects
+
+onStart(() => {
+  walkTo(TARGET_X, TARGET_Y, {
+    speed:        SPEED,
+    avoidStatic:  AVOID_STATIC,
+    // avoidTag:  "wall",      // uncomment to also avoid tagged objects
+    // avoidGroup:"terrain",   // or entire groups
+    // avoidAll:  true,        // or every physics body
+    debug:        false,       // set true to see the path drawn in blue
+    onDone:  () => { log("Arrived at destination!"); },
+    onFail:  () => { log("No path found — destination unreachable."); },
+  });
+});
+
+// ── Example: re-trigger with a key ─────────────────────────────
+onUpdate(() => {
+  if (isKeyDown("r")) {
+    walkTo(TARGET_X, TARGET_Y, {
+      speed: SPEED,
+      avoidStatic: AVOID_STATIC,
+    });
+  }
+  if (isKeyDown("x")) {
+    stopWalking();
+    log("Stopped walking.");
+  }
+});
+`,
+},
+
+{
+    name: 'NavFollower',
+    code: `
+// ── NavFollower ────────────────────────────────────────────────
+// Follows a named object (e.g. the player) using pathfinding.
+// Obstacles are avoided automatically.
+//
+// Usage: Attach to any enemy / NPC / companion.
+//   Rename TARGET to the label of the object you want to follow.
+
+var TARGET      = "Player";  // label of the object to follow
+var SPEED       = 4;         // units/sec
+var STOP_RADIUS = 1.2;       // stop this close to target
+var REPATH      = 0.4;       // recalculate path every N seconds
+
+onStart(() => {
+  walkToObject(TARGET, {
+    speed:       SPEED,
+    avoidStatic: true,
+    stopRadius:  STOP_RADIUS,
+    repath:      REPATH,
+    follow:      true,        // keep walking even after initial arrival
+    onFail: () => log("Can't reach " + TARGET),
+  });
+});
+
+onStop(() => {
+  stopWalking();
+  velocityX = 0;
+  velocityY = 0;
+});
+`,
+},
 ];
 
 // ── Inject built-in scripts into a project's script list ─────────────────────
