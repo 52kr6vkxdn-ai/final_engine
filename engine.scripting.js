@@ -1957,6 +1957,7 @@ function _buildSandbox(obj, instRef) {
                 }
             }
 
+            const dp = _makeDeferredProxy();
             import('./engine.objects.js').then(({ createImageObject }) => {
                 const newObj = createImageObject(asset, wx * 100, -wy * 100, { silent: true });
                 if (!newObj) return;
@@ -1995,6 +1996,9 @@ function _buildSandbox(obj, instRef) {
                     }
                 }
 
+                // Resolve deferred proxy so any queued property writes are applied
+                dp._resolve(newObj);
+
                 // Auto-start the object's script if it has one and play mode is running
                 if (newObj.scriptName && window._zState?.isPlaying) {
                     const rec = getScript(newObj.scriptName);
@@ -2013,6 +2017,7 @@ function _buildSandbox(obj, instRef) {
                 _logConsole(`spawnObject("${assetName}"): module load failed — ${e?.message ?? e}`, '#f87171');
                 import('./engine.console.js').then(m => m.recordPlayError());
             });
+            return dp;
         },
 
         /**
@@ -2048,6 +2053,7 @@ function _buildSandbox(obj, instRef) {
                 _logConsole(`cloneSelf: clone limit (128) reached — call destroySelf() on old clones first`, '#f87171');
                 return null;
             }
+            const dp = _makeDeferredProxy();
             import('./engine.objects.js').then(({ createImageObject }) => {
                 const newObj = createImageObject(asset, wx * 100, -wy * 100, { silent: true });
                 if (!newObj) return;
@@ -2067,6 +2073,9 @@ function _buildSandbox(obj, instRef) {
                     }
                 }
 
+                // Resolve deferred proxy — applies any queued property writes
+                dp._resolve(newObj);
+
                 if (newObj.scriptName && window._zState?.isPlaying) {
                     const rec = getScript(newObj.scriptName);
                     if (rec?.code) {
@@ -2083,6 +2092,7 @@ function _buildSandbox(obj, instRef) {
             }).catch(e => {
                 _logConsole(`cloneSelf: module load failed — ${e?.message ?? e}`, '#f87171');
             });
+            return dp;
         },
 
         /**
@@ -2122,6 +2132,7 @@ function _buildSandbox(obj, instRef) {
             const asset = state.assets.find(a => a.id === templateObj.assetId);
             if (!asset) { _logConsole(`cloneObject: template has no asset`, '#facc15'); return null; }
 
+            const dp = _makeDeferredProxy();
             import('./engine.objects.js').then(({ createImageObject }) => {
                 const newObj = createImageObject(asset, wx * 100, -wy * 100, { silent: true });
                 if (!newObj) return;
@@ -2135,6 +2146,9 @@ function _buildSandbox(obj, instRef) {
                         for (const line of friendly) _logConsole(line, '#f87171');
                     }
                 }
+
+                // Resolve deferred proxy — applies any queued property writes
+                dp._resolve(newObj);
 
                 if (newObj.scriptName && window._zState?.isPlaying) {
                     const rec = getScript(newObj.scriptName);
@@ -2152,6 +2166,7 @@ function _buildSandbox(obj, instRef) {
             }).catch(e => {
                 _logConsole(`cloneObject: module load failed — ${e?.message ?? e}`, '#f87171');
             });
+            return dp;
         },
 
         // ── RAYCAST (AABB slab method) ────────────────────────
@@ -2958,6 +2973,7 @@ function _buildSandbox(obj, instRef) {
             const pvx = Math.cos(rad) * speed;
             const pvy = Math.sin(rad) * speed;
             const sx  = obj.x, sy = obj.y;
+            const dp = _makeDeferredProxy();
             import('./engine.objects.js').then(async m => {
                 const newObj = await m.createImageObject(assetName, sx, sy);
                 if (!newObj) return;
@@ -2973,10 +2989,12 @@ function _buildSandbox(obj, instRef) {
                 sb.api._vel.y = pvy;
                 if (opts.lifetime > 0) setTimeout(() => { newObj._markedForDestroy = true; }, opts.lifetime * 1000);
                 if (opts.onSpawned) try { opts.onSpawned(_makeProxy(newObj)); } catch(_) {}
+                // Resolve deferred proxy — applies any queued writes
+                dp._resolve(newObj);
             }).catch(e => {
                 _logConsole(`fireProjectile: module load failed — ${e?.message ?? e}`, '#f87171');
             });
-            return null;
+            return dp;
         },
 
         // ── STATE MACHINE ─────────────────────────────────────────
@@ -3104,33 +3122,145 @@ function _deepCopyObjectProps(src, dst) {
 }
 
 // ── Object proxy (returned by find / findWithTag etc.) ────────
+/**
+ * _makeDeferredProxy — returns a live proxy immediately, before the object exists.
+ *
+ * All spawn/clone functions use import().then() internally, so the real object
+ * isn't available yet when the call returns. This proxy queues every property
+ * write and method call that happens before the real object is ready, then
+ * replays them the instant _resolve(realObj) is called.
+ *
+ * Usage:
+ *   const dp = _makeDeferredProxy();
+ *   import(...).then(({ createImageObject }) => {
+ *       const newObj = createImageObject(...);
+ *       dp._resolve(newObj);   ← flushes queued writes, wires up live proxy
+ *   });
+ *   return dp;   ← caller gets this immediately
+ *
+ * After resolve, every get/set goes live through _makeProxy.
+ */
+function _makeDeferredProxy() {
+    let _realProxy = null;          // set once _resolve() is called
+    const _pending = [];            // queued { type, key, value, args } ops
+
+    // The object we hand back to the script
+    const dp = {
+        _isproxy:   true,
+        _deferred:  true,
+
+        // Called internally once the real game object exists
+        _resolve(realObj) {
+            _realProxy = _makeProxy(realObj);
+            // Replay all writes / method calls that arrived before resolve
+            for (const op of _pending) {
+                if (op.type === 'set') {
+                    try { _realProxy[op.key] = op.value; } catch(_) {}
+                } else if (op.type === 'call') {
+                    try { if (typeof _realProxy[op.key] === 'function') _realProxy[op.key](...op.args); } catch(_) {}
+                }
+            }
+            _pending.length = 0;
+        },
+
+        // --- Readable properties (safe no-ops before resolve) ---
+        get name()       { return _realProxy ? _realProxy.name       : ''; },
+        get tag()        { return _realProxy ? _realProxy.tag        : ''; },
+        get group()      { return _realProxy ? _realProxy.group      : ''; },
+        get visible()    { return _realProxy ? _realProxy.visible    : true; },
+        get alpha()      { return _realProxy ? _realProxy.alpha      : 1; },
+        get zOrder()     { return _realProxy ? _realProxy.zOrder     : 0; },
+        get physicsType(){ return _realProxy ? _realProxy.physicsType: 'none'; },
+        get health()     { return _realProxy ? _realProxy.health     : 100; },
+        get ammo()       { return _realProxy ? _realProxy.ammo       : 0; },
+        get state()      { return _realProxy ? _realProxy.state      : null; },
+        get isDead()     { return _realProxy ? _realProxy.isDead     : false; },
+        get isInvincible(){ return _realProxy ? _realProxy.isInvincible : false; },
+        get opts()       { return _realProxy ? _realProxy.opts       : {}; },
+        get text()       { return _realProxy ? _realProxy.text       : ''; },
+
+        // --- Position / size (read) ---
+        get x()          { return _realProxy ? _realProxy.x         : 0; },
+        get y()          { return _realProxy ? _realProxy.y         : 0; },
+        get scaleX()     { return _realProxy ? _realProxy.scaleX    : 1; },
+        get scaleY()     { return _realProxy ? _realProxy.scaleY    : 1; },
+        get rotation()   { return _realProxy ? _realProxy.rotation  : 0; },
+        get velocityX()  { return _realProxy ? _realProxy.velocityX : 0; },
+        get velocityY()  { return _realProxy ? _realProxy.velocityY : 0; },
+        get vx()         { return _realProxy ? _realProxy.vx        : 0; },
+        get vy()         { return _realProxy ? _realProxy.vy        : 0; },
+
+        // --- Writable properties: apply live or queue ---
+        set x(v)         { _realProxy ? (_realProxy.x         = v) : _pending.push({type:'set',key:'x',value:v}); },
+        set y(v)         { _realProxy ? (_realProxy.y         = v) : _pending.push({type:'set',key:'y',value:v}); },
+        set rotation(v)  { _realProxy ? (_realProxy.rotation  = v) : _pending.push({type:'set',key:'rotation',value:v}); },
+        set scaleX(v)    { _realProxy ? (_realProxy.scaleX    = v) : _pending.push({type:'set',key:'scaleX',value:v}); },
+        set scaleY(v)    { _realProxy ? (_realProxy.scaleY    = v) : _pending.push({type:'set',key:'scaleY',value:v}); },
+        set velocityX(v) { _realProxy ? (_realProxy.velocityX = v) : _pending.push({type:'set',key:'velocityX',value:v}); },
+        set velocityY(v) { _realProxy ? (_realProxy.velocityY = v) : _pending.push({type:'set',key:'velocityY',value:v}); },
+        set vx(v)        { _realProxy ? (_realProxy.vx        = v) : _pending.push({type:'set',key:'vx',value:v}); },
+        set vy(v)        { _realProxy ? (_realProxy.vy        = v) : _pending.push({type:'set',key:'vy',value:v}); },
+        set visible(v)   { _realProxy ? (_realProxy.visible   = v) : _pending.push({type:'set',key:'visible',value:v}); },
+        set alpha(v)     { _realProxy ? (_realProxy.alpha     = v) : _pending.push({type:'set',key:'alpha',value:v}); },
+        set health(v)    { _realProxy ? (_realProxy.health    = v) : _pending.push({type:'set',key:'health',value:v}); },
+        set ammo(v)      { _realProxy ? (_realProxy.ammo      = v) : _pending.push({type:'set',key:'ammo',value:v}); },
+        set state(v)     { _realProxy ? (_realProxy.state     = v) : _pending.push({type:'set',key:'state',value:v}); },
+        set opts(v)      { _realProxy ? (_realProxy.opts      = v) : _pending.push({type:'set',key:'opts',value:v}); },
+        set text(v)      { _realProxy ? (_realProxy.text      = v) : _pending.push({type:'set',key:'text',value:v}); },
+        set zOrder(v)    { _realProxy ? (_realProxy.zOrder    = v) : _pending.push({type:'set',key:'zOrder',value:v}); },
+        set tag(v)       { _realProxy ? (_realProxy.tag       = v) : _pending.push({type:'set',key:'tag',value:v}); },
+        set group(v)     { _realProxy ? (_realProxy.group     = v) : _pending.push({type:'set',key:'group',value:v}); },
+
+        // --- Methods: call live or queue ---
+        setVelocity(vx, vy)   { _realProxy ? _realProxy.setVelocity(vx, vy) : _pending.push({type:'call',key:'setVelocity',args:[vx,vy]}); },
+        destroy()             { _realProxy ? _realProxy.destroy()            : _pending.push({type:'call',key:'destroy',args:[]}); },
+        hasTag(t)             { return _realProxy ? _realProxy.hasTag(t)     : false; },
+        sendMessage(msg, data){ _realProxy ? _realProxy.sendMessage(msg, data) : _pending.push({type:'call',key:'sendMessage',args:[msg,data]}); },
+        takeDamage(amt, src)  { _realProxy ? _realProxy.takeDamage(amt, src)  : _pending.push({type:'call',key:'takeDamage',args:[amt,src]}); },
+        distanceTo(a, b)      { return _realProxy ? _realProxy.distanceTo(a, b) : Infinity; },
+        setText(v)            { _realProxy ? _realProxy.setText(v)           : _pending.push({type:'call',key:'setText',args:[v]}); },
+        setTextStyle(o)       { _realProxy ? _realProxy.setTextStyle(o)      : _pending.push({type:'call',key:'setTextStyle',args:[o]}); },
+        clone(wx,wy,cb)       { _realProxy ? _realProxy.clone(wx,wy,cb)      : _pending.push({type:'call',key:'clone',args:[wx,wy,cb]}); },
+    };
+    return dp;
+}
+
 function _makeProxy(f) {
     return {
         _ref:         f,
         _isproxy:     true,          // lets sendMessage() and destroy() detect a proxy
         get name()    { return f.label; },
+        set name(v)   { f.label = String(v); },
         /** The object's script tag (set via setTag()). */
         get tag()     { return f._scriptTag   ?? ''; },
+        set tag(v)    { f._scriptTag = String(v); },
         /** The object's group (set via setGroup()). */
         get group()   { return f._scriptGroup ?? ''; },
+        set group(v)  { f._scriptGroup = String(v); },
         /** World X position. */
         get x()       { return  f.x  / 100; },
+        set x(v)      { f.x =  +v * 100; },
         /** World Y position. */
         get y()       { return -f.y  / 100; },
+        set y(v)      { f.y = -+v * 100; },
         /** Horizontal scale (1 = normal, -1 = flipped). */
         get scaleX()  { return f.scale?.x ?? 1; },
+        set scaleX(v) { if (f.scale) { f.scale.x = +v; } else { f.scale = { x: +v, y: f.scale?.y ?? 1 }; } if (f.spriteGraphic) f.spriteGraphic.scale.x = +v; },
         /** Vertical scale. */
         get scaleY()  { return f.scale?.y ?? 1; },
+        set scaleY(v) { if (f.scale) { f.scale.y = +v; } else { f.scale = { x: f.scale?.x ?? 1, y: +v }; } if (f.spriteGraphic) f.spriteGraphic.scale.y = +v; },
         /** Rotation in degrees (positive = clockwise). */
         get rotation(){ return -(f.rotation * 180 / Math.PI); },
+        set rotation(v){ f.rotation = -(+v * Math.PI / 180); if (f.spriteGraphic) f.spriteGraphic.rotation = f.rotation; },
         get visible() { return f.visible; },
         set visible(v){ f.visible = !!v; },
         get alpha()   { return f.alpha; },
-        set alpha(v)  { f.alpha = v; },
+        set alpha(v)  { f.alpha = +v; if (f.spriteGraphic) f.spriteGraphic.alpha = +v; },
         /** Physics body type: "dynamic", "kinematic", "static", or "none". */
         get physicsType() { return f.physicsBody ?? 'none'; },
         /** Z-order / sort layer. */
         get zOrder()  { return f.unityZ ?? 0; },
+        set zOrder(v) { f.unityZ = +v; },
 
         /** Per-clone local variable bag (same as c.opts in cloneSelf callback). */
         get opts()    { return f._opts ?? (f._opts = {}); },
