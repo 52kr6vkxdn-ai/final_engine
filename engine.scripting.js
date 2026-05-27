@@ -1786,6 +1786,11 @@ function _buildSandbox(obj, instRef) {
             obj._scriptTint = hex;
             if (obj.spriteGraphic) obj.spriteGraphic.tint = hex;
         },
+        /** Remove tint (reset to white / no colour effect). */
+        clearTint() {
+            obj._scriptTint = 0xffffff;
+            if (obj.spriteGraphic) obj.spriteGraphic.tint = 0xffffff;
+        },
 
         // ── DISTANCE ─────────────────────────────────────────
         /**
@@ -3928,6 +3933,11 @@ function getSceneName(i)            { return api.getSceneName(i); }
  */
 function pauseScene(on = true)      { api.pauseScene(on); }
 /**
+ * Resume the scene after it was paused.
+ * Alias for pauseScene(false).
+ */
+function resumeScene()              { api.pauseScene(false); }
+/**
  * Restart the current scene without leaving play mode.
  * All objects, physics and scripts are reset to their initial state.
  */
@@ -4253,6 +4263,8 @@ function setCollisionMask(m)      { api.setCollisionMask(m); }
  */
 function setTint(v)               { api.tint = v; }
 function getTint()                { return api.tint; }
+/** Remove tint and restore the object's original colours. */
+function clearTint()              { api.clearTint(); }
 
 // ── Distance ──────────────────────────────────────────────────
 /**
