@@ -16,6 +16,15 @@
 
 import { state } from './engine.state.js';
 import { stopChat } from './engine.scripting.chat.js';
+import {
+    navSnapshotPositions,
+    navPredictPosition,
+    navUpdateMemory, navGetLastKnownPos, navClearMemory,
+    navCanSee, navInFOV,
+    navSeparationForce,
+    navTickStuck, navIsStuck,
+    navFleeVelocity, navTickWander,
+} from './pathfindlogic.js';
 // Other chat functions accessed via window._ze bridge (set by engine.scripting.chat.js)
 // because new Function() sandboxes can't see ES module scope.
 
@@ -606,11 +615,34 @@ function _navAstar(grid, cols, rows, sc, sr, ec, er) {
     if (sc < 0 || sc >= cols || sr < 0 || sr >= rows) return null;
     if (ec < 0 || ec >= cols || er < 0 || er >= rows) return null;
 
-    // If target cell is blocked, relax to nearest free neighbour
+    // ── Relax START cell ─────────────────────────────────────────────────────
+    // Physics can push the agent slightly into an obstacle's inflated zone,
+    // making its grid cell blocked.  Find the nearest free cell so we always
+    // get a valid path instead of immediately returning null (which would stop
+    // the agent dead when it touches an avoided object).
+    if (grid[sr * cols + sc]) {
+        let best = null, bestD = Infinity;
+        for (let dr = -4; dr <= 4; dr++) {
+            for (let dc = -4; dc <= 4; dc++) {
+                const nr = sr + dr, nc = sc + dc;
+                if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) continue;
+                if (grid[nr * cols + nc]) continue;
+                const d = dr*dr + dc*dc;
+                if (d < bestD) { bestD = d; best = { r: nr, c: nc }; }
+            }
+        }
+        if (!best) return null;
+        sr = best.r; sc = best.c;
+    }
+
+    // ── Relax END cell ───────────────────────────────────────────────────────
+    // When the target (e.g. player pressing against a wall) is inside an
+    // inflated obstacle zone, find the closest reachable cell.  Using a
+    // larger radius (8) ensures the AI gets as close as physically possible.
     if (grid[er * cols + ec]) {
         let best = null, bestD = Infinity;
-        for (let dr = -3; dr <= 3; dr++) {
-            for (let dc = -3; dc <= 3; dc++) {
+        for (let dr = -8; dr <= 8; dr++) {
+            for (let dc = -8; dc <= 8; dc++) {
                 const nr = er + dr, nc = ec + dc;
                 if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) continue;
                 if (grid[nr * cols + nc]) continue;
@@ -769,16 +801,19 @@ function _navLineOfSight(grid, cols, rows, r0, c0, r1, c1) {
 /** Per-instance nav state stored on obj._nav */
 function _navStop(obj) {
     if (!obj._nav) return;
-    obj._nav.active  = false;
-    obj._nav.path    = [];
-    obj._nav.follow  = false;
-    obj._nav.target  = null;
+    obj._nav.active      = false;
+    obj._nav.path        = [];
+    obj._nav.follow      = false;
+    obj._nav.target      = null;
+    obj._nav.mode        = 'walk';
+    obj._nav.fleeTarget  = null;
 }
 
 function _navStartWalk(obj, api, tx, ty, opts) {
     const wpx = tx * 100, wpy = -ty * 100; // world-pixel
     if (!obj._nav) obj._nav = {};
     obj._nav.active       = true;
+    obj._nav.mode         = 'walk';
     obj._nav.destPx       = { x: wpx, y: wpy };
     obj._nav.opts         = opts;
     obj._nav.speed        = (opts.speed ?? 3) * 100; // px/sec
@@ -793,6 +828,8 @@ function _navStartWalk(obj, api, tx, ty, opts) {
     obj._nav.path         = [];
     obj._nav.pathIdx      = 0;
     obj._nav.api          = api;
+    obj._nav.predict      = opts.predict     ?? false;
+    obj._nav.predictTime  = opts.predictTime ?? 0.5;
     // Build path immediately
     _navRepath(obj);
 }
@@ -807,6 +844,32 @@ function _navStartFollow(obj, api, target, opts) {
     obj._nav.repath       = (opts.repath ?? 0.5);
     obj._nav.followDone   = opts.follow !== true; // if follow=false, stop on arrival
     _navRepath(obj);
+}
+
+// ── Flee: run directly away from a target (no pathfinding) ──────────────
+function _navStartFlee(obj, api, target, opts) {
+    if (!obj._nav) obj._nav = {};
+    obj._nav.active      = true;
+    obj._nav.mode        = 'flee';
+    obj._nav.fleeTarget  = target;
+    obj._nav.speed       = (opts.speed ?? 3) * 100;
+    obj._nav.opts        = opts;
+    obj._nav.api         = api;
+    obj._nav.follow      = false;
+    obj._nav.path        = [];
+    obj._nav._stuck      = null; // reset stuck state for fresh flee
+}
+
+// ── Wander: smooth random movement ──────────────────────────────────────
+function _navStartWander(obj, api, opts) {
+    if (!obj._nav) obj._nav = {};
+    obj._nav.active = true;
+    obj._nav.mode   = 'wander';
+    obj._nav.speed  = (opts.speed ?? 1.5) * 100;
+    obj._nav.opts   = opts;
+    obj._nav.api    = api;
+    obj._nav.follow = false;
+    obj._nav.path   = [];
 }
 
 function _navRepath(obj) {
@@ -837,6 +900,12 @@ function _navRepath(obj) {
     nav.pathIdx = 1; // skip first node (agent is already there)
     nav._grid   = gridInfo; // keep for debug draw
 
+    // Track the actual last reachable point (may differ from destPx when the
+    // target is pressed against a wall and A* relaxed the endpoint).
+    // _navTick uses this to detect arrival even when destPx is inside a wall.
+    const lastCell = cells[cells.length - 1];
+    nav.effectiveDest = _navCellToWorld(lastCell.c, lastCell.r, ox, oy, cs);
+
     // Debug draw — show the computed path as cyan lines
     if (nav.debug) {
         const dbgApi = nav.api;
@@ -857,6 +926,13 @@ function _navRepath(obj) {
 /**
  * Tick navigation for one object every frame.
  * Called from the update() path inside _navTickAll.
+ *
+ * Handles five modes:
+ *   'walk'   — one-shot A* walk to a world position
+ *   'follow' — continuously repaths toward a target (follow:true)
+ *   'flee'   — direct velocity away from a target (no A*)
+ *   'wander' — smooth random movement (no A*)
+ *   prediction / separation / anti-stuck are layered on top of walk/follow.
  */
 function _navTick(inst, dt) {
     const nav = inst.obj._nav;
@@ -865,20 +941,85 @@ function _navTick(inst, dt) {
     const obj = inst.obj;
     const api = inst.api;
 
-    // Repath timer for follow mode
+    // ── FLEE mode ─────────────────────────────────────────────────────────────
+    // Pure velocity: no pathfinding.  Runs directly away from fleeTarget.
+    if (nav.mode === 'flee') {
+        const t = nav.fleeTarget;
+        // Stop if target has been destroyed or left the scene
+        if (!t || !state.gameObjects.includes(t)) { nav.active = false; return; }
+        const spd = nav.speed / 100; // world units/sec
+        const fv  = navFleeVelocity(obj, t, spd);
+        if (nav.opts?.separation) {
+            const sepR = (nav.opts.separationRadius ?? 1.5) * 100;
+            const sep  = navSeparationForce(obj, sepR, spd * 0.5);
+            api._vel.x = fv.x + sep.x;
+            api._vel.y = fv.y + sep.y;
+        } else {
+            api._vel.x = fv.x;
+            api._vel.y = fv.y;
+        }
+        return;
+    }
+
+    // ── WANDER mode ───────────────────────────────────────────────────────────
+    // Pure velocity: picks random nearby waypoints and glides toward them.
+    if (nav.mode === 'wander') {
+        navTickWander(obj, api, dt, nav.opts ?? {});
+        return;
+    }
+
+    // ── ANTI-STUCK detection (walk / follow modes only) ───────────────────────
+    const stuckAction = navTickStuck(obj, dt);
+    if (stuckAction === 'backup') {
+        // Reverse the last heading for STUCK_BACKUP_DUR seconds, then repath
+        const bx  = -(api._vel.x || 0);
+        const by  = -(api._vel.y || 0);
+        const bLen = Math.sqrt(bx*bx + by*by);
+        const spd  = nav.speed / 100;
+        if (bLen > 0.0001) {
+            api._vel.x = (bx / bLen) * spd;
+            api._vel.y = (by / bLen) * spd;
+        } else {
+            // No prior heading — nudge in a random direction
+            const a    = Math.random() * Math.PI * 2;
+            api._vel.x = Math.cos(a) * spd;
+            api._vel.y = Math.sin(a) * spd;
+        }
+        return;
+    } else if (stuckAction === 'repath') {
+        _navRepath(obj);
+    }
+
+    // ── REPATH timer (follow mode) ────────────────────────────────────────────
     nav.repathTimer = (nav.repathTimer ?? 0) + dt;
     if (nav.follow && nav.followTarget && nav.repathTimer >= nav.repath) {
         nav.repathTimer = 0;
-        nav.destPx = { x: nav.followTarget.x, y: nav.followTarget.y };
+        // PREDICTION: lead a moving target by estimating future position
+        if (nav.predict && nav.followTarget) {
+            const pred  = navPredictPosition(nav.followTarget, nav.predictTime ?? 0.5);
+            nav.destPx  = pred;
+        } else {
+            nav.destPx  = { x: nav.followTarget.x, y: nav.followTarget.y };
+        }
+        // MEMORY: record last known position for the script's lastKnownPos()
+        navUpdateMemory(obj, nav.followTarget);
         _navRepath(obj);
     }
 
     if (!nav.path || nav.path.length === 0) { nav.active = false; return; }
 
-    // Check if we've arrived at final destination
-    const dest = nav.destPx;
-    const dx0 = dest.x - obj.x, dy0 = dest.y - obj.y;
-    if (Math.sqrt(dx0*dx0 + dy0*dy0) <= nav.stopRadius) {
+    // ── ARRIVAL check ─────────────────────────────────────────────────────────
+    // Measure against BOTH the requested destination AND the effective
+    // (A*-relaxed) endpoint so the AI stops when pinned against a wall.
+    const dest  = nav.destPx;
+    const dx0   = dest.x - obj.x, dy0 = dest.y - obj.y;
+    let distToArrival = Math.sqrt(dx0*dx0 + dy0*dy0);
+    if (nav.effectiveDest) {
+        const edx = nav.effectiveDest.x - obj.x;
+        const edy = nav.effectiveDest.y - obj.y;
+        distToArrival = Math.min(distToArrival, Math.sqrt(edx*edx + edy*edy));
+    }
+    if (distToArrival <= nav.stopRadius) {
         api._vel.x = 0;
         api._vel.y = 0;
         if (!nav.follow || !nav.followDone) {
@@ -888,25 +1029,33 @@ function _navTick(inst, dt) {
         return;
     }
 
-    // Advance to next waypoint
+    // ── WAYPOINT traversal ────────────────────────────────────────────────────
     while (nav.pathIdx < nav.path.length) {
-        const wp = nav.path[nav.pathIdx];
-        const dx = wp.x - obj.x, dy = wp.y - obj.y;
+        const wp   = nav.path[nav.pathIdx];
+        const dx   = wp.x - obj.x, dy = wp.y - obj.y;
         const dist = Math.sqrt(dx*dx + dy*dy);
         if (dist < nav.stopRadius * 1.5) {
             nav.pathIdx++;
         } else {
-            // Move toward this waypoint
-            const spd  = nav.speed; // px/sec
-            api._vel.x =  (dx / dist) * spd / 100; // world units/sec
-            api._vel.y = -(dy / dist) * spd / 100; // Y flip
+            const spd = nav.speed;
+            let vx =  (dx / dist) * spd / 100; // world units/sec
+            let vy = -(dy / dist) * spd / 100; // Y flip
+            // ── SEPARATION steering ───────────────────────────────────────────
+            if (nav.opts?.separation) {
+                const sepR = (nav.opts.separationRadius ?? 1.5) * 100;
+                const sep  = navSeparationForce(obj, sepR, spd / 100 * 0.55);
+                vx += sep.x;
+                vy += sep.y;
+            }
+            api._vel.x = vx;
+            api._vel.y = vy;
             return;
         }
     }
 
-    // All waypoints consumed — repath if still not at dest (dynamic follow)
+    // All waypoints consumed
     if (nav.follow) {
-        nav.repathTimer = nav.repath; // force immediate repath
+        nav.repathTimer = nav.repath; // force immediate repath next tick
     } else {
         nav.active = false;
         api._vel.x = 0;
@@ -920,6 +1069,13 @@ function _navTick(inst, dt) {
 
 // ── Repeat ID counter ─────────────────────────────────────────
 let _repeatIdCounter = 0;
+
+// ── Script compile cache ──────────────────────────────────────
+// Keyed by user script code string.  The prelude and postlude are constant
+// across all instances, so the compiled AsyncFunction can be safely reused
+// for every object that shares the same script (e.g. 100 bullets).
+// This eliminates the expensive per-spawn JS compilation that tanks FPS.
+const _scriptFnCache = new Map();
 
 // ── Sandbox API builder ───────────────────────────────────────
 function _buildSandbox(obj, instRef) {
@@ -2271,6 +2427,137 @@ function _buildSandbox(obj, instRef) {
             return (obj._nav?.path ?? []).map(p => ({ x: p.x / 100, y: -p.y / 100 }));
         },
 
+        // ── SMART AI NAVIGATION ───────────────────────────────
+
+        /**
+         * pursue(targetOrName, opts)
+         * Predictive chase — intercepts a moving target by extrapolating its
+         * velocity instead of chasing its current position.
+         * All options are identical to walkToObject, plus:
+         *   predictTime  — seconds ahead to predict (default 0.5)
+         *   separation   — avoid clustering with other nav agents
+         *
+         *   pursue("player", { speed: 3, avoidStatic: true, predictTime: 0.5 })
+         */
+        pursue(targetOrName, opts = {}) {
+            let target = null;
+            if (typeof targetOrName === 'string') {
+                target = state.gameObjects.find(o => o.label === targetOrName);
+                if (!target) {
+                    const tagged = [...(_tagRegistry.get(targetOrName) ?? [])];
+                    if (tagged.length) target = tagged[0].obj;
+                }
+            } else if (targetOrName?._ref) {
+                target = targetOrName._ref;
+            } else if (targetOrName?.label) {
+                target = targetOrName;
+            }
+            if (!target) { _logConsole(`pursue: "${targetOrName}" not found`, '#facc15'); return; }
+            _navStartFollow(obj, api, target, { ...opts, predict: true });
+        },
+
+        /**
+         * flee(targetOrName, opts)
+         * Run directly away from a target each frame (no pathfinding).
+         * Call stopWalking() to stop.
+         *   flee("player", { speed: 4 })
+         *   flee(target, { speed: 3, separation: true })
+         */
+        flee(targetOrName, opts = {}) {
+            let target = null;
+            if (typeof targetOrName === 'string') {
+                target = state.gameObjects.find(o => o.label === targetOrName);
+                if (!target) {
+                    const tagged = [...(_tagRegistry.get(targetOrName) ?? [])];
+                    if (tagged.length) target = tagged[0].obj;
+                }
+            } else if (targetOrName?._ref) {
+                target = targetOrName._ref;
+            } else if (targetOrName?.label) {
+                target = targetOrName;
+            }
+            if (!target) { _logConsole(`flee: "${targetOrName}" not found`, '#facc15'); return; }
+            _navStartFlee(obj, api, target, opts);
+        },
+
+        /**
+         * wander(opts)
+         * Wander randomly around the scene.  Call stopWalking() to stop.
+         *   wander({ speed: 1.5, radius: 3, changeInterval: 2 })
+         */
+        wander(opts = {}) {
+            _navStartWander(obj, api, opts);
+        },
+
+        /**
+         * canSee(targetOrName, opts) → boolean
+         * Returns true when there is an unobstructed straight line between
+         * this object and the target.  Uses the last built A* obstacle grid
+         * when available; otherwise falls back to an AABB sweep.
+         *   if (api.canSee("player")) { ... }
+         *   if (api.canSee(target, { maxRange: 8 })) { ... }
+         */
+        canSee(targetOrName, opts = {}) {
+            let target = null;
+            if (typeof targetOrName === 'string') {
+                target = state.gameObjects.find(o => o.label === targetOrName);
+                if (!target) {
+                    const tagged = [...(_tagRegistry.get(targetOrName) ?? [])];
+                    if (tagged.length) target = tagged[0].obj;
+                }
+            } else if (targetOrName?._ref) {
+                target = targetOrName._ref;
+            } else if (targetOrName?.label) {
+                target = targetOrName;
+            }
+            if (!target) return false;
+            return navCanSee(obj, target, opts);
+        },
+
+        /**
+         * lastKnownPos(targetOrName) → {x, y} | null
+         * Returns the last world position this agent recorded seeing the target.
+         * Entries expire automatically after ~10 seconds.
+         *   var lkp = api.lastKnownPos("player");
+         *   if (lkp) api.walkTo(lkp.x, lkp.y);
+         */
+        lastKnownPos(targetOrName) {
+            const key = typeof targetOrName === 'string'
+                ? targetOrName
+                : (targetOrName?.label ?? String(targetOrName));
+            const px = navGetLastKnownPos(obj, key);
+            if (!px) return null;
+            // Convert PIXI-pixel → world units (Y flip)
+            return { x: px.x / 100, y: -px.y / 100 };
+        },
+
+        /**
+         * inFOV(targetOrName, fovDeg, range) → boolean
+         * True if the target is within the agent's forward-facing view cone.
+         *   if (api.inFOV("player", 90, 6)) { setState("alert"); }
+         */
+        inFOV(targetOrName, fovDeg = 90, range = 0) {
+            let target = null;
+            if (typeof targetOrName === 'string') {
+                target = state.gameObjects.find(o => o.label === targetOrName);
+                if (!target) {
+                    const tagged = [...(_tagRegistry.get(targetOrName) ?? [])];
+                    if (tagged.length) target = tagged[0].obj;
+                }
+            } else if (targetOrName?._ref) {
+                target = targetOrName._ref;
+            } else if (targetOrName?.label) {
+                target = targetOrName;
+            }
+            if (!target) return false;
+            return navInFOV(obj, target, fovDeg, range);
+        },
+
+        /** True when the agent has not progressed enough recently (stuck). */
+        get isStuck() {
+            return navIsStuck(obj);
+        },
+
         // ── RADIUS QUERY ──────────────────────────────────────
         /**
          * Find all objects within a circle radius in world units.
@@ -3416,6 +3703,58 @@ function stopWalking()               { api.stopWalking(); }
 
 /** True if a walkTo or walkToObject is currently running. */
 var isWalking = false; // synced each frame via api.isWalking
+
+// ── SMART AI NAVIGATION ───────────────────────────────────
+/**
+ * Predictive chase — intercepts a moving target.
+ *   pursue("player", { speed: 3, avoidStatic: true, predictTime: 0.5 })
+ *   pursue("player", { speed: 4, separation: true })
+ * Extra options vs walkToObject:
+ *   predictTime — seconds ahead to predict target position (default 0.5)
+ *   separation  — avoid clustering with other AI agents (default false)
+ */
+function pursue(target, opts)         { api.pursue(target, opts ?? {}); }
+
+/**
+ * Run directly away from a target (no pathfinding, instant each frame).
+ *   flee("player", { speed: 4 })
+ *   flee(target, { speed: 3, separation: true })
+ * Call stopWalking() to stop.
+ */
+function flee(target, opts)           { api.flee(target, opts ?? {}); }
+
+/**
+ * Wander randomly around the scene.
+ *   wander()
+ *   wander({ speed: 1.5, radius: 3, changeInterval: 2 })
+ * Call stopWalking() to stop.
+ */
+function wander(opts)                 { api.wander(opts ?? {}); }
+
+/**
+ * Returns true when there is an unobstructed line of sight to the target.
+ * Uses the nav obstacle grid when available; falls back to AABB sweep.
+ *   if (canSee("player")) { setState("chase"); }
+ *   if (canSee(target, { maxRange: 8 })) { ... }
+ */
+function canSee(target, opts)         { return api.canSee(target, opts ?? {}); }
+
+/**
+ * Returns the last world position { x, y } this AI recorded seeing the target.
+ * Expires after ~10 seconds.  Returns null if never seen or expired.
+ *   var lkp = lastKnownPos("player");
+ *   if (lkp) walkTo(lkp.x, lkp.y);
+ */
+function lastKnownPos(target)         { return api.lastKnownPos(target); }
+
+/**
+ * Returns true if the target is within the agent's forward view cone.
+ *   if (inFOV("player", 90, 6)) { log("Player spotted!"); }
+ */
+function inFOV(target, deg, range)    { return api.inFOV(target, deg ?? 90, range ?? 0); }
+
+/** True when the agent hasn't moved enough recently (stuck detection). */
+var isStuck = false; // synced each frame via api.isStuck
 /** Move in the direction this object is currently facing */
 function moveForward(speed) { api.moveForward(speed); }
 /** Rotate this object to face a world position */
@@ -4824,6 +5163,7 @@ __out._onReload          = _onReload;
 __out._stateEnterHandlers= _stateEnterHandlers;
 __out._stateExitHandlers = _stateExitHandlers;
 __out._syncIsWalking     = typeof isWalking !== 'undefined' ? () => { isWalking = api.isWalking; } : null;
+__out._syncIsStuck       = typeof isStuck  !== 'undefined' ? () => { isStuck  = api.isStuck;  } : null;
 __out._initVX            = typeof velocityX !== 'undefined' ? velocityX : 0;
 __out._initVY            = typeof velocityY !== 'undefined' ? velocityY : 0;
 __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelocityToApi : null;
@@ -4843,8 +5183,14 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
         try {
             // Use AsyncFunction so user scripts can use `await` without
             // "unexpected reserved word" errors in strict mode.
+            // The compiled function is cached by script code string — spawning
+            // 100 objects with the same script only compiles once, not 100×.
             const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor; // eslint-disable-line no-new-func
-            const fn = new AsyncFunction('api', '__out', prelude + '\n' + code + '\n' + postlude);
+            let fn = _scriptFnCache.get(code);
+            if (!fn) {
+                fn = new AsyncFunction('api', '__out', prelude + '\n' + code + '\n' + postlude);
+                _scriptFnCache.set(code, fn);
+            }
             const out = {};
             // Chain .catch IMMEDIATELY on the call — never store then attach separately.
             // Storing in a variable first creates a window where a synchronous microtask
@@ -4997,8 +5343,9 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
 
         // ── 2b. Tick navigation agent (sets vel before it's applied) ──
         if (obj._nav?.active) _navTick(this, dt);
-        // Sync isWalking local var into script scope via the api
+        // Sync isWalking / isStuck local vars into script scope via the api
         if (this._syncIsWalking) try { this._syncIsWalking(); } catch(_) {}
+        if (this._syncIsStuck)   try { this._syncIsStuck();   } catch(_) {}
 
         // ── 3. Apply manual gravity accumulation ───────────────────────
         if (grav.x !== 0) vel.x += grav.x * dt;
@@ -5775,7 +6122,11 @@ export function startScripts() {
         _tickTimers(dt);
         _tickDebugLines(dt);
 
-        // 1. Run all scripts — they write desired velocity into obj._kinematicVx/Vy
+        // 1. Snapshot every object's previous-frame position so the prediction
+        //    system can estimate velocity for objects without a physics body.
+        navSnapshotPositions();
+
+        // 2. Run all scripts — they write desired velocity into obj._kinematicVx/Vy
         // Purge dead instances (destroyed objects) — prevents _instances from growing forever
         for (let i = _instances.length - 1; i >= 0; i--) {
             if (!state.gameObjects.includes(_instances[i].obj)) {

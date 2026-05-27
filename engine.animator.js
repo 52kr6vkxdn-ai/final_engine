@@ -857,24 +857,9 @@ function _applyAnimToObject(obj) {
     const anim = _currentAnim(obj);
     if (!anim || !anim.frames.length) return;
 
-    // Remove old animated sprite if any
-    if (obj._animSprite) {
-        obj.removeChild(obj._animSprite);
-        try { obj._animSprite.destroy(); } catch (_) {}
-        obj._animSprite = null;
-    }
-    // Also remove the playmode runtime sprite if present — playAnimation() called from
-    // script during play mode creates a NEW AnimatedSprite via _applyAnimToObject, but
-    // the playmode-created _runtimeSprite is still a child. Remove it to prevent double render.
-    if (obj._runtimeSprite) {
-        obj.removeChild(obj._runtimeSprite);
-        try { obj._runtimeSprite.destroy(); } catch (_) {}
-        obj._runtimeSprite = null;
-        // _savedSpriteGraphic was stashed by playmode; clear it since we're replacing anyway
-        obj._savedSpriteGraphic = null;
-    }
-
-    // Build PIXI textures from dataURLs
+    // Build PIXI textures from dataURLs FIRST — before touching the old sprite —
+    // so the new sprite is ready to insert before the old one is destroyed.
+    // This prevents any single-frame gap where the object has no visible sprite.
     const textures = anim.frames.map(f => {
         try { return PIXI.Texture.from(f.dataURL); }
         catch (_) { return PIXI.Texture.WHITE; }
@@ -884,29 +869,51 @@ function _applyAnimToObject(obj) {
     animSprite.loop   = !!anim.loop;
     animSprite.anchor.set(0.5);
 
-    const maxDim = Math.max(animSprite.texture.width || 100, animSprite.texture.height || 100);
+    // ── Scale normalisation ───────────────────────────────────────────────────
+    // Always scale so the sprite occupies exactly 100 px in its longest
+    // dimension regardless of source image resolution.  This prevents the
+    // object from visually "teleporting" (jumping size) when switching between
+    // animations whose frames have different pixel dimensions.
+    const tw = animSprite.texture.width  || 100;
+    const th = animSprite.texture.height || 100;
+    const maxDim = Math.max(tw, th);
     animSprite.scale.set(100 / maxDim);
 
-    // Preserve tint from old spriteGraphic
-    if (obj.spriteGraphic?.tint !== undefined) {
-        animSprite.tint = obj.spriteGraphic.tint;
+    // Preserve tint from the outgoing sprite
+    const oldSprite = obj._animSprite || obj._runtimeSprite || obj.spriteGraphic;
+    if (oldSprite?.tint !== undefined) {
+        animSprite.tint = oldSprite.tint;
     }
 
-    // Replace the static spriteGraphic
-    if (obj.spriteGraphic) {
-        obj.removeChild(obj.spriteGraphic);
-        obj.spriteGraphic = null;
-    }
+    // ── Atomic swap: insert new sprite BEFORE removing the old one ───────────
+    // Inserting at index 0 ensures it renders beneath any overlaid gizmos
+    // while guaranteeing there is always a visible sprite on screen.
     obj.addChildAt(animSprite, 0);
+
+    // Now it's safe to tear down the old sprites
+    if (obj._animSprite && obj._animSprite !== animSprite) {
+        obj.removeChild(obj._animSprite);
+        try { obj._animSprite.destroy(); } catch (_) {}
+    }
+    if (obj._runtimeSprite) {
+        obj.removeChild(obj._runtimeSprite);
+        try { obj._runtimeSprite.destroy(); } catch (_) {}
+        obj._runtimeSprite = null;
+        obj._savedSpriteGraphic = null;
+    }
+    if (obj.spriteGraphic && obj.spriteGraphic !== animSprite) {
+        obj.removeChild(obj.spriteGraphic);
+        try { obj.spriteGraphic.destroy(); } catch (_) {}
+    }
+
     obj.spriteGraphic = animSprite;
     obj._animSprite   = animSprite;
 
-    // Only auto-play when in play mode; in edit mode show first frame statically
+    // In play mode start the animation immediately on frame 0 (no flash of
+    // a stale frame).  In edit mode freeze on frame 0.
+    animSprite.gotoAndStop(0);
     if (window._zState?.isPlaying) {
         animSprite.play();
-    } else {
-        animSprite.stop();
-        animSprite.gotoAndStop(0);
     }
 }
 

@@ -402,47 +402,54 @@ onStart(() => {
 {
     name: 'ChaseAI',
     code: `// ============================================================
-// CHASE AI  (obstacle-aware pathfinding)
-// Chases the object tagged "player" using A* navmesh so it
-// goes AROUND walls and static obstacles — not through them.
-// Deals damage on contact, then destroys itself.
+// CHASE AI  — Smart obstacle-aware pursuit enemy
+//
+// Behaviour layers (in order of priority):
+//   1. MELEE    — stop and strike when close enough
+//   2. CHASE    — A* pursuit with prediction + separation steering
+//   3. SEARCH   — walk to last-known position when player out of sight
+//   4. WANDER   — drift randomly when player was never seen / lost
+//
 // Works standalone or spawned by EnemySpawner.
 // ============================================================
 
 var SPEED        = 2.5;    // world units / sec while chasing
 var DAMAGE       = 1;
-var MELEE_DIST   = 0.55;   // world units — deal damage when this close
-var REPATH_SEC   = 0.35;   // re-calculate path every N seconds
-var WANDER_SPEED = 1.2;    // speed when no player is found
+var MELEE_DIST   = 0.55;   // deal damage when this close (world units)
+var SIGHT_RANGE  = 8;      // vision range in world units
+var REPATH_SEC   = 0.3;    // seconds between path recalculations
 
-var wanderAngle = 0;
-var chasing     = false;
+// Internal state machine
+var STATE        = "wander";  // "wander" | "chase" | "search"
+var searchTimer  = 0;         // seconds left searching the last-known spot
+var SEARCH_TIME  = 4;         // seconds to investigate before giving up
 
 onStart(() => {
   setTag("enemy");
   setHealth(3);
   setMaxHealth(3);
-  wanderAngle = rand(0, PI * 2);
+  // Start wandering so enemies aren't frozen when player is absent
+  wander({ speed: 1.2, radius: 4, changeInterval: 2.5 });
 });
 
 onUpdate((dt) => {
   var target = findWithTag("player");
 
+  // ── No player object in scene ────────────────────────────────
   if (!target) {
-    // No player — wander randomly and reset chase state
-    if (chasing) { stopWalking(); chasing = false; }
-    wanderAngle += rand(-40, 40) * dt;
-    move(cos(wanderAngle) * WANDER_SPEED * dt,
-         sin(wanderAngle) * WANDER_SPEED * dt);
+    if (STATE !== "wander") {
+      STATE = "wander";
+      wander({ speed: 1.2, radius: 4, changeInterval: 2.5 });
+    }
     return;
   }
 
   var d = distanceTo(target);
 
+  // ── MELEE: close enough to strike ────────────────────────────
   if (d < MELEE_DIST) {
-    // Close enough — strike the player
     stopWalking();
-    chasing = false;
+    STATE = "wander";
     target.takeDamage(DAMAGE);
     hitFlash("#ff4444", 0.15);
     sceneVar.enemyCount = max(0, (sceneVar.enemyCount || 1) - 1);
@@ -450,16 +457,57 @@ onUpdate((dt) => {
     return;
   }
 
-  // Start pathfinding chase (called once; follow:true keeps re-pathing)
-  if (!chasing) {
-    chasing = true;
-    walkToObject("player", {
-      speed:       SPEED,
-      avoidStatic: true,      // go around walls / static physics bodies
-      stopRadius:  MELEE_DIST * 0.8,
-      repath:      REPATH_SEC, // recalculate path this often (seconds)
-      follow:      true,       // keep following even after reaching target
-    });
+  // ── Can we see the player? ────────────────────────────────────
+  var visible = canSee(target, { maxRange: SIGHT_RANGE });
+
+  if (visible) {
+    searchTimer = SEARCH_TIME; // reset search timer whenever player is seen
+
+    // ── CHASE: pursue with prediction + separation ────────────
+    if (STATE !== "chase") {
+      STATE = "chase";
+      pursue("player", {
+        speed:           SPEED,
+        avoidStatic:     true,
+        stopRadius:      MELEE_DIST * 0.8,
+        repath:          REPATH_SEC,
+        follow:          true,
+        separation:      true,      // avoid stacking on other enemies
+        separationRadius: 1.2,
+        predictTime:     0.4,       // lead the player slightly
+      });
+    }
+
+  } else {
+    // Player not visible — use memory
+
+    if (STATE === "chase") {
+      // Just lost sight — switch to SEARCH at last known position
+      var lkp = lastKnownPos("player");
+      if (lkp) {
+        STATE = "search";
+        searchTimer = SEARCH_TIME;
+        walkTo(lkp.x, lkp.y, {
+          speed:       SPEED * 0.85,
+          avoidStatic: true,
+          stopRadius:  0.5,
+        });
+      } else {
+        STATE = "wander";
+        wander({ speed: 1.2, radius: 4, changeInterval: 2.5 });
+      }
+    }
+
+    if (STATE === "search") {
+      searchTimer -= dt;
+      if (searchTimer <= 0 || !isWalking) {
+        // Gave up or reached the last-known spot — start wandering
+        STATE = "wander";
+        wander({ speed: 1.2, radius: 4, changeInterval: 2.5 });
+      }
+    }
+
+    // STATE === "wander" — wander() is already running, nothing to do
   }
 });
 
@@ -475,7 +523,7 @@ onDeath(() => {
 
 onStop(() => {
   stopWalking();
-  chasing = false;
+  STATE = "wander";
 });
 `,
 },
