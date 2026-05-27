@@ -402,18 +402,21 @@ onStart(() => {
 {
     name: 'ChaseAI',
     code: `// ============================================================
-// CHASE AI
-// Moves toward the object tagged "player".
+// CHASE AI  (obstacle-aware pathfinding)
+// Chases the object tagged "player" using A* navmesh so it
+// goes AROUND walls and static obstacles — not through them.
 // Deals damage on contact, then destroys itself.
 // Works standalone or spawned by EnemySpawner.
 // ============================================================
 
-var SPEED        = 2.5;
+var SPEED        = 2.5;    // world units / sec while chasing
 var DAMAGE       = 1;
-var MELEE_DIST   = 0.45;   // world units — deal damage when this close
-var WANDER_SPEED = 1.2;    // speed when no player found
+var MELEE_DIST   = 0.55;   // world units — deal damage when this close
+var REPATH_SEC   = 0.35;   // re-calculate path every N seconds
+var WANDER_SPEED = 1.2;    // speed when no player is found
 
 var wanderAngle = 0;
+var chasing     = false;
 
 onStart(() => {
   setTag("enemy");
@@ -426,19 +429,20 @@ onUpdate((dt) => {
   var target = findWithTag("player");
 
   if (!target) {
-    // Wander randomly when there is no player
+    // No player — wander randomly and reset chase state
+    if (chasing) { stopWalking(); chasing = false; }
     wanderAngle += rand(-40, 40) * dt;
     move(cos(wanderAngle) * WANDER_SPEED * dt,
          sin(wanderAngle) * WANDER_SPEED * dt);
     return;
   }
 
-  var tx = target.x;
-  var ty = target.y;
-  var d  = distanceTo(target);
+  var d = distanceTo(target);
 
   if (d < MELEE_DIST) {
-    // Melee hit
+    // Close enough — strike the player
+    stopWalking();
+    chasing = false;
     target.takeDamage(DAMAGE);
     hitFlash("#ff4444", 0.15);
     sceneVar.enemyCount = max(0, (sceneVar.enemyCount || 1) - 1);
@@ -446,10 +450,17 @@ onUpdate((dt) => {
     return;
   }
 
-  // Move toward player
-  var nx = (tx - getX()) / d;
-  var ny = (ty - getY()) / d;
-  move(nx * SPEED * dt, ny * SPEED * dt);
+  // Start pathfinding chase (called once; follow:true keeps re-pathing)
+  if (!chasing) {
+    chasing = true;
+    walkToObject("player", {
+      speed:       SPEED,
+      avoidStatic: true,      // go around walls / static physics bodies
+      stopRadius:  MELEE_DIST * 0.8,
+      repath:      REPATH_SEC, // recalculate path this often (seconds)
+      follow:      true,       // keep following even after reaching target
+    });
+  }
 });
 
 onDamage((amount) => {
@@ -460,6 +471,11 @@ onDeath(() => {
   sceneVar.score      = (sceneVar.score || 0) + 10;
   sceneVar.enemyCount = max(0, (sceneVar.enemyCount || 1) - 1);
   destroy();
+});
+
+onStop(() => {
+  stopWalking();
+  chasing = false;
 });
 `,
 },

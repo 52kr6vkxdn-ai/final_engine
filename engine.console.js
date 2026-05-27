@@ -176,10 +176,15 @@ export function installGlobalErrorCatchers() {
             text += '\n  💡 A network request failed. Check your connection, or avoid fetch() inside scripts.';
         } else if (msg.includes('AbortError')) {
             text += '\n  💡 An operation was aborted. This is usually harmless on scene switch.';
-        } else if (reason?.stack) {
-            // Show first useful stack frame
-            const frame = reason.stack.split('\n').find(l => l.trim().startsWith('at ') && !l.includes('engine.'));
-            if (frame) text += `\n  → ${frame.trim()}`;
+        } else if (msg.toLowerCase().includes('unexpected identifier') || msg.toLowerCase().includes('syntaxerror')) {
+            text += '\n  💡 A syntax error occurred in a script or engine module. Check recent script changes.';
+        }
+        if (reason?.stack) {
+            // Show up to 3 useful stack frames (include engine frames so the source is visible)
+            const frames = reason.stack.split('\n')
+                .filter(l => l.trim().startsWith('at '))
+                .slice(0, 3);
+            if (frames.length) text += '\n  ' + frames.map(f => f.trim()).join('\n  ');
         }
         engineLog(text, ERR);
         if (state.isPlaying) _autoShowConsole();

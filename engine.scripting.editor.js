@@ -778,20 +778,21 @@ export function promptCreateScript(obj) {
 
 // ── Load / Attach Script prompt ───────────────────────────────
 export function promptLoadScript(obj) {
-    const modal = _modal();
+    // If no scripts exist yet, inject built-ins first then re-open
     if (state.scripts.length === 0) {
-        modal.innerHTML = `
-            <div style="padding:24px;min-width:280px;text-align:center;">
-                <div style="font-size:26px;margin-bottom:8px;">📄</div>
-                <div style="color:#e0e0e0;font-weight:600;margin-bottom:6px;">No scripts yet</div>
-                <div style="color:#858585;font-size:11px;margin-bottom:14px;">Use "Create Script" to write your first script</div>
-                <button id="sn-close" style="${_bs('#0f1018','#aaa','#1a1d28')}">Close</button>
-            </div>
-        `;
-        document.body.appendChild(modal);
-        modal.querySelector('#sn-close').onclick = () => modal.remove();
+        const loading = _modal();
+        loading.innerHTML = `<div style="padding:24px;min-width:220px;text-align:center;color:#888;font-size:13px;">Loading scripts…</div>`;
+        document.body.appendChild(loading);
+        import('./engine.defaultscripts.js').then(m => {
+            m.injectDefaultScripts(state.scripts);
+            loading.remove();
+            promptLoadScript(obj); // re-open now that scripts exist
+            import('./engine.scripting.js').then(s => s.refreshScriptPanel());
+        });
         return;
     }
+
+    const modal = _modal();
 
     const rows = state.scripts.map(s => {
         const attached = obj.scriptName === s.name;

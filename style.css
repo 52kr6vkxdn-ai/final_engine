@@ -4,30 +4,30 @@
 
 /* ── Unity 2D colour palette ───────────────────────────────── */
 :root {
-    --bg-main:       #282828;
-    --bg-panel:      #3C3C3C;
-    --bg-toolbar:    #383838;
-    --bg-header:     #2D2D2D;
-    --bg-hover:      #464646;
-    --bg-active:     #2C5F8A;
-    --bg-selected:   #2C5F8A;
-    --bg-input:      #2D2D2D;
-    --bg-row-alt:    #343434;
-    --border:        #1A1A1A;
-    --border-light:  #242424;
-    --border-mid:    #303030;
-    --text:          #C8C8C8;
-    --text-dim:      #9D9D9D;
-    --text-dark:     #585858;
-    --accent:        #4C97D5;
-    --accent-bright: #5AABF5;
+    --bg-main:       #1E1E1E;
+    --bg-panel:      #252526;
+    --bg-toolbar:    #2D2D2D;
+    --bg-header:     #252526;
+    --bg-hover:      #2A2D2E;
+    --bg-active:     #094771;
+    --bg-selected:   #094771;
+    --bg-input:      #1E1E1E;
+    --bg-row-alt:    #232324;
+    --border:        #141414;
+    --border-light:  #1C1C1C;
+    --border-mid:    #333333;
+    --text:          #CCCCCC;
+    --text-dim:      #858585;
+    --text-dark:     #4D4D4D;
+    --accent:        #4FC1FF;
+    --accent-bright: #75D3FF;
     --green:         #6DB33F;
-    --yellow:        #E8A200;
-    --red:           #D03030;
-    --axis-x:        #C64040;
+    --yellow:        #E9B84A;
+    --red:           #F44747;
+    --axis-x:        #E05252;
     --axis-y:        #6DB33F;
-    --axis-z:        #4C97D5;
-    --unity-blue:    #2C5F8A;
+    --axis-z:        #4FC1FF;
+    --unity-blue:    #094771;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -700,9 +700,20 @@ input:focus, select:focus { outline: none; }
     border-left: 2px solid rgba(232,162,0,0.4);
 }
 
-/* ── Play mode tint (Unity dims editor when playing) ─────── */
-body.is-playing .menu-bar { background: #292010; }
-body.is-playing .toolbar  { background: #2D2600; }
+/* ── Play mode tint — subtle dark-red to signal active play ─ */
+body.is-playing .menu-bar {
+    background: #1A0C0C;
+    border-bottom-color: #5A1A1A;
+}
+body.is-playing .toolbar {
+    background: #1C0D0D;
+    border-bottom-color: #4A1616;
+}
+body.is-playing .toolbar-center {
+    background: #1C0D0D;
+    border-color: #5A2020;
+}
+body.is-playing #btn-play { opacity: 0.4; pointer-events: none; }
 
 /* ── Unity-style alternating inspector rows ──────────────── */
 .component-body .prop-row:nth-child(even) {

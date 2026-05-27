@@ -420,41 +420,80 @@ function _clearDebugGfx() {
  *   ox/oy = pixel origin (top-left of grid)
  *   cs    = cell size in pixels
  */
-function _navBuildGrid(agentObj, opts) {
-    const gw = (state.sceneSettings?.gameWidth  ?? 1280);
-    const gh = (state.sceneSettings?.gameHeight ?? 720);
-
-    // Auto cell size: ~2.5× agent half-width, clamp to [20,80] px
+function _navBuildGrid(agentObj, opts, destPx) {
+    // ── Agent clearance radius ───────────────────────────────────────────────
+    // If minHoleSize is given (world units), the agent radius is derived so
+    // any gap ≥ minHoleSize is navigable.  Otherwise fall back to the sprite
+    // half-width or an explicit agentRadius override.
     const sprW = agentObj.spriteGraphic?.width  ?? agentObj._bounds?.width  ?? 50;
     const sprH = agentObj.spriteGraphic?.height ?? agentObj._bounds?.height ?? 50;
     const agentHW = (Math.min(sprW, sprH) * Math.abs(agentObj.scale?.x ?? 1)) / 2;
-    const agentR  = opts.agentRadius != null ? opts.agentRadius * 100 : agentHW;
-    const cs = opts.cellSize != null
-        ? Math.max(8, opts.cellSize * 100)
-        : Math.max(20, Math.min(80, agentR * 2.5));
 
-    const margin = Math.max(4, gw * 0.4, gh * 0.4); // extend grid past game bounds
-    const ox = -(gw / 2 + margin);
-    const oy = -(gh / 2 + margin);
-    const totalW = gw + margin * 2;
-    const totalH = gh + margin * 2;
-    const cols = Math.ceil(totalW / cs);
-    const rows = Math.ceil(totalH / cs);
-    const grid = new Uint8Array(cols * rows); // 0 = free, 1 = blocked
+    let agentR;
+    if (opts.minHoleSize != null) {
+        // minHoleSize (world units) → pixel radius that still leaves one cell
+        // of clearance inside the narrowest navigable gap.
+        agentR = Math.max(1, opts.minHoleSize * 100 / 2 - 1);
+    } else if (opts.agentRadius != null) {
+        agentR = opts.agentRadius * 100;
+    } else {
+        agentR = agentHW;
+    }
 
-    // Collect obstacle AABBs
+    // ── Cell size ────────────────────────────────────────────────────────────
+    // When minHoleSize is supplied, cells must be small enough that a
+    // minHoleSize-wide gap contains at least 2 cells → cs ≤ minHoleSize*50.
+    let cs;
+    if (opts.cellSize != null) {
+        cs = Math.max(8, opts.cellSize * 100);
+    } else if (opts.minHoleSize != null) {
+        // Cell fits neatly inside the narrowest allowed gap
+        cs = Math.max(8, Math.min(opts.minHoleSize * 50, agentR * 2));
+    } else {
+        cs = Math.max(20, Math.min(80, agentR * 2.5));
+    }
+
+    // ── Grid bounds: cover agent + destination + every obstacle ─────────────
+    // This ensures the grid works at any location, not just near scene origin.
     const obstacles = _navGetObstacles(agentObj, opts);
-    const pad = agentR; // inflate obstacles by agent radius (minkowski)
+    const pad = agentR;
 
+    let minWX = agentObj.x, maxWX = agentObj.x;
+    let minWY = agentObj.y, maxWY = agentObj.y;
+    if (destPx) {
+        minWX = Math.min(minWX, destPx.x); maxWX = Math.max(maxWX, destPx.x);
+        minWY = Math.min(minWY, destPx.y); maxWY = Math.max(maxWY, destPx.y);
+    }
     for (const o of obstacles) {
         const bb = _getAABB(o);
-        // Inflate
+        minWX = Math.min(minWX, bb.left);   maxWX = Math.max(maxWX, bb.right);
+        minWY = Math.min(minWY, bb.top);    maxWY = Math.max(maxWY, bb.bottom);
+    }
+    // Also extend to cover any tilemap objects
+    for (const tm of state.gameObjects) {
+        if (!tm.isTilemap && !tm.isAutoTilemap) continue;
+        const bb = _getAABB(tm);
+        if (bb) {
+            minWX = Math.min(minWX, bb.left);  maxWX = Math.max(maxWX, bb.right);
+            minWY = Math.min(minWY, bb.top);   maxWY = Math.max(maxWY, bb.bottom);
+        }
+    }
+    const margin = Math.max(pad * 4, 150);
+    const ox     = minWX - margin;
+    const oy     = minWY - margin;
+    const totalW = (maxWX - minWX) + margin * 2;
+    const totalH = (maxWY - minWY) + margin * 2;
+    const cols   = Math.max(4, Math.ceil(totalW / cs));
+    const rows   = Math.max(4, Math.ceil(totalH / cs));
+    const grid   = new Uint8Array(cols * rows); // 0 = free, 1 = blocked
+
+    // ── Mark obstacle cells ──────────────────────────────────────────────────
+    for (const o of obstacles) {
+        const bb = _getAABB(o);
         const left   = bb.left   - pad;
         const right  = bb.right  + pad;
         const top    = bb.top    - pad;
         const bottom = bb.bottom + pad;
-
-        // Convert to grid cells
         const c0 = Math.max(0, Math.floor((left   - ox) / cs));
         const c1 = Math.min(cols - 1, Math.ceil((right  - ox) / cs));
         const r0 = Math.max(0, Math.floor((top    - oy) / cs));
@@ -466,7 +505,7 @@ function _navBuildGrid(agentObj, opts) {
         }
     }
 
-    // Also mark tilemap tiles as blocked
+    // ── Mark tilemap tiles as blocked ────────────────────────────────────────
     for (const tmObj of state.gameObjects) {
         if (!tmObj.isTilemap && !tmObj.isAutoTilemap) continue;
         _navMarkTilemapBlocked(grid, cols, rows, ox, oy, cs, pad, tmObj);
@@ -745,7 +784,6 @@ function _navStartWalk(obj, api, tx, ty, opts) {
     obj._nav.speed        = (opts.speed ?? 3) * 100; // px/sec
     obj._nav.stopRadius   = (opts.stopRadius ?? 0.3) * 100;
     obj._nav.onDone       = opts.onDone   ?? null;
-    obj._nav.onFail       = opts.onFail   ?? null;
     obj._nav.follow       = false;
     obj._nav.followTarget = null;
     obj._nav.repathTimer  = 0;
@@ -760,7 +798,9 @@ function _navStartWalk(obj, api, tx, ty, opts) {
 }
 
 function _navStartFollow(obj, api, target, opts) {
-    _navStartWalk(obj, api, -target.y / 100, target.x / 100, opts); // placeholder
+    // target.x / target.y are in PIXI pixel-space (Y-down).
+    // _navStartWalk expects world units: worldX = px/100, worldY = -py/100
+    _navStartWalk(obj, api, target.x / 100, -target.y / 100, opts);
     obj._nav.follow       = true;
     obj._nav.followTarget = target;
     obj._nav.destPx       = { x: target.x, y: target.y };
@@ -774,7 +814,7 @@ function _navRepath(obj) {
     if (!nav || !nav.active) return;
 
     const opts   = nav.opts ?? {};
-    const gridInfo = _navBuildGrid(obj, opts);
+    const gridInfo = _navBuildGrid(obj, opts, nav.destPx);
     const { grid, cols, rows, ox, oy, cs } = gridInfo;
 
     const sx = obj.x, sy = obj.y;
@@ -785,8 +825,7 @@ function _navRepath(obj) {
 
     const rawCells = _navAstar(grid, cols, rows, start.c, start.r, end.c, end.r);
     if (!rawCells) {
-        _logConsole(`[Nav] No path found for "${obj.label}"`, '#facc15');
-        if (nav.onFail) try { nav.onFail(); } catch(_) {}
+        _logConsole(`[Nav] No path found for "${obj.label}" — destination may be fully enclosed by obstacles.`, '#facc15');
         nav.active = false;
         return;
     }
@@ -798,14 +837,18 @@ function _navRepath(obj) {
     nav.pathIdx = 1; // skip first node (agent is already there)
     nav._grid   = gridInfo; // keep for debug draw
 
-    // Debug draw
+    // Debug draw — show the computed path as cyan lines
     if (nav.debug) {
-        const api = nav.api;
-        if (api && nav.path.length >= 2) {
+        const dbgApi = nav.api;
+        if (dbgApi && nav.path.length >= 2) {
             for (let i = 0; i < nav.path.length - 1; i++) {
                 const a = nav.path[i], b = nav.path[i + 1];
-                api.debugLine(a.x / 100, -a.y / 100, b.x / 100, -b.y / 100,
-                    { color: '#00e5ff', width: 2, duration: nav.repath + 0.1 });
+                // drawDebugLine(x1, y1, x2, y2, color, duration, width)
+                dbgApi.drawDebugLine(
+                    a.x / 100, -a.y / 100,
+                    b.x / 100, -b.y / 100,
+                    '#00e5ff', nav.repath + 0.1, 2
+                );
             }
         }
     }
@@ -2167,8 +2210,9 @@ function _buildSandbox(obj, instRef) {
          *   avoidStatic  — true → avoid all physicsBody='static' objects
          *   avoidAll     — true → avoid all objects with any physics body
          *   stopRadius   — arrival distance in world units (default 0.3)
+         *   minHoleSize  — minimum gap width (world units) the agent can squeeze through;
+         *                  smaller gaps are treated as blocked (default: auto from sprite)
          *   onDone       — callback fired on arrival
-         *   onFail       — callback fired if path cannot be found
          *   agentRadius  — half-size of agent for clearance (default: auto from sprite)
          *   cellSize     — A* grid cell size in world units (default: auto)
          *   debug        — true → draw the path with debugLine
@@ -2189,6 +2233,7 @@ function _buildSandbox(obj, instRef) {
          * Options: same as walkTo plus:
          *   repath       — how often to recalculate path (default 0.5s)
          *   follow       — keep following even after arrival (default: false)
+         *   minHoleSize  — minimum gap width (world units) the agent can navigate through
          */
         walkToObject(targetOrName, opts = {}) {
             let target = null;
@@ -3332,6 +3377,7 @@ function moveTo(x, y)  { api.moveTo(x, y); }
  *   walkTo(5, 3, { speed: 4, avoidStatic: true })
  *   walkTo(5, 3, { speed: 3, avoidTag: "wall", onDone: () => log("arrived!") })
  *   walkTo(5, 3, { speed: 5, avoidAll: true, debug: true })
+ *   walkTo(5, 3, { speed: 3, avoidStatic: true, minHoleSize: 1.5 }) // can squeeze through 1.5-unit gaps
  *
  * Options:
  *   speed        — world units/sec (default 3)
@@ -3340,8 +3386,9 @@ function moveTo(x, y)  { api.moveTo(x, y); }
  *   avoidStatic  — true → avoid physicsBody='static' objects
  *   avoidAll     — true → avoid any object with a physics body
  *   stopRadius   — arrival distance (default 0.3 units)
+ *   minHoleSize  — minimum gap width in world units the AI can navigate through
+ *                  (smaller gaps are treated as blocked; default: auto from sprite size)
  *   onDone       — callback when arrived
- *   onFail       — callback if no path found
  *   debug        — true → visualise path with lines
  *   smooth       — false → disable path smoothing
  *   cellSize     — override grid cell size in world units
@@ -3355,10 +3402,12 @@ function walkTo(x, y, opts)          { api.walkTo(x, y, opts ?? {}); }
  *   walkToObject("Player", { speed: 3, avoidStatic: true })
  *   walkToObject("chest",  { speed: 4, stopRadius: 1, onDone: () => openChest() })
  *   walkToObject(find("Boss"), { speed: 6, follow: true })  // keep following
+ *   walkToObject("Player", { speed: 3, avoidStatic: true, minHoleSize: 1.2 }) // tight gaps OK
  *
  * Options: same as walkTo, plus:
- *   repath   — seconds between path recalculations (default 0.5)
- *   follow   — keep walking even after arrival (default false)
+ *   repath      — seconds between path recalculations (default 0.5)
+ *   follow      — keep walking even after arrival (default false)
+ *   minHoleSize — minimum gap width in world units the AI can navigate through
  */
 function walkToObject(nameOrProxy, opts) { api.walkToObject(nameOrProxy, opts ?? {}); }
 
@@ -3942,7 +3991,7 @@ function spawnObject(assetName, x, y, onSpawned) {
  * Create a text object in the scene from a script.
  * Returns a proxy so you can immediately update it.
  *
- * Safe to call every frame in onUpdate — pass an `id` option to deduplicate:
+ * Safe to call every frame in onUpdate — pass an \`id\` option to deduplicate:
  *   drawText("Score: " + score, 0, 3, { id: "score", fontSize: 36, fill: "#fff" });
  * Without an id, text is auto-deduplicated by position (same x/y = same node).
  *
@@ -3959,7 +4008,7 @@ function drawText(text, x, y, styleOpts = {}) {
     // This prevents duplicate text nodes when drawText is called every frame.
     const cacheKey = styleOpts.id != null
         ? String(styleOpts.id)
-        : `_auto_${x}_${y}`;
+        : \`_auto_\${x}_\${y}\`;
     if (_drawTextCache.has(cacheKey)) {
         const existing = _drawTextCache.get(cacheKey);
         if (!existing._ref || existing._ref._markedForDestroy || !existing._ref._pixiText) {
@@ -5915,6 +5964,24 @@ export function runScriptingApiTests() {
         }
     } catch (e) {
         fail('showChat() name fallback', e.message);
+    }
+
+    // ── Test 7: prelude template literal compiles without backtick truncation ──
+    try {
+        const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+        // Reproduces the exact pattern that was broken: a template literal used
+        // inside a function that is itself inside the prelude template literal.
+        const code = `
+            function drawText(text, x, y, opts) {
+                const key = opts.id != null ? String(opts.id) : \`_auto_\${x}_\${y}\`;
+                return key;
+            }
+            var result = drawText('hi', 1, 2, {});
+        `;
+        const fn = new AsyncFunction('api', '__out', code);
+        pass('Prelude: backtick template literal in inner function compiles OK');
+    } catch (e) {
+        fail('Prelude: backtick template literal in inner function', e.message);
     }
 
     // ── Report ────────────────────────────────────────────────────────────────

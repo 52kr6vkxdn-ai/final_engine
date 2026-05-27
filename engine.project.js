@@ -135,25 +135,30 @@ function _applyProject(project) {
         }, project.sceneSettings);
         if (state.app?.renderer) state.app.renderer.background.color = state.sceneSettings.bgColor;
     }
-    // Inject built-in scripts if the project has none yet
+    // Inject built-in scripts if the project has none yet, then refresh the panel
+    const _afterScripts = () => {
+        state.scenes          = project.scenes || [{ id: 'scene_1', name: 'Scene-1', snapshot: null }];
+        state.activeSceneIndex = project.activeScene ?? 0;
+
+        import('./engine.scenes.js').then(m => {
+            m.initScenes();
+            if (project.activeScene > 0) m.switchToScene(project.activeScene);
+        });
+        import('./engine.ui.js').then(m => {
+            m.refreshAssetPanel();
+            m.refreshPrefabPanel();
+        });
+        import('./engine.scripting.js').then(m => m.refreshScriptPanel());
+    };
+
     if (state.scripts.length === 0) {
-        import('./engine.defaultscripts.js').then(m => m.injectDefaultScripts(state.scripts));
+        import('./engine.defaultscripts.js').then(m => {
+            m.injectDefaultScripts(state.scripts);
+            _afterScripts();
+        });
+    } else {
+        _afterScripts();
     }
-    state.scenes   = project.scenes  || [{ id: 'scene_1', name: 'Scene-1', snapshot: null }];
-    state.activeSceneIndex = project.activeScene ?? 0;
-
-    // Reload active scene
-    import('./engine.scenes.js').then(m => {
-        m.initScenes();
-        // initScenes resets to scene_1; we need to switch to the saved active
-        if (project.activeScene > 0) m.switchToScene(project.activeScene);
-    });
-
-    import('./engine.ui.js').then(m => {
-        m.refreshAssetPanel();
-        m.refreshPrefabPanel();
-    });
-    import('./engine.scripting.js').then(m => m.refreshScriptPanel());
 
     _logConsole('📂 Project loaded: ' + (project.name || 'unknown'), '#4ade80');
 }

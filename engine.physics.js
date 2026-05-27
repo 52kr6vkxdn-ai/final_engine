@@ -851,6 +851,24 @@ function _rebuildBodyForFrame(entry) {
     const { obj, body: oldBody, type } = entry;
     if (!oldBody || type === 'kinematic') return;
 
+    // Only rebuild the body if this specific frame has a dedicated polygon shape.
+    // For box / circle / capsule shapes — or polygon shapes without per-frame
+    // polygon data — the collision dimensions must stay constant when the
+    // animation frame changes (even if sprite resolution differs).
+    // This prevents the collision shape from glitching when switching
+    // animations that have different source image resolutions.
+    const shape = obj.physicsShape ?? 'box';
+    const frameId = obj._runtimePhysicsFrameId;
+    const pfPoly = frameId && obj.physicsPolygons
+        ? obj.physicsPolygons[frameId]
+        : null;
+    const hasPFPolygon = Array.isArray(pfPoly) && pfPoly.length >= 3;
+
+    if (!hasPFPolygon && shape !== 'polygon' && shape !== 'shared') {
+        // No per-frame polygon defined for this frame — keep existing body as-is.
+        return;
+    }
+
     const pos    = oldBody.getPosition();
     const vel    = oldBody.getLinearVelocity();
     const angle  = oldBody.getAngle();
