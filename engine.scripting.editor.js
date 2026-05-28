@@ -1086,6 +1086,7 @@ function _sidebarHTML() {
             'bounceX()  /  bounceY()',
             'launch(vx, vy)',
             'addImpulse(vx, vy)',
+            'addForce(fx, fy)  // instant velocity impulse via proxy',
         ]],
         ['Rotation / Scale', [
             'getRotation()  /  setRotation(deg)',
@@ -1231,6 +1232,20 @@ function _sidebarHTML() {
             'repeat(1.5, fn)',
             'cancelRepeat(id)',
             'getTime()',
+        ]],
+        ['forever (per-frame loop)', [
+            '// Runs a function every frame — use instead of onUpdate',
+            '// Works inside onStart, onCloneStart, anywhere.',
+            '// dt = delta time in seconds (frame-rate independent)',
+            'forever((dt) => { x -= 3 * dt; })   // move left each frame',
+            '// Stack multiple loops:',
+            'forever((dt) => { x -= speed * dt; })',
+            'forever((dt) => { rotation += 90 * dt; })',
+            '// Full Flappy-Bird pipe example:',
+            'onCloneStart(() => {',
+            '    forever((dt) => { x -= 3 * dt; })',
+            '    onScreenExit(() => { destroySelf(); })',
+            '})',
         ]],
         ['Spawn / Clone', [
             '// All spawn/clone functions return a proxy you can store',
