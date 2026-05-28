@@ -486,6 +486,38 @@ const COMPLETIONS = [
     { n:'Key.ARROW_DOWN',    m:'🎮 key const', v:'Key.ARROW_DOWN' },
     { n:'Key.ANY',           m:'🎮 key const', v:'Key.ANY' },
     { n:'Mouse.LEFT',        m:'🎮 mouse const',v:'Mouse.LEFT' },
+
+    // ── forever — per-frame loop ────────────────────────────
+    { n:'forever',           m:'🔁 loop',     v:"forever((dt) => {\n  ${1:// runs every frame}\n});" },
+    { n:'forever move',      m:'🔁 loop',     v:"forever((dt) => {\n  x -= ${1:3} * dt;  // move left\n});" },
+
+    // ── Clone return-value: var c = cloneSelf(...) ─────────
+    { n:'cloneSelf assign',  m:'➕ clone',    v:"var ${1:c} = cloneSelf(${2:getX()}, ${3:getY()});" },
+    { n:'cloneObject assign',m:'➕ clone',    v:"var ${1:c} = cloneObject('${2:Name}', ${3:x}, ${4:y});" },
+    { n:'cloneInPlace assign',m:'➕ clone',   v:"var ${1:c} = cloneInPlace();" },
+    { n:'spawnObject assign', m:'➕ spawn',   v:"var ${1:obj} = spawnObject('${2:Name}', ${3:x}, ${4:y});" },
+
+    // ── Proxy properties on a stored clone/object reference ─
+    { n:'c.x',               m:'📌 clone prop', v:'${1:c}.x' },
+    { n:'c.y',               m:'📌 clone prop', v:'${1:c}.y' },
+    { n:'c.rotation',        m:'📌 clone prop', v:'${1:c}.rotation' },
+    { n:'c.scaleX',          m:'📌 clone prop', v:'${1:c}.scaleX' },
+    { n:'c.scaleY',          m:'📌 clone prop', v:'${1:c}.scaleY' },
+    { n:'c.velocityX',       m:'📌 clone prop', v:'${1:c}.velocityX' },
+    { n:'c.velocityY',       m:'📌 clone prop', v:'${1:c}.velocityY' },
+    { n:'c.alpha',           m:'📌 clone prop', v:'${1:c}.alpha' },
+    { n:'c.visible',         m:'📌 clone prop', v:'${1:c}.visible' },
+    { n:'c.health',          m:'📌 clone prop', v:'${1:c}.health' },
+    { n:'c.state',           m:'📌 clone prop', v:'${1:c}.state' },
+    { n:'c.opts',            m:'📌 clone prop', v:'${1:c}.opts.${2:myVar}' },
+    { n:'c.destroy',         m:'📌 clone prop', v:'${1:c}.destroy()' },
+    { n:'c.setVelocity',     m:'📌 clone prop', v:'${1:c}.setVelocity(${2:vx}, ${3:vy})' },
+    { n:'c.stopMovement',    m:'📌 clone prop', v:'${1:c}.stopMovement()' },
+    { n:'c.addForce',        m:'📌 clone prop', v:'${1:c}.addForce(${2:fx}, ${3:fy})' },
+    { n:'c.sendMessage',     m:'📌 clone prop', v:"${1:c}.sendMessage('${2:msg}', ${3:data})" },
+    { n:'c.takeDamage',      m:'📌 clone prop', v:'${1:c}.takeDamage(${2:10})' },
+    { n:'c.isTop (opts)',    m:'📌 clone prop', v:'${1:c}.opts.isTop' },
+    { n:'c.isTop set',       m:'📌 clone prop', v:'${1:c}.opts.isTop = ${2:true}' },
 ].map(c => ({ caption:c.n, value:c.v, meta:c.m, score:950 }));
 
 

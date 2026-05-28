@@ -1091,9 +1091,10 @@ function _buildSandbox(obj, instRef) {
     // Per-object manual gravity (script can call this.gravity(0, 9.8))
     const _grav = { x: 0, y: 0 };
 
-    // Per-sandbox tween queue, repeat timers, and key event handlers
+    // Per-sandbox tween queue, repeat timers, key handlers, and forever callbacks
     const _tweens          = [];
     const _repeats         = [];
+    const _foreverCbs      = [];  // callbacks registered via forever()
     const _keyDownHandlers = new Map();
     const _keyUpHandlers   = new Map();
     // Hammer.js gesture handlers
@@ -1159,6 +1160,12 @@ function _buildSandbox(obj, instRef) {
         bounceX() { _vel.x = -_vel.x; },
         /** Bounce velocityY (e.g. hit a floor) */
         bounceY() { _vel.y = -_vel.y; },
+
+        // ── INTERNAL SHARED STATE (used by ScriptInstance.update and forever()) ──
+        /** Direct access to the velocity vector — used by proxy and forever() */
+        get _vel()        { return _vel; },
+        /** Direct access to the forever-loop callback list */
+        get _foreverCbs() { return _foreverCbs; },
 
         // ── MANUAL GRAVITY ────────────────────────────────────
         /**
@@ -5333,23 +5340,26 @@ function onceAfter(seconds, fn) {
 
 // ── FOREVER LOOP ──────────────────────────────────────────
 /**
- * Run a function every single frame — equivalent to onUpdate but
- * can be called multiple times and from inside onCloneStart / onStart.
+ * Run a function every single frame.
+ * Works inside onStart, onCloneStart, or anywhere in the script.
+ * Can be called multiple times — each forever() adds its own loop.
  *
- *   forever(() => {
+ *   forever((dt) => {
  *       x -= 3 * dt;          // move left each frame
  *   });
  *
- * Each call to forever() stacks its own per-frame callback.
- * Returns the function so it can be used inline.
+ *   // Inside onCloneStart — fully supported:
+ *   onCloneStart(() => {
+ *       forever((dt) => { x -= 3 * dt; });
+ *       onScreenExit(() => { destroySelf(); });
+ *   });
+ *
+ * Callbacks are stored on the api object so they survive even when
+ * called from inside event handlers that fire AFTER the script compiles.
  */
 function forever(fn) {
     if (typeof fn !== 'function') return;
-    var _prev = _onUpdate;
-    _onUpdate = function(dt) {
-        if (_prev) _prev(dt);
-        try { fn(dt); } catch(e) { /* silent to avoid spamming console */ }
-    };
+    api._foreverCbs.push(fn);
     return fn;
 }
 
@@ -5525,6 +5535,21 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
                 } else if (this._updateErrCount % 300 === 0) {
                     // Remind the user the script is still broken every ~5s at 60fps
                     _logConsole(`[Script "${this.name}" on "${obj.label}"] ✖ onUpdate still failing (${this._updateErrCount} frames). Open the script to fix it.`, '#f87171');
+                }
+            }
+        }
+
+        // ── 1b. Run all forever() callbacks registered at any point (onStart, onCloneStart, etc.) ──
+        const _fcbs = this.api._foreverCbs;
+        if (_fcbs.length > 0) {
+            for (let _fi = 0; _fi < _fcbs.length; _fi++) {
+                try { _fcbs[_fi](dt); }
+                catch (e) {
+                    this._foreverErrCount = (this._foreverErrCount ?? 0) + 1;
+                    if (this._foreverErrCount === 1) {
+                        const friendly = _friendlyScriptError(e, null, this.name, obj.label, 'forever()');
+                        for (const line of friendly) _logConsole(line, '#f87171');
+                    }
                 }
             }
         }
