@@ -429,63 +429,6 @@ const COMPLETIONS = [
     { n:'other.isInvincible',m:'🔍 proxy',    v:'other.isInvincible' },
     { n:'other.opts',        m:'🔍 proxy',    v:'other.opts.${1:myVar}' },
     { n:'other.takeDamage',  m:'🔍 proxy',    v:'other.takeDamage(${1:10})' },
-
-    // ── Tint (full set) ────────────────────────────────────
-    { n:'clearTint',         m:'🎨 tint',     v:'clearTint()' },
-
-    // ── Scene (resumeScene alias) ──────────────────────────
-    { n:'resumeScene',       m:'▶ scene',     v:'resumeScene()' },
-
-    // ── Display (extended) ────────────────────────────────
-    { n:'getWidth',          m:'📐 size',     v:'getWidth()' },
-    { n:'getHeight',         m:'📐 size',     v:'getHeight()' },
-    { n:'getVisible',        m:'👁 display',  v:'getVisible()' },
-    { n:'selfName',          m:'🏷 identity', v:'selfName()' },
-    { n:'translate',         m:'↔ position',  v:'translate(${1:dx}, ${2:dy})' },
-    { n:'pauseAnimation',    m:'▶ anim',      v:'pauseAnimation()' },
-
-    // ── AI Navigation ─────────────────────────────────────
-    { n:'pursue',            m:'🧠 AI nav',   v:"pursue('${1:player}', { speed: ${2:3} })" },
-    { n:'flee',              m:'🧠 AI nav',   v:"flee('${1:player}', { speed: ${2:4} })" },
-    { n:'wander',            m:'🧠 AI nav',   v:'wander({ speed: ${1:1.5}, radius: ${2:3} })' },
-    { n:'canSee',            m:'🧠 AI nav',   v:"canSee('${1:player}')" },
-    { n:'canSee opts',       m:'🧠 AI nav',   v:"canSee('${1:player}', { maxRange: ${2:8} })" },
-    { n:'lastKnownPos',      m:'🧠 AI nav',   v:"lastKnownPos('${1:player}')" },
-    { n:'inFOV',             m:'🧠 AI nav',   v:"inFOV('${1:player}', ${2:90}, ${3:6})" },
-    { n:'isWalking',         m:'🧭 navigate', v:'isWalking' },
-    { n:'isStuck',           m:'🧭 navigate', v:'isStuck' },
-
-    // ── Drag (full set) ────────────────────────────────────
-    { n:'makeDraggable',     m:'🖱 drag',     v:'makeDraggable()' },
-    { n:'makeDraggable opts',m:'🖱 drag',     v:"makeDraggable({ smooth:${1:16}, clamp:${2:true}, scale:${3:1.1} })" },
-    { n:'dragObject',        m:'🖱 drag',     v:"dragObject(find('${1:Crate}'))" },
-    { n:'stopDrag',          m:'🖱 drag',     v:'stopDrag()' },
-    { n:'isDragging',        m:'🖱 drag',     v:'isDragging()' },
-
-    // ── Messaging (extended) ──────────────────────────────
-    { n:'broadcastMessage',  m:'📨 message',  v:"broadcastMessage('${1:gameOver}')" },
-    { n:'broadcastMessage data',m:'📨 message',v:"broadcastMessage('${1:msg}', ${2:data})" },
-    { n:'sendMessageToTag',  m:'📨 message',  v:"sendMessageToTag('${1:enemy}', '${2:stunned}')" },
-
-    // ── Shared Vars (extended) ────────────────────────────
-    { n:'sceneSettings',     m:'📦 vars',     v:'sceneSettings.gameWidth' },
-    { n:'wrap',              m:'∑ math',      v:'wrap(${1:v}, ${2:lo}, ${3:hi})' },
-    { n:'tan',               m:'∑ math',      v:'tan(${1:a})' },
-    { n:'atan2',             m:'∑ math',      v:'atan2(${1:y}, ${2:x})' },
-    { n:'pow',               m:'∑ math',      v:'pow(${1:base}, ${2:exp})' },
-
-    // ── Key & Mouse constants ─────────────────────────────
-    { n:'Key.W',             m:'🎮 key const', v:'Key.W' },
-    { n:'Key.A',             m:'🎮 key const', v:'Key.A' },
-    { n:'Key.S',             m:'🎮 key const', v:'Key.S' },
-    { n:'Key.D',             m:'🎮 key const', v:'Key.D' },
-    { n:'Key.SPACE',         m:'🎮 key const', v:'Key.SPACE' },
-    { n:'Key.ARROW_LEFT',    m:'🎮 key const', v:'Key.ARROW_LEFT' },
-    { n:'Key.ARROW_RIGHT',   m:'🎮 key const', v:'Key.ARROW_RIGHT' },
-    { n:'Key.ARROW_UP',      m:'🎮 key const', v:'Key.ARROW_UP' },
-    { n:'Key.ARROW_DOWN',    m:'🎮 key const', v:'Key.ARROW_DOWN' },
-    { n:'Key.ANY',           m:'🎮 key const', v:'Key.ANY' },
-    { n:'Mouse.LEFT',        m:'🎮 mouse const',v:'Mouse.LEFT' },
 ].map(c => ({ caption:c.n, value:c.v, meta:c.m, score:950 }));
 
 
@@ -663,8 +606,8 @@ export async function openScriptEditor(obj, scriptName, initialCode) {
     // This is safer than subclassing the Ace tokenizer (which depends on Ace internals).
     if (!ace._zengineHighlightSets) {
         ace._zengineHighlightSets = {
-            engine : new Set(["addImpulse", "aiChat", "applyAngularImpulse", "applyForce", "applyImpulse", "axisH", "axisV", "bounceX", "bounceY", "boundsClamp", "broadcast", "broadcastAll", "broadcastGroup", "broadcastMessage", "cameraFollow", "cameraMoveTo", "cameraShake", "cameraUnfollow", "cancelRepeat", "canSee", "chatPlayer", "chatSay", "clearTint", "cloneInPlace", "cloneObject", "cloneSelf", "createJoystick", "currentAnimation", "currentScene", "currentSceneIndex", "destroy", "destroyAfter", "destroyAllJoysticks", "destroyObject", "destroySelf", "distanceTo", "dragObject", "drawDebugCircle", "drawDebugLine", "drawText", "error", "fadeIn", "fadeOut", "find", "findAllInGroup", "findAllWithTag", "findWithTag", "fireProjectile", "flipX", "flipY", "flee", "getAlpha", "getAmmo", "getCameraX", "getCameraY", "getCloneId", "getGroup", "getHealth", "getHeight", "getMaxAmmo", "getMaxHealth", "getObjectsInRadius", "getPhysicsVelX", "getPhysicsVelY", "getRotation", "getScaleX", "getScaleY", "getSceneName", "getState", "getTag", "getTime", "getTint", "getTouches", "getVelX", "getVelY", "getVisible", "getWidth", "getX", "getY", "getZOrder", "globalVar", "gotoScene", "gravity", "heal", "hide", "hideChat", "hitFlash", "inFOV", "inRangeOf", "invincible", "isClone", "isDead", "isDragging", "isInvincible", "isKeyDown", "isKeyJustDown", "isKeyJustUp", "isOnCeiling", "isOnGround", "isOnWall", "isStuck", "isTouching", "isWalking", "knockback", "lastKnownPos", "launch", "lockRotation", "log", "lookAt", "makeDraggable", "mouseDown", "mouseJustDown", "mouseX", "mouseY", "move", "moveForward", "moveTo", "objectShake", "offScreen", "onAmmoEmpty", "onBecomeHidden", "onBecomeVisible", "onCloneStart", "onCollisionEnter", "onCollisionExit", "onCollisionStay", "onDamage", "onDeath", "onDestroy", "onHeal", "onJump", "onKeyDown", "onKeyUp", "onLand", "onMessage", "onMouseClick", "onMouseEnter", "onMouseLeave", "onOverlapEnter", "onOverlapExit", "onPinch", "onReload", "onScreenEnter", "onScreenExit", "onStart", "onStateEnter", "onStateExit", "onStop", "onSwipe", "onTap", "onUpdate", "onceAfter", "opts", "overlaps", "overlapsAllWithTag", "overlapsTag", "pauseAnimation", "pauseScene", "playAnimation", "pursue", "raycast", "raycastAll", "raycastFromSelf", "reload", "repeat", "restartScene", "resumeScene", "say", "sceneCount", "sceneSettings", "sceneVar", "screenMouseX", "screenMouseY", "screenToWorld", "selfName", "sendMessage", "sendMessageToTag", "setAlpha", "setAmmo", "setAngularVelocity", "setCollision", "setCollisionCategory", "setCollisionMask", "setGravity", "setGravityScale", "setGroup", "setHealth", "setImmovable", "setMaxAmmo", "setMaxHealth", "setPhysicsType", "setPhysicsVelocity", "setRotation", "setRotationLocked", "setScaleX", "setScaleY", "setSensor", "setState", "setTag", "setTint", "setVelocity", "setVisible", "setX", "setY", "setZOrder", "show", "showChat", "soundPlay", "soundStop", "soundStopAll", "spawnCopy", "spawnObject", "stopAnimation", "stopDrag", "stopMovement", "stopPhysics", "stopWalking", "takeDamage", "think", "touchCount", "touchJustStarted", "trackTarget", "translate", "triggerJump", "tween", "unlockRotation", "velocityX", "velocityY", "vx", "vy", "wait", "walkTo", "walkToObject", "wander", "warn", "worldToScreen", "wrap"]),
-            math   : new Set(["PI", "abs", "angleTo", "atan2", "ceil", "chance", "clamp", "cos", "dist", "floor", "lerp", "mapRange", "max", "min", "normalize", "pick", "pow", "rand", "randInt", "round", "sign", "sin", "smoothstep", "sqrt", "tan", "toDeg", "toRad", "wrap"]),
+            engine : new Set(["addImpulse", "aiChat", "applyAngularImpulse", "applyForce", "applyImpulse", "axisH", "axisV", "bounceX", "bounceY", "boundsClamp", "broadcast", "broadcastAll", "broadcastGroup", "cameraFollow", "cameraMoveTo", "cameraShake", "cameraUnfollow", "cancelRepeat", "chatPlayer", "chatSay", "cloneInPlace", "cloneObject", "cloneSelf", "createJoystick", "currentAnimation", "currentScene", "currentSceneIndex", "destroy", "destroyAfter", "destroyAllJoysticks", "destroyObject", "destroySelf", "distanceTo", "drawDebugCircle", "drawDebugLine", "drawText", "error", "fadeIn", "fadeOut", "find", "findAllInGroup", "findAllWithTag", "findWithTag", "fireProjectile", "flipX", "flipY", "getAlpha", "getAmmo", "getCameraX", "getCameraY", "getCloneId", "getGroup", "getHealth", "getMaxAmmo", "getMaxHealth", "getObjectsInRadius", "getPhysicsVelX", "getPhysicsVelY", "getRotation", "getScaleX", "getScaleY", "getSceneName", "getState", "getTag", "getTime", "getTint", "getTouches", "getVelX", "getVelY", "getX", "getY", "getZOrder", "globalVar", "gotoScene", "gravity", "heal", "hide", "hideChat", "hitFlash", "inRangeOf", "invincible", "isClone", "isDead", "isInvincible", "isKeyDown", "isKeyJustDown", "isKeyJustUp", "isOnCeiling", "isOnGround", "isOnWall", "isTouching", "isWalking", "knockback", "launch", "lockRotation", "log", "lookAt", "mouseDown", "mouseJustDown", "mouseX", "mouseY", "move", "moveForward", "moveTo", "objectShake", "offScreen", "onAmmoEmpty", "onBecomeHidden", "onBecomeVisible", "onCloneStart", "onCollisionEnter", "onCollisionExit", "onCollisionStay", "onDamage", "onDeath", "onDestroy", "onHeal", "onJump", "onKeyDown", "onKeyUp", "onLand", "onMessage", "onMouseClick", "onMouseEnter", "onMouseLeave", "onOverlapEnter", "onOverlapExit", "onPinch", "onReload", "onScreenEnter", "onScreenExit", "onStart", "onStateEnter", "onStateExit", "onStop", "onSwipe", "onTap", "onUpdate", "onceAfter", "opts", "overlaps", "overlapsAllWithTag", "overlapsTag", "pauseScene", "playAnimation", "raycast", "raycastAll", "raycastFromSelf", "reload", "repeat", "restartScene", "resumeScene", "say", "sceneCount", "sceneSettings", "sceneVar", "screenMouseX", "screenMouseY", "screenToWorld", "sendMessage", "setAlpha", "setAmmo", "setAngularVelocity", "setCollision", "setCollisionCategory", "setCollisionMask", "setGravity", "setGravityScale", "setGroup", "setHealth", "setImmovable", "setMaxAmmo", "setMaxHealth", "setPhysicsType", "setPhysicsVelocity", "setRotation", "setRotationLocked", "setScaleX", "setScaleY", "setSensor", "setState", "setTag", "setTint", "setVelocity", "setVisible", "setX", "setY", "setZOrder", "show", "showChat", "soundPlay", "soundStop", "soundStopAll", "spawnCopy", "spawnObject", "stopAnimation", "stopMovement", "stopPhysics", "stopWalking", "takeDamage", "think", "touchCount", "touchJustStarted", "trackTarget", "triggerJump", "tween", "unlockRotation", "velocityX", "velocityY", "vx", "vy", "forever", "cancelForever", "subevent", "wait", "walkTo", "walkToObject", "warn", "worldToScreen"]),
+            math   : new Set(["PI", "abs", "angleTo", "ceil", "chance", "clamp", "cos", "dist", "floor", "lerp", "mapRange", "max", "min", "normalize", "pick", "rand", "randInt", "round", "sign", "sin", "smoothstep", "sqrt", "toDeg", "toRad"]),
         };
     }
     const _Z_ENGINE = ace._zengineHighlightSets.engine;
@@ -945,8 +888,8 @@ function _modal() {
 // Applies lightweight colour to reference panel lines so engine API names,
 // strings, numbers, keywords and comments all look like the editor.
 (function() {
-    const _SB_ENGINE = new Set(["addImpulse", "aiChat", "applyAngularImpulse", "applyForce", "applyImpulse", "axisH", "axisV", "bounceX", "bounceY", "boundsClamp", "broadcast", "broadcastAll", "broadcastGroup", "broadcastMessage", "cameraFollow", "cameraMoveTo", "cameraShake", "cameraUnfollow", "cancelRepeat", "canSee", "chatPlayer", "chatSay", "clearTint", "cloneInPlace", "cloneObject", "cloneSelf", "createJoystick", "currentAnimation", "currentScene", "currentSceneIndex", "destroy", "destroyAfter", "destroyAllJoysticks", "destroyObject", "destroySelf", "distanceTo", "dragObject", "drawDebugCircle", "drawDebugLine", "drawText", "error", "fadeIn", "fadeOut", "find", "findAllInGroup", "findAllWithTag", "findWithTag", "fireProjectile", "flipX", "flipY", "flee", "getAlpha", "getAmmo", "getCameraX", "getCameraY", "getCloneId", "getGroup", "getHealth", "getHeight", "getMaxAmmo", "getMaxHealth", "getObjectsInRadius", "getPhysicsVelX", "getPhysicsVelY", "getRotation", "getScaleX", "getScaleY", "getSceneName", "getState", "getTag", "getTime", "getTint", "getTouches", "getVelX", "getVelY", "getVisible", "getWidth", "getX", "getY", "getZOrder", "globalVar", "gotoScene", "gravity", "heal", "hide", "hideChat", "hitFlash", "inFOV", "inRangeOf", "invincible", "isClone", "isDead", "isDragging", "isInvincible", "isKeyDown", "isKeyJustDown", "isKeyJustUp", "isOnCeiling", "isOnGround", "isOnWall", "isStuck", "isTouching", "isWalking", "knockback", "lastKnownPos", "launch", "lockRotation", "log", "lookAt", "makeDraggable", "mouseDown", "mouseJustDown", "mouseX", "mouseY", "move", "moveForward", "moveTo", "objectShake", "offScreen", "onAmmoEmpty", "onBecomeHidden", "onBecomeVisible", "onCloneStart", "onCollisionEnter", "onCollisionExit", "onCollisionStay", "onDamage", "onDeath", "onDestroy", "onHeal", "onJump", "onKeyDown", "onKeyUp", "onLand", "onMessage", "onMouseClick", "onMouseEnter", "onMouseLeave", "onOverlapEnter", "onOverlapExit", "onPinch", "onReload", "onScreenEnter", "onScreenExit", "onStart", "onStateEnter", "onStateExit", "onStop", "onSwipe", "onTap", "onUpdate", "onceAfter", "opts", "overlaps", "overlapsAllWithTag", "overlapsTag", "pauseAnimation", "pauseScene", "playAnimation", "pursue", "raycast", "raycastAll", "raycastFromSelf", "reload", "repeat", "restartScene", "resumeScene", "say", "sceneCount", "sceneSettings", "sceneVar", "screenMouseX", "screenMouseY", "screenToWorld", "selfName", "sendMessage", "sendMessageToTag", "setAlpha", "setAmmo", "setAngularVelocity", "setCollision", "setCollisionCategory", "setCollisionMask", "setGravity", "setGravityScale", "setGroup", "setHealth", "setImmovable", "setMaxAmmo", "setMaxHealth", "setPhysicsType", "setPhysicsVelocity", "setRotation", "setRotationLocked", "setScaleX", "setScaleY", "setSensor", "setState", "setTag", "setTint", "setVelocity", "setVisible", "setX", "setY", "setZOrder", "show", "showChat", "soundPlay", "soundStop", "soundStopAll", "spawnCopy", "spawnObject", "stopAnimation", "stopDrag", "stopMovement", "stopPhysics", "stopWalking", "takeDamage", "think", "touchCount", "touchJustStarted", "trackTarget", "translate", "triggerJump", "tween", "unlockRotation", "velocityX", "velocityY", "vx", "vy", "wait", "walkTo", "walkToObject", "wander", "warn", "worldToScreen", "wrap"]);
-    const _SB_MATH   = new Set(["PI", "abs", "angleTo", "atan2", "ceil", "chance", "clamp", "cos", "dist", "floor", "lerp", "mapRange", "max", "min", "normalize", "pick", "pow", "rand", "randInt", "round", "sign", "sin", "smoothstep", "sqrt", "tan", "toDeg", "toRad", "wrap"]);
+    const _SB_ENGINE = new Set(["addImpulse", "aiChat", "applyAngularImpulse", "applyForce", "applyImpulse", "axisH", "axisV", "bounceX", "bounceY", "boundsClamp", "broadcast", "broadcastAll", "broadcastGroup", "cameraFollow", "cameraMoveTo", "cameraShake", "cameraUnfollow", "cancelRepeat", "chatPlayer", "chatSay", "cloneInPlace", "cloneObject", "cloneSelf", "createJoystick", "currentAnimation", "currentScene", "currentSceneIndex", "destroy", "destroyAfter", "destroyAllJoysticks", "destroyObject", "destroySelf", "distanceTo", "drawDebugCircle", "drawDebugLine", "drawText", "error", "fadeIn", "fadeOut", "find", "findAllInGroup", "findAllWithTag", "findWithTag", "fireProjectile", "flipX", "flipY", "getAlpha", "getAmmo", "getCameraX", "getCameraY", "getCloneId", "getGroup", "getHealth", "getMaxAmmo", "getMaxHealth", "getObjectsInRadius", "getPhysicsVelX", "getPhysicsVelY", "getRotation", "getScaleX", "getScaleY", "getSceneName", "getState", "getTag", "getTime", "getTint", "getTouches", "getVelX", "getVelY", "getX", "getY", "getZOrder", "globalVar", "gotoScene", "gravity", "heal", "hide", "hideChat", "hitFlash", "inRangeOf", "invincible", "isClone", "isDead", "isInvincible", "isKeyDown", "isKeyJustDown", "isKeyJustUp", "isOnCeiling", "isOnGround", "isOnWall", "isTouching", "isWalking", "knockback", "launch", "lockRotation", "log", "lookAt", "mouseDown", "mouseJustDown", "mouseX", "mouseY", "move", "moveForward", "moveTo", "objectShake", "offScreen", "onAmmoEmpty", "onBecomeHidden", "onBecomeVisible", "onCloneStart", "onCollisionEnter", "onCollisionExit", "onCollisionStay", "onDamage", "onDeath", "onDestroy", "onHeal", "onJump", "onKeyDown", "onKeyUp", "onLand", "onMessage", "onMouseClick", "onMouseEnter", "onMouseLeave", "onOverlapEnter", "onOverlapExit", "onPinch", "onReload", "onScreenEnter", "onScreenExit", "onStart", "onStateEnter", "onStateExit", "onStop", "onSwipe", "onTap", "onUpdate", "onceAfter", "opts", "overlaps", "overlapsAllWithTag", "overlapsTag", "pauseScene", "playAnimation", "raycast", "raycastAll", "raycastFromSelf", "reload", "repeat", "restartScene", "resumeScene", "say", "sceneCount", "sceneSettings", "sceneVar", "screenMouseX", "screenMouseY", "screenToWorld", "sendMessage", "setAlpha", "setAmmo", "setAngularVelocity", "setCollision", "setCollisionCategory", "setCollisionMask", "setGravity", "setGravityScale", "setGroup", "setHealth", "setImmovable", "setMaxAmmo", "setMaxHealth", "setPhysicsType", "setPhysicsVelocity", "setRotation", "setRotationLocked", "setScaleX", "setScaleY", "setSensor", "setState", "setTag", "setTint", "setVelocity", "setVisible", "setX", "setY", "setZOrder", "show", "showChat", "soundPlay", "soundStop", "soundStopAll", "spawnCopy", "spawnObject", "stopAnimation", "stopMovement", "stopPhysics", "stopWalking", "takeDamage", "think", "touchCount", "touchJustStarted", "trackTarget", "triggerJump", "tween", "unlockRotation", "velocityX", "velocityY", "vx", "vy", "wait", "walkTo", "walkToObject", "warn", "worldToScreen"]);
+    const _SB_MATH   = new Set(["PI", "abs", "angleTo", "ceil", "chance", "clamp", "cos", "dist", "floor", "lerp", "mapRange", "max", "min", "normalize", "pick", "rand", "randInt", "round", "sign", "sin", "smoothstep", "sqrt", "toDeg", "toRad"]);
 
     window._sidebarHighlight = function(safe) {
         // safe is already HTML-escaped. We need to tokenize the raw text.
@@ -1065,7 +1008,6 @@ function _sidebarHTML() {
             'show()  /  hide()',
             'setVisible(bool)',
             'getAlpha()  /  setAlpha(v)',
-            'getVisible()',
             'fadeIn(t, dt)',
             'fadeOut(t, dt)',
             'setTint("#ff0000")  /  clearTint()',
@@ -1112,12 +1054,9 @@ function _sidebarHTML() {
             'gotoScene("Level2", "fade")',
             'gotoScene("Level2", "slide-left")',
             'gotoScene("Level2", "zoom")',
-            'pauseScene()  /  resumeScene()',
-            'pauseScene(false)  // same as resumeScene()',
+            'pauseScene()  /  pauseScene(false)',
             'restartScene()',
             'currentScene()  /  currentSceneIndex()',
-            'sceneCount()',
-            'getSceneName(index)',
         ]],
         ['Camera', [
             'cameraFollow(obj, smooth)',
@@ -1201,25 +1140,16 @@ function _sidebarHTML() {
             'getTime()',
         ]],
         ['Spawn / Clone', [
-            '// All spawn/clone functions return a proxy you can store',
-            'var obj = spawnObject("Asset", x, y)',
-            'obj.x = 5  obj.rotation = 45  obj.alpha = 0.5',
-            'var bullet = spawnObject("Bullet", x, y)',
-            'bullet.velocityX = 10',
+            'spawnObject("Asset", x, y)',
             'spawnObject("Asset", x, y, (obj) => {})',
             'spawnCopy("Name", x, y)',
-            'var clone = cloneSelf(x, y)',
-            'clone.rotation = 180  clone.scaleX = -1',
+            'cloneSelf(x, y)',
             'cloneSelf(x, y, (c) => { c.velocityX = 3; })',
             'cloneInPlace()',
-            'var enemy = cloneObject("Enemy", x, y)',
-            'enemy.setVelocity(3, 0)',
+            'cloneObject("Enemy", x, y)',
             'isClone()',
             'getCloneId()',
             'onCloneStart(() => { })',
-            '// proxy properties: x y rotation scaleX scaleY',
-            '// alpha visible velocityX velocityY tag group',
-            '// health ammo state zOrder opts text',
         ]],
         ['Physics (helpers)', [
             'isOnGround()  /  isOnCeiling()  /  isOnWall()',
@@ -1308,31 +1238,6 @@ function _sidebarHTML() {
             'store.set("key", val)',
             'store.get("key")',
         ]],
-        ['AI Navigation', [
-            'walkTo(x, y)',
-            'walkTo(x, y, { speed: 4, avoidStatic: true })',
-            'walkToObject("Player", { speed: 3 })',
-            'stopWalking()',
-            'isWalking  // true while moving',
-            'isStuck    // true when stuck',
-            'pursue("player", { speed: 3 })',
-            '// pursue predicts where target is going',
-            'flee("player", { speed: 4 })',
-            'wander({ speed: 1.5, radius: 3 })',
-            'canSee("player")',
-            'canSee("player", { maxRange: 8 })',
-            'inFOV("player", 90, 6)  // deg, range',
-            'lastKnownPos("player")  // returns {x,y} or null',
-        ]],
-        ['Messaging (extended)', [
-            'sendMessage("tag", "msg", data)',
-            'sendMessageToTag("enemy", "stunned")',
-            'broadcastMessage("gameOver")',
-            'broadcastMessage("msg", data)',
-            'broadcastAll("msg")',
-            'broadcast("tag", "msg")',
-            'broadcastGroup("grp", "msg")',
-        ]],
         ['Game Helpers', [
             'gravity(vy, dt)',
             '// example: var vy=0; vy=gravity(vy,dt); move(0,vy*dt);',
@@ -1370,7 +1275,6 @@ function _sidebarHTML() {
             'dist(x1, y1, x2, y2)',
             'angleTo(x1, y1, x2, y2)',
             'mapRange(v, a1, b1, a2, b2)',
-            'wrap(v, lo, hi)',
             'smoothstep(lo, hi, x)',
             'normalize(vx, vy)',
             'abs / sign / floor / ceil / round',
@@ -1471,150 +1375,92 @@ function _initSidebarBehavior(overlay) {
 }
 
 function _defaultScript(name) {
-    return `// ================================================================
-// Script: ${name}
-// Runs only during Play Mode. The editor is always safe.
+    return `// ═══════════════════════════════════════════
+//  ${name}
+// ═══════════════════════════════════════════
 //
-// @script_type: ""   ← Set this to filter autocomplete to your body type:
-//                       "dynamic"   — full physics (forces, impulses, angular)
-//                       "kinematic" — script-controlled (isOnGround etc.)
-//                       "none"      — no physics body (velocity / overlap only)
+//  Write your game logic inside the event
+//  blocks below. Each block runs at a
+//  different moment in the game.
 //
-// POSITION:      getX() / setX(v)      getY() / setY(v)
-// MOVEMENT:      move(dx, dy)          moveTo(x, y)        moveForward(speed)
-// VELOCITY:      velocityX = 5         velocityY = -3       (kinematic/no-body: auto-applied)
-// PHYSICS:       applyForce(fx, fy)    applyImpulse(ix, iy)   setPhysicsVelocity(vx, vy)
-//                setAngularVelocity(rad/s)   applyAngularImpulse(n)   (dynamic only)
-//                getVelX() / getVelY() stopPhysics()  isOnGround()  isOnWall()
-// GRAVITY:       setGravity(0, -9.8)   (physics gravity dir, call once in onStart)
-//                gravity(vy, dt)        (Flappy-Bird accumulator — returns updated vy)
-// TAG:           setTag("player")      findWithTag("enemy")
-// MESSAGE:       sendMessage("tag","msg",data)   onMessage("msg",fn)
-// SCENE:         gotoScene("Level2")   currentScene()
-// CAMERA:        cameraFollow(find("Player"), 6)
-// SOUND:         soundPlay("Jump")     soundStop("Jump")
-// TIMER:         wait(2, () => { log("done!"); })
-// TINT:          setTint("#ff0000")    setTint("#ffffff")
-// DISTANCE:      distanceTo("enemy")   distanceTo(x, y)
-// OVERLAP:       overlapsTag("Coin")   onOverlapEnter(fn)
-// MOBILE:        onSwipe("left", fn)   onTap(fn)   isTouching()
-// PHYSICS TYPE:  setPhysicsType("static")   setCollision(false)
-// ROTATION LOCK: lockRotation()   unlockRotation()   setRotationLocked(true)
-// GLOBAL VARS:   globalVar.score = 0   (shared across ALL scripts)
-// SCENE VARS:    sceneVar.lives = 3    (shared within this scene)
-// LOCAL VAR:     var enemy = null;  onCollisionEnter(o => { enemy = o; })
-//                  // enemy is a local ref to ONE specific object
-//                  // enemy.destroy()  enemy.hasTag("x")  distanceTo(enemy)
-// ================================================================
+//  Useful things you can do anywhere:
+//    x += 1             move right
+//    y += 1             move up
+//    velocityX = 5      slide right automatically
+//    setTag("player")   give this object a tag
+//    log("hello")       print to console
+//    wait(1, () => { }) run something after 1 sec
+//    forever(() => { }) run something every frame
+//
+//  Find objects:
+//    find("Boss")             by name
+//    findWithTag("enemy")     by tag
+//
+//  Tip: comment things out with  //  to disable them.
+// ═══════════════════════════════════════════
 
 
+// ── When the game starts ─────────────────────
 onStart(() => {
-  // Runs once when Play is pressed.
+
   setTag("${name.toLowerCase()}");
-  log("${name} started!");
 
-  // Example: make camera follow this object
-  // cameraFollow(find("${name}"), 6);
+  // Examples (remove the // to enable):
+  // velocityX = 3;                    // slide right
+  // cameraFollow(find("${name}"), 6); // camera follows this
+  // soundPlay("Music", { loop: true });
 
-  // Example: enable gravity (negative Y = down in this engine)
-  // setGravity(0, -9.8);  ← physics gravity direction
-
-  // Example: play background music on start
-  // soundPlay("Music", { loop: true, volume: 0.6 });
 });
 
 
+// ── Every frame ──────────────────────────────
 onUpdate((dt) => {
-  // Runs every frame. dt = seconds since last frame.
-  // Always multiply movement values by dt for smooth motion.
+  // dt = seconds since last frame (~0.016)
+  // Multiply by dt for smooth frame-rate-independent movement.
 
-  // ── Keyboard movement ─────────────────────────────────────
-  const speed = 5;
-  move(axisH() * speed * dt,   // A / D  or  ← →
-       axisV() * speed * dt);  // W / S  or  ↑ ↓
+  // Examples:
+  // x += axisH() * 5 * dt;  // move with arrow keys / WASD
+  // y += axisV() * 5 * dt;
 
-  // ── Velocity-based movement ───────────────────────────────
-  // velocityX = axisH() * speed;   // set each frame
-  // velocityY = axisV() * speed;   // (auto-applied, no need to call move)
+});
 
-  // ── Overlap check (no physics body needed) ────────────────
-  // var coin = overlapsTag("coin");
-  // if (coin) {
-  //   globalVar.score = (globalVar.score || 0) + 1;
-  //   log("Score: " + globalVar.score);
-  //   destroy(coin);
-  //   soundPlay("Pickup");
+
+// ── When this touches another object ─────────
+onCollisionEnter((other) => {
+  // other = the object you touched
+  // other.name      → its label
+  // other.hasTag("x") → true/false
+  // other.destroy() → remove it
+
+  // Example:
+  // if (other.hasTag("coin")) {
+  //   other.destroy();
+  //   sceneVar.score = (sceneVar.score || 0) + 1;
   // }
 
-  // ── Distance check ────────────────────────────────────────
-  // var d = distanceTo("enemy");
-  // if (d < 2) { warn("Enemy too close!"); }
-
 });
 
 
-onStop(() => {
-  // Runs once when Play is stopped.
-  soundStopAll();
-  log("${name} stopped.");
+// ── When you receive a message ────────────────
+onMessage("hit", (data) => {
+  // Someone called: sendMessage("${name.toLowerCase()}", "hit", data)
+  log("hit received:", data);
 });
 
 
-onCollisionEnter((other) => {
-  // Fires the MOMENT this object touches another (needs physics body).
-  if (!other) return;
-  log("Touched: " + other.name);
+// ── When this is spawned as a clone ──────────
+onCloneStart(() => {
+  // Runs on clones made by cloneSelf() — not on the original.
+  // Great for giving each clone its own behaviour:
 
-  // ── Properties you can read on "other" ───────────────────────
-  //   other.name           — label of the object
-  //   other.tag            — its script tag
-  //   other.x / other.y   — world position
-  //   other.scaleX / other.scaleY / other.rotation / other.alpha
-  //   other.physicsType    — "dynamic" | "kinematic" | "static" | "none"
-  //   other.hasTag("enemy")  → true/false
+  // forever(() => {
+  //   x -= 3 * dt;        // move left every frame
+  // });
 
-  // ── Actions on ONLY that specific instance ────────────────────
-  //   other.destroy()                  — destroy THAT object, not all like it
-  //   other.sendMessage("hit", 10)     — message ONLY this instance
-  //   other.clone(other.x, other.y)    — clone THAT object at a position
-  //   other.distanceTo(getX(), getY()) — distance from it to this object
+  // onScreenExit(() => {
+  //   destroySelf();       // clean up off-screen clones
+  // });
 
-  // ── Common patterns ───────────────────────────────────────────
-  //   if (other.hasTag("bullet")) { other.destroy(); }
-  //   if (other.hasTag("enemy"))  { other.sendMessage("takeDamage", 1); }
-  //   var saved = other;   // save the reference for use in onUpdate
-});
-
-
-onCollisionStay((other) => {
-  // Fires every frame WHILE touching another object.
-  // Good for: floor detection, damage over time, etc.
-});
-
-
-onCollisionExit((other) => {
-  // Fires the MOMENT contact ends.
-});
-
-
-onOverlapEnter((other) => {
-  // Like onCollisionEnter but works WITHOUT a physics body (pure AABB).
-  // Perfect for: coins, checkpoints, trigger zones, doors.
-  if (!other) return;
-  log("Overlapped: " + other.name);
-});
-
-
-onMessage("takeDamage", (amount) => {
-  // Called when: sendMessage("${name.toLowerCase()}", "takeDamage", 10)
-  warn("Took " + amount + " damage!");
-  // setTint("#ff0000");
-  // wait(0.2, () => setTint("#ffffff"));
-});
-
-
-onMessage("heal", (amount) => {
-  log("Healed by " + amount);
 });
 `;
 }

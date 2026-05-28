@@ -1786,11 +1786,6 @@ function _buildSandbox(obj, instRef) {
             obj._scriptTint = hex;
             if (obj.spriteGraphic) obj.spriteGraphic.tint = hex;
         },
-        /** Remove tint (reset to white / no colour effect). */
-        clearTint() {
-            obj._scriptTint = 0xffffff;
-            if (obj.spriteGraphic) obj.spriteGraphic.tint = 0xffffff;
-        },
 
         // ── DISTANCE ─────────────────────────────────────────
         /**
@@ -1957,7 +1952,6 @@ function _buildSandbox(obj, instRef) {
                 }
             }
 
-            const dp = _makeDeferredProxy();
             import('./engine.objects.js').then(({ createImageObject }) => {
                 const newObj = createImageObject(asset, wx * 100, -wy * 100, { silent: true });
                 if (!newObj) return;
@@ -1996,9 +1990,6 @@ function _buildSandbox(obj, instRef) {
                     }
                 }
 
-                // Resolve deferred proxy so any queued property writes are applied
-                dp._resolve(newObj);
-
                 // Auto-start the object's script if it has one and play mode is running
                 if (newObj.scriptName && window._zState?.isPlaying) {
                     const rec = getScript(newObj.scriptName);
@@ -2017,7 +2008,6 @@ function _buildSandbox(obj, instRef) {
                 _logConsole(`spawnObject("${assetName}"): module load failed — ${e?.message ?? e}`, '#f87171');
                 import('./engine.console.js').then(m => m.recordPlayError());
             });
-            return dp;
         },
 
         /**
@@ -2053,7 +2043,6 @@ function _buildSandbox(obj, instRef) {
                 _logConsole(`cloneSelf: clone limit (128) reached — call destroySelf() on old clones first`, '#f87171');
                 return null;
             }
-            const dp = _makeDeferredProxy();
             import('./engine.objects.js').then(({ createImageObject }) => {
                 const newObj = createImageObject(asset, wx * 100, -wy * 100, { silent: true });
                 if (!newObj) return;
@@ -2073,9 +2062,6 @@ function _buildSandbox(obj, instRef) {
                     }
                 }
 
-                // Resolve deferred proxy — applies any queued property writes
-                dp._resolve(newObj);
-
                 if (newObj.scriptName && window._zState?.isPlaying) {
                     const rec = getScript(newObj.scriptName);
                     if (rec?.code) {
@@ -2092,7 +2078,6 @@ function _buildSandbox(obj, instRef) {
             }).catch(e => {
                 _logConsole(`cloneSelf: module load failed — ${e?.message ?? e}`, '#f87171');
             });
-            return dp;
         },
 
         /**
@@ -2132,7 +2117,6 @@ function _buildSandbox(obj, instRef) {
             const asset = state.assets.find(a => a.id === templateObj.assetId);
             if (!asset) { _logConsole(`cloneObject: template has no asset`, '#facc15'); return null; }
 
-            const dp = _makeDeferredProxy();
             import('./engine.objects.js').then(({ createImageObject }) => {
                 const newObj = createImageObject(asset, wx * 100, -wy * 100, { silent: true });
                 if (!newObj) return;
@@ -2146,9 +2130,6 @@ function _buildSandbox(obj, instRef) {
                         for (const line of friendly) _logConsole(line, '#f87171');
                     }
                 }
-
-                // Resolve deferred proxy — applies any queued property writes
-                dp._resolve(newObj);
 
                 if (newObj.scriptName && window._zState?.isPlaying) {
                     const rec = getScript(newObj.scriptName);
@@ -2166,7 +2147,6 @@ function _buildSandbox(obj, instRef) {
             }).catch(e => {
                 _logConsole(`cloneObject: module load failed — ${e?.message ?? e}`, '#f87171');
             });
-            return dp;
         },
 
         // ── RAYCAST (AABB slab method) ────────────────────────
@@ -2973,7 +2953,6 @@ function _buildSandbox(obj, instRef) {
             const pvx = Math.cos(rad) * speed;
             const pvy = Math.sin(rad) * speed;
             const sx  = obj.x, sy = obj.y;
-            const dp = _makeDeferredProxy();
             import('./engine.objects.js').then(async m => {
                 const newObj = await m.createImageObject(assetName, sx, sy);
                 if (!newObj) return;
@@ -2989,12 +2968,10 @@ function _buildSandbox(obj, instRef) {
                 sb.api._vel.y = pvy;
                 if (opts.lifetime > 0) setTimeout(() => { newObj._markedForDestroy = true; }, opts.lifetime * 1000);
                 if (opts.onSpawned) try { opts.onSpawned(_makeProxy(newObj)); } catch(_) {}
-                // Resolve deferred proxy — applies any queued writes
-                dp._resolve(newObj);
             }).catch(e => {
                 _logConsole(`fireProjectile: module load failed — ${e?.message ?? e}`, '#f87171');
             });
-            return dp;
+            return null;
         },
 
         // ── STATE MACHINE ─────────────────────────────────────────
@@ -3122,145 +3099,36 @@ function _deepCopyObjectProps(src, dst) {
 }
 
 // ── Object proxy (returned by find / findWithTag etc.) ────────
-/**
- * _makeDeferredProxy — returns a live proxy immediately, before the object exists.
- *
- * All spawn/clone functions use import().then() internally, so the real object
- * isn't available yet when the call returns. This proxy queues every property
- * write and method call that happens before the real object is ready, then
- * replays them the instant _resolve(realObj) is called.
- *
- * Usage:
- *   const dp = _makeDeferredProxy();
- *   import(...).then(({ createImageObject }) => {
- *       const newObj = createImageObject(...);
- *       dp._resolve(newObj);   ← flushes queued writes, wires up live proxy
- *   });
- *   return dp;   ← caller gets this immediately
- *
- * After resolve, every get/set goes live through _makeProxy.
- */
-function _makeDeferredProxy() {
-    let _realProxy = null;          // set once _resolve() is called
-    const _pending = [];            // queued { type, key, value, args } ops
-
-    // The object we hand back to the script
-    const dp = {
-        _isproxy:   true,
-        _deferred:  true,
-
-        // Called internally once the real game object exists
-        _resolve(realObj) {
-            _realProxy = _makeProxy(realObj);
-            // Replay all writes / method calls that arrived before resolve
-            for (const op of _pending) {
-                if (op.type === 'set') {
-                    try { _realProxy[op.key] = op.value; } catch(_) {}
-                } else if (op.type === 'call') {
-                    try { if (typeof _realProxy[op.key] === 'function') _realProxy[op.key](...op.args); } catch(_) {}
-                }
-            }
-            _pending.length = 0;
-        },
-
-        // --- Readable properties (safe no-ops before resolve) ---
-        get name()       { return _realProxy ? _realProxy.name       : ''; },
-        get tag()        { return _realProxy ? _realProxy.tag        : ''; },
-        get group()      { return _realProxy ? _realProxy.group      : ''; },
-        get visible()    { return _realProxy ? _realProxy.visible    : true; },
-        get alpha()      { return _realProxy ? _realProxy.alpha      : 1; },
-        get zOrder()     { return _realProxy ? _realProxy.zOrder     : 0; },
-        get physicsType(){ return _realProxy ? _realProxy.physicsType: 'none'; },
-        get health()     { return _realProxy ? _realProxy.health     : 100; },
-        get ammo()       { return _realProxy ? _realProxy.ammo       : 0; },
-        get state()      { return _realProxy ? _realProxy.state      : null; },
-        get isDead()     { return _realProxy ? _realProxy.isDead     : false; },
-        get isInvincible(){ return _realProxy ? _realProxy.isInvincible : false; },
-        get opts()       { return _realProxy ? _realProxy.opts       : {}; },
-        get text()       { return _realProxy ? _realProxy.text       : ''; },
-
-        // --- Position / size (read) ---
-        get x()          { return _realProxy ? _realProxy.x         : 0; },
-        get y()          { return _realProxy ? _realProxy.y         : 0; },
-        get scaleX()     { return _realProxy ? _realProxy.scaleX    : 1; },
-        get scaleY()     { return _realProxy ? _realProxy.scaleY    : 1; },
-        get rotation()   { return _realProxy ? _realProxy.rotation  : 0; },
-        get velocityX()  { return _realProxy ? _realProxy.velocityX : 0; },
-        get velocityY()  { return _realProxy ? _realProxy.velocityY : 0; },
-        get vx()         { return _realProxy ? _realProxy.vx        : 0; },
-        get vy()         { return _realProxy ? _realProxy.vy        : 0; },
-
-        // --- Writable properties: apply live or queue ---
-        set x(v)         { _realProxy ? (_realProxy.x         = v) : _pending.push({type:'set',key:'x',value:v}); },
-        set y(v)         { _realProxy ? (_realProxy.y         = v) : _pending.push({type:'set',key:'y',value:v}); },
-        set rotation(v)  { _realProxy ? (_realProxy.rotation  = v) : _pending.push({type:'set',key:'rotation',value:v}); },
-        set scaleX(v)    { _realProxy ? (_realProxy.scaleX    = v) : _pending.push({type:'set',key:'scaleX',value:v}); },
-        set scaleY(v)    { _realProxy ? (_realProxy.scaleY    = v) : _pending.push({type:'set',key:'scaleY',value:v}); },
-        set velocityX(v) { _realProxy ? (_realProxy.velocityX = v) : _pending.push({type:'set',key:'velocityX',value:v}); },
-        set velocityY(v) { _realProxy ? (_realProxy.velocityY = v) : _pending.push({type:'set',key:'velocityY',value:v}); },
-        set vx(v)        { _realProxy ? (_realProxy.vx        = v) : _pending.push({type:'set',key:'vx',value:v}); },
-        set vy(v)        { _realProxy ? (_realProxy.vy        = v) : _pending.push({type:'set',key:'vy',value:v}); },
-        set visible(v)   { _realProxy ? (_realProxy.visible   = v) : _pending.push({type:'set',key:'visible',value:v}); },
-        set alpha(v)     { _realProxy ? (_realProxy.alpha     = v) : _pending.push({type:'set',key:'alpha',value:v}); },
-        set health(v)    { _realProxy ? (_realProxy.health    = v) : _pending.push({type:'set',key:'health',value:v}); },
-        set ammo(v)      { _realProxy ? (_realProxy.ammo      = v) : _pending.push({type:'set',key:'ammo',value:v}); },
-        set state(v)     { _realProxy ? (_realProxy.state     = v) : _pending.push({type:'set',key:'state',value:v}); },
-        set opts(v)      { _realProxy ? (_realProxy.opts      = v) : _pending.push({type:'set',key:'opts',value:v}); },
-        set text(v)      { _realProxy ? (_realProxy.text      = v) : _pending.push({type:'set',key:'text',value:v}); },
-        set zOrder(v)    { _realProxy ? (_realProxy.zOrder    = v) : _pending.push({type:'set',key:'zOrder',value:v}); },
-        set tag(v)       { _realProxy ? (_realProxy.tag       = v) : _pending.push({type:'set',key:'tag',value:v}); },
-        set group(v)     { _realProxy ? (_realProxy.group     = v) : _pending.push({type:'set',key:'group',value:v}); },
-
-        // --- Methods: call live or queue ---
-        setVelocity(vx, vy)   { _realProxy ? _realProxy.setVelocity(vx, vy) : _pending.push({type:'call',key:'setVelocity',args:[vx,vy]}); },
-        destroy()             { _realProxy ? _realProxy.destroy()            : _pending.push({type:'call',key:'destroy',args:[]}); },
-        hasTag(t)             { return _realProxy ? _realProxy.hasTag(t)     : false; },
-        sendMessage(msg, data){ _realProxy ? _realProxy.sendMessage(msg, data) : _pending.push({type:'call',key:'sendMessage',args:[msg,data]}); },
-        takeDamage(amt, src)  { _realProxy ? _realProxy.takeDamage(amt, src)  : _pending.push({type:'call',key:'takeDamage',args:[amt,src]}); },
-        distanceTo(a, b)      { return _realProxy ? _realProxy.distanceTo(a, b) : Infinity; },
-        setText(v)            { _realProxy ? _realProxy.setText(v)           : _pending.push({type:'call',key:'setText',args:[v]}); },
-        setTextStyle(o)       { _realProxy ? _realProxy.setTextStyle(o)      : _pending.push({type:'call',key:'setTextStyle',args:[o]}); },
-        clone(wx,wy,cb)       { _realProxy ? _realProxy.clone(wx,wy,cb)      : _pending.push({type:'call',key:'clone',args:[wx,wy,cb]}); },
-    };
-    return dp;
-}
-
 function _makeProxy(f) {
     return {
         _ref:         f,
         _isproxy:     true,          // lets sendMessage() and destroy() detect a proxy
         get name()    { return f.label; },
-        set name(v)   { f.label = String(v); },
         /** The object's script tag (set via setTag()). */
         get tag()     { return f._scriptTag   ?? ''; },
-        set tag(v)    { f._scriptTag = String(v); },
         /** The object's group (set via setGroup()). */
         get group()   { return f._scriptGroup ?? ''; },
-        set group(v)  { f._scriptGroup = String(v); },
         /** World X position. */
         get x()       { return  f.x  / 100; },
-        set x(v)      { f.x =  +v * 100; },
         /** World Y position. */
         get y()       { return -f.y  / 100; },
-        set y(v)      { f.y = -+v * 100; },
         /** Horizontal scale (1 = normal, -1 = flipped). */
         get scaleX()  { return f.scale?.x ?? 1; },
-        set scaleX(v) { if (f.scale) { f.scale.x = +v; } else { f.scale = { x: +v, y: f.scale?.y ?? 1 }; } if (f.spriteGraphic) f.spriteGraphic.scale.x = +v; },
+        set scaleX(v) { if (f.scale) f.scale.x = +v; },
         /** Vertical scale. */
         get scaleY()  { return f.scale?.y ?? 1; },
-        set scaleY(v) { if (f.scale) { f.scale.y = +v; } else { f.scale = { x: f.scale?.x ?? 1, y: +v }; } if (f.spriteGraphic) f.spriteGraphic.scale.y = +v; },
+        set scaleY(v) { if (f.scale) f.scale.y = +v; },
         /** Rotation in degrees (positive = clockwise). */
         get rotation(){ return -(f.rotation * 180 / Math.PI); },
-        set rotation(v){ f.rotation = -(+v * Math.PI / 180); if (f.spriteGraphic) f.spriteGraphic.rotation = f.rotation; },
+        set rotation(v){ f.rotation = -(+v * Math.PI / 180); },
         get visible() { return f.visible; },
         set visible(v){ f.visible = !!v; },
         get alpha()   { return f.alpha; },
-        set alpha(v)  { f.alpha = +v; if (f.spriteGraphic) f.spriteGraphic.alpha = +v; },
+        set alpha(v)  { f.alpha = v; },
         /** Physics body type: "dynamic", "kinematic", "static", or "none". */
         get physicsType() { return f.physicsBody ?? 'none'; },
         /** Z-order / sort layer. */
         get zOrder()  { return f.unityZ ?? 0; },
-        set zOrder(v) { f.unityZ = +v; },
 
         /** Per-clone local variable bag (same as c.opts in cloneSelf callback). */
         get opts()    { return f._opts ?? (f._opts = {}); },
@@ -3558,7 +3426,7 @@ function _getErrorHint(msg, stack) {
             // Check if it looks like a common typo of an engine function
             const apiNames = ['log','warn','error','gotoScene','spawnObject','destroy','setPos','getPos','walkTo','walkToObject','stopWalking','isWalking',
                 'velocityX','velocityY','onStart','onUpdate','onStop','onCollisionEnter','isKeyDown',
-                'isKeyJustDown','mouseX','mouseY','sceneVar','globalVar','soundPlay','wait','repeat'];
+                'isKeyJustDown','mouseX','mouseY','sceneVar','globalVar','soundPlay','wait','repeat','forever','cancelForever','subevent'];
             const similar = apiNames.find(a => _levenshtein(a.toLowerCase(), name.toLowerCase()) <= 2 && a !== name);
             if (similar) return `Did you mean "${similar}"? Check the API reference (? button in the toolbar).`;
             return `"${name}" hasn't been declared. Check for typos, or declare it with: var ${name} = ...`;
@@ -3659,35 +3527,30 @@ class ScriptInstance {
     _compile(code, api) {
         // ── The full scripting prelude — everything accessible in scripts ──
         const prelude = `
-var _onStart=null, _onUpdate=null, _onStop=null, _onCloneStart=null, _onDestroy=null;
-var _onCollisionEnter=null, _onCollisionStay=null, _onCollisionExit=null;
-var _onOverlapEnter=null, _onOverlapExit=null;
-var _onVisible=null, _onHide=null, _onMouseClick=null, _onMouseEnter=null, _onMouseLeave=null;
-var _msgHandlers = new Map();
-// ── Extended events ───────────────────────────────────────
-var _onDamage=null, _onDeath=null, _onHeal=null;
-var _onLand=null, _onJump=null;
-var _onScreenExit=null, _onScreenEnter=null;
-var _onAmmoEmpty=null, _onReload=null;
-var _stateEnterHandlers=new Map(), _stateExitHandlers=new Map();
+var _onStart=null,_onUpdate=null,_onStop=null,_onCloneStart=null,_onDestroy=null;
+var _onCollisionEnter=null,_onCollisionStay=null,_onCollisionExit=null;
+var _onOverlapEnter=null,_onOverlapExit=null;
+var _onVisible=null,_onHide=null,_onMouseClick=null,_onMouseEnter=null,_onMouseLeave=null;
+var _msgHandlers=new Map();
+var _onDamage=null,_onDeath=null,_onHeal=null;
+var _onLand=null,_onJump=null;
+var _onScreenExit=null,_onScreenEnter=null;
+var _onAmmoEmpty=null,_onReload=null;
+var _stateEnterHandlers=new Map(),_stateExitHandlers=new Map();
 
-// ═══════════════════════════════════════════════════════════════
-// EVENT REGISTRATION
-// Register functions to run at specific moments in the game loop.
-// ═══════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────
+// EVENTS  —  register a function to run at a specific moment
+// ─────────────────────────────────────────────────────────────
 
-/** Runs once when Play is pressed (only on original objects, NOT clones) */
+/** Runs once when Play starts (not on clones — use onCloneStart for those) */
 function onStart(fn)             { _onStart          = fn; }
 
 /**
- * Runs once when this object is spawned as a CLONE via cloneSelf() or cloneObject().
- * Use this to give clones their own initialisation without causing infinite clone chains:
+ * Runs once when this object is SPAWNED AS A CLONE (via cloneSelf / cloneObject).
+ * The original object runs onStart; clones run onCloneStart instead.
  *
- *   onStart(() => {
- *     cloneSelf(getX() + 1, getY());   // spawn ONE clone to the right
- *   });
  *   onCloneStart(() => {
- *     // this code runs on the clone — NOT on the original
+ *     forever(() => { x -= 3 * dt; }); // each clone slides left
  *   });
  */
 function onCloneStart(fn)        { _onCloneStart      = fn; }
@@ -3695,6 +3558,25 @@ function onCloneStart(fn)        { _onCloneStart      = fn; }
 function onUpdate(fn)            { _onUpdate         = fn; }
 /** Runs once when Play is stopped */
 function onStop(fn)              { _onStop           = fn; }
+
+/**
+ * subevent(eventFn, handler)
+ * ─────────────────────────────────────────────────────────────
+ * Package any behaviour into a named function and plug it into
+ * any event block. Keeps big scripts tidy.
+ *
+ *   function makePipeClone() {
+ *     subevent(onCloneStart, () => {
+ *       forever(() => { x -= 4 * dt; });      // slide left every frame
+ *       onScreenExit(() => { destroySelf(); });
+ *     });
+ *   }
+ *
+ *   onStart(() => {
+ *     makePipeClone();   // wire it up
+ *   });
+ */
+function subevent(registrar, fn) { registrar(fn); }
 /**
  * Runs once just before this object is destroyed (via destroySelf() or destroy()).
  * Use it to play effects, drop items, remove HUD elements, etc.
@@ -3772,10 +3654,9 @@ function onStateEnter(name, fn)  { _stateEnterHandlers.set(String(name), fn); }
  */
 function onStateExit(name, fn)   { _stateExitHandlers.set(String(name), fn); }
 
-// ═══════════════════════════════════════════════════════════════
-// THIS OBJECT — use "this." prefix for clarity
-// All of these refer to the object this script is attached to.
-// ═══════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────
+// POSITION & MOVEMENT  —  where this object is and how it moves
+// ─────────────────────────────────────────────────────────────
 var self = api;  // "self" is a backup alias for "this"
 
 // ── Position ──────────────────────────────────────────────────
@@ -4010,7 +3891,9 @@ function broadcastGroup(grp, msg, data)   { api.broadcastGroup(grp, msg, data); 
  */
 function broadcastAll(msg, data)          { api.broadcastAll(msg, data); }
 
-// ── Finding other objects ─────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// FINDING OBJECTS  —  get a reference to any other object
+// ─────────────────────────────────────────────────────────────
 /**
  * Find an object by its exact name.
  * Returns an object proxy with .x, .y, .name, .sendMessage()
@@ -4036,7 +3919,9 @@ function overlapsTag(tag)           { return api.overlapsTag(tag); }
 /** Returns ALL objects with this tag that this object overlaps */
 function overlapsAllWithTag(tag)    { return api.overlapsAllWithTag(tag); }
 
-// ── Destroy ───────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// SPAWNING & DESTROYING
+// ─────────────────────────────────────────────────────────────
 /** Remove this object from the scene */
 function destroySelf()              { api.destroySelf(); }
 /** Remove another specific object from the scene. To destroy THIS object use destroy() instead. */
@@ -4063,17 +3948,14 @@ function getSceneName(i)            { return api.getSceneName(i); }
  */
 function pauseScene(on = true)      { api.pauseScene(on); }
 /**
- * Resume the scene after it was paused.
- * Alias for pauseScene(false).
- */
-function resumeScene()              { api.pauseScene(false); }
-/**
  * Restart the current scene without leaving play mode.
  * All objects, physics and scripts are reset to their initial state.
  */
 function restartScene()             { api.restartScene(); }
 
-// ── Camera ────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// CAMERA
+// ─────────────────────────────────────────────────────────────
 /**
  * Make the camera follow an object smoothly.
  * Example:  cameraFollow(find("Player"))
@@ -4193,7 +4075,9 @@ function applyAngularImpulse(impulse)   { physics.applyAngularImpulse(impulse); 
 var Key   = window.Key   || {};
 var Mouse = window.Mouse || {};
 
-// ── Input ─────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// INPUT  —  keyboard, mouse, touch
+// ─────────────────────────────────────────────────────────────
 var input = api.input;
 /** Is key currently held? Accepts Key.X constants or raw strings like "w".
  *  Pass Key.ANY to check if ANY key is held. */
@@ -4329,16 +4213,18 @@ function onTap(fn)              { api.onTap(fn); }
 /** Total seconds since Play was pressed */
 function getTime()            { return api.time; }
 
-// ── Shared variables ──────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// SHARED VARIABLES  —  talk between scripts
+// ─────────────────────────────────────────────────────────────
 /**
- * sceneVar — variables shared between ALL scripts in the current scene.
- * Reset when you switch scenes.
- * Example:  sceneVar.score = 0;   sceneVar.score += 1;
+ * sceneVar  — shared by ALL scripts in this scene. Resets on scene change.
+ *   sceneVar.score = 0;
+ *   sceneVar.score += 1;
  */
 var sceneVar  = api.sceneVar;
 /**
- * globalVar — variables that survive even when you switch scenes.
- * Example:  globalVar.totalDeaths += 1;
+ * globalVar — persists even after switching scenes.
+ *   globalVar.highScore = Math.max(globalVar.highScore || 0, score);
  */
 var globalVar = api.globalVar;
 
@@ -4346,7 +4232,9 @@ var globalVar = api.globalVar;
 /** store — private to this script, reset on Play stop */
 var store = api.store;
 
-// ── Sound ─────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// SOUND
+// ─────────────────────────────────────────────────────────────
 /**
  * Play a sound asset by name.
  * soundPlay("Jump")
@@ -4359,10 +4247,12 @@ function soundStop(name)          { api.soundStop(name); }
 /** Stop all currently playing sounds */
 function soundStopAll()           { api.soundStopAll(); }
 
-// ── Timers ────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// TIMERS  —  run something after a delay or on every frame
+// ─────────────────────────────────────────────────────────────
 /**
- * Wait X seconds then run a function. Non-blocking.
- * Example:  wait(2, () => { log("2 seconds!"); })
+ * Wait X seconds, then call a function.
+ *   wait(1.5, () => { destroySelf(); })
  */
 function wait(seconds, fn)        { api.wait(seconds, fn); }
 
@@ -4393,8 +4283,6 @@ function setCollisionMask(m)      { api.setCollisionMask(m); }
  */
 function setTint(v)               { api.tint = v; }
 function getTint()                { return api.tint; }
-/** Remove tint and restore the object's original colours. */
-function clearTint()              { api.clearTint(); }
 
 // ── Distance ──────────────────────────────────────────────────
 /**
@@ -4405,7 +4293,9 @@ function clearTint()              { api.clearTint(); }
  */
 function distanceTo(targetOrX, y) { return api.distanceTo(targetOrX, y); }
 
-// ── Math helpers ──────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// MATH HELPERS  —  lerp, clamp, rand, sin, cos, dist …
+// ─────────────────────────────────────────────────────────────
 var math    = api.math;
 var lerp    = math.lerp;
 var clamp   = math.clamp;
@@ -4423,7 +4313,9 @@ var atan2   = math.atan2; var floor = math.floor; var ceil  = math.ceil;
 var round   = math.round; var PI    = math.PI;
 var max     = math.max;   var min   = math.min;
 
-// ── Debug ─────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// LOGGING  —  print to the in-engine console
+// ─────────────────────────────────────────────────────────────
 /** Print to the console */
 function log(...a)    { api.log(...a); }
 /** Print a warning */
@@ -4445,16 +4337,33 @@ function tween(props, duration, easing, onComplete) {
     return api.tween(props, duration, easing, onComplete);
 }
 
-// ── Repeat timers ──────────────────────────────────────────────
 /**
- * Call fn every interval seconds. Returns an id for cancelRepeat().
- * var id = repeat(2, () => { spawnCoin(); });
+ * Call fn every X seconds on a loop. Returns an id to cancel it.
+ *   var id = repeat(2, () => { spawnCoin(); });
+ *   cancelRepeat(id);   // stop the loop later
  */
 function repeat(interval, fn) { return api.repeat(interval, fn); }
 /** Cancel a repeating timer by id. */
 function cancelRepeat(id)     { api.cancelRepeat(id); }
 
-// ── Spawn object ───────────────────────────────────────────────
+/**
+ * Run a function every single frame — the simplest main loop.
+ * Drop it anywhere: inside onStart, onCloneStart, a helper function.
+ * Returns an id so you can stop it with cancelForever(id).
+ *
+ *   forever(() => {
+ *     x -= 3 * dt;   // move left every frame
+ *   });
+ *
+ *   onCloneStart(() => {
+ *     forever(() => { x -= 4 * dt; });  // each clone moves independently
+ *   });
+ */
+function forever(fn) { return api.repeat(0, fn); }
+/** Stop a forever() loop. Pass the id returned by forever(). */
+function cancelForever(id) { api.cancelRepeat(id); }
+
+
 /**
  * Create a new object at a world position from an asset name, object name,
  * object tag, or prefab name.
