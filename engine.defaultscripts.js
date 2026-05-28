@@ -786,7 +786,9 @@ onCollisionEnter((other) => {
   // Damage player on contact
   if (other && other.hasTag("player")) {
     other.takeDamage(1);
-    other.knockback(other.x > getX() ? 0 : 180, 6, 0.2);
+    var pushDir = other.x > this.x ? 1 : -1;
+    other.velocityX = pushDir * 6;
+    wait(0.2, () => { other.velocityX = 0; });
   }
 });
 

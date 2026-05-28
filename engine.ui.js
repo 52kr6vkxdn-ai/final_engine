@@ -388,7 +388,7 @@ export function refreshSceneSettingsPanel() {
   <div class="component-body" style="gap:8px;">
     <div style="background:#0f0a02;border:1px solid #3a2a0a;border-radius:4px;padding:8px 10px;font-size:10px;color:#8a7a4a;line-height:1.7;">
       <b style="color:#d4a850;">Gravity is per-object, set in scripts.</b><br>
-      • <b>Dynamic</b> bodies fall by default (use <code style="color:#facc15;">this.gravity(0, 9.8)</code> in script)<br>
+      • <b>Dynamic</b> bodies fall with physics gravity (adjust with <code style="color:#facc15;">setGravityScale(n)</code>)<br>
       • <b>Kinematic</b> bodies have <b>no gravity</b> — you control all movement<br>
       • <b>Static</b> bodies never move<br>
       <span style="color:#5a4a2a;font-size:9px;margin-top:4px;display:block;">Tip: use <code style="color:#facc15;">this.velocityY -= 9.8 * dt</code> for manual gravity</span>

@@ -10,8 +10,8 @@
    - gotoScene(name/index), currentScene(), getSceneCount()
    - Overlap detection (AABB) for non-physics objects
    - Collision tracking: instant (onCollisionEnter) + continuous (onCollisionStay) + exit (onCollisionExit)
-   - Gravity per object via this.gravity(x, y) in script
    - All APIs have clear `this.` prefixed names
+   - Stored variables (spawnObject, cloneSelf, find) expose full API: varName.x/y, varName.velocityX/Y, varName.scaleX/Y, varName.lookAt(), varName.makeDraggable(), etc.
    ============================================================ */
 
 import { state } from './engine.state.js';
@@ -1088,9 +1088,6 @@ function _buildSandbox(obj, instRef) {
     // Seeded from _spawnVx/_spawnVy when set by a spawnObject callback BEFORE this
     // ScriptInstance is constructed, so bullets/clones start moving immediately.
     const _vel = { x: obj._spawnVx ?? 0, y: obj._spawnVy ?? 0 };
-    // Per-object manual gravity (script can call this.gravity(0, 9.8))
-    const _grav = { x: 0, y: 0 };
-
     // Per-sandbox tween queue, repeat timers, key handlers, and forever callbacks
     const _tweens          = [];
     const _repeats         = [];
@@ -1167,17 +1164,8 @@ function _buildSandbox(obj, instRef) {
         /** Direct access to the forever-loop callback list */
         get _foreverCbs() { return _foreverCbs; },
 
-        // ── MANUAL GRAVITY ────────────────────────────────────
-        /**
-         * Apply manual gravity to this object (world units/s²).
-         * Call inside onUpdate — it's additive per frame.
-         * Example: this.gravity(0, -9.8)  ← falls downward
-         */
-        gravity(gx, gy) { _grav.x = gx ?? 0; _grav.y = gy ?? 0; },
-
-        // ── INTERNAL vel/grav for runtime ─────────────────────
+        // ── INTERNAL vel for runtime ─────────────────────
         _vel,
-        _grav,
         // Raw PIXI container — used by say() / think() speech bubbles (addChild)
         _ref: obj,
         /** True if this object was spawned by cloneSelf/cloneObject at runtime */
@@ -1217,17 +1205,6 @@ function _buildSandbox(obj, instRef) {
             if (obj.physicsImmovable) return;
             if (obj.physicsBody === 'kinematic') {
                 // Accumulate into pending delta; stepPhysics will sweep it
-                if (!obj._pendingKinematicDelta) obj._pendingKinematicDelta = { x: 0, y: 0 };
-                obj._pendingKinematicDelta.x +=  dx * 100;
-                obj._pendingKinematicDelta.y -= dy * 100;
-            } else {
-                obj.x += dx * 100;
-                obj.y -= dy * 100;
-            }
-        },
-        translate(dx, dy) {
-            if (obj.physicsImmovable) return;
-            if (obj.physicsBody === 'kinematic') {
                 if (!obj._pendingKinematicDelta) obj._pendingKinematicDelta = { x: 0, y: 0 };
                 obj._pendingKinematicDelta.x +=  dx * 100;
                 obj._pendingKinematicDelta.y -= dy * 100;
@@ -2929,19 +2906,6 @@ function _buildSandbox(obj, instRef) {
         },
         isInvincible() { return obj._isInvincible === true; },
 
-        // ── KNOCKBACK ─────────────────────────────────────────────
-        /**
-         * Push this object in a direction (degrees: 0=right, 90=up, 180=left, 270=down).
-         *   knockback(180, 8)          — push left, force 8
-         *   knockback(90, 12, 0.15)    — push up, stop after 0.15s
-         */
-        knockback(angleDeg, force, stopAfter = 0) {
-            const rad = (angleDeg * Math.PI) / 180;
-            _vel.x = Math.cos(rad) * force;
-            _vel.y = Math.sin(rad) * force;
-            if (stopAfter > 0) setTimeout(() => { _vel.x = 0; _vel.y = 0; }, stopAfter * 1000);
-        },
-
         // ── AMMO SYSTEM ───────────────────────────────────────────
         /** Set ammo count (also sets maxAmmo on first call). */
         setAmmo(n)      { obj._ammo = Math.max(0, n); if (obj._maxAmmo == null) obj._maxAmmo = n; },
@@ -2957,51 +2921,6 @@ function _buildSandbox(obj, instRef) {
             obj._ammo = amount != null ? Math.min(obj._maxAmmo ?? amount, amount) : (obj._maxAmmo ?? 0);
             const inst = _instances.find(i => i.obj === obj);
             if (inst?._onReload) try { inst._onReload(); } catch(_) {}
-        },
-
-        // ── FIRE PROJECTILE ───────────────────────────────────────
-        /**
-         * Spawn an asset as a projectile flying in a given direction.
-         * fireProjectile('Bullet', 0, 12)
-         * fireProjectile('Bullet', 90, 15, { damage:10, lifetime:3, tag:'bullet' })
-         * fireProjectile('Arrow', 45, 10, { onSpawned: (b) => b.setTint('#ff0') })
-         * angle: degrees (0=right, 90=up, 180=left, 270=down)
-         */
-        fireProjectile(assetName, angleDeg = 0, speed = 10, opts = {}) {
-            if (obj._ammo != null) {
-                if (obj._ammo <= 0) {
-                    const inst = _instances.find(i => i.obj === obj);
-                    if (inst?._onAmmoEmpty) try { inst._onAmmoEmpty(); } catch(_) {}
-                    return null;
-                }
-                obj._ammo = Math.max(0, obj._ammo - 1);
-            }
-            const rad = (angleDeg * Math.PI) / 180;
-            const pvx = Math.cos(rad) * speed;
-            const pvy = Math.sin(rad) * speed;
-            const sx  = obj.x, sy = obj.y;
-            const dp = _makeDeferredProxy();
-            import('./engine.objects.js').then(async m => {
-                const newObj = await m.createImageObject(assetName, sx, sy);
-                if (!newObj) return;
-                newObj._runtimeSpawned      = true;
-                newObj._isClone             = true;
-                newObj._opts                = {};
-                if (opts.tag)               newObj._scriptTag         = String(opts.tag);
-                if (opts.damage != null)    newObj._projectileDamage  = opts.damage;
-                if (opts.group)             newObj._scriptGroup       = String(opts.group);
-                // NOTE: createImageObject({silent:true}) already pushed to gameObjects + sceneContainer
-                const sb = _buildSandbox(newObj, [null]);
-                sb.api._vel.x = pvx;
-                sb.api._vel.y = pvy;
-                if (opts.lifetime > 0) setTimeout(() => { newObj._markedForDestroy = true; }, opts.lifetime * 1000);
-                if (opts.onSpawned) try { opts.onSpawned(_makeProxy(newObj)); } catch(_) {}
-                // Resolve deferred proxy — applies any queued writes
-                dp._resolve(newObj);
-            }).catch(e => {
-                _logConsole(`fireProjectile: module load failed — ${e?.message ?? e}`, '#f87171');
-            });
-            return dp;
         },
 
         // ── STATE MACHINE ─────────────────────────────────────────
@@ -3148,270 +3067,459 @@ function _deepCopyObjectProps(src, dst) {
  * After resolve, every get/set goes live through _makeProxy.
  */
 function _makeDeferredProxy() {
-    let _realProxy = null;          // set once _resolve() is called
-    const _pending = [];            // queued { type, key, value, args } ops
+    let _realProxy = null;
+    const _pending = [];
 
-    // The object we hand back to the script
+    // Helper: live or queue a setter
+    function _s(key, v) { _realProxy ? (_realProxy[key] = v) : _pending.push({type:'set', key, value:v}); }
+    // Helper: live or queue a method call
+    function _c(key, args) { _realProxy ? (typeof _realProxy[key]==='function' && _realProxy[key](...args)) : _pending.push({type:'call', key, args}); }
+
     const dp = {
-        _isproxy:   true,
-        _deferred:  true,
+        _isproxy:  true,
+        _deferred: true,
 
-        // Called internally once the real game object exists
         _resolve(realObj) {
             _realProxy = _makeProxy(realObj);
-            // Replay all writes / method calls that arrived before resolve
             for (const op of _pending) {
-                if (op.type === 'set') {
-                    try { _realProxy[op.key] = op.value; } catch(_) {}
-                } else if (op.type === 'call') {
-                    try { if (typeof _realProxy[op.key] === 'function') _realProxy[op.key](...op.args); } catch(_) {}
-                }
+                try {
+                    if (op.type === 'set') { _realProxy[op.key] = op.value; }
+                    else if (op.type === 'call' && typeof _realProxy[op.key] === 'function') { _realProxy[op.key](...op.args); }
+                } catch(_) {}
             }
             _pending.length = 0;
         },
 
-        // --- Readable properties (safe no-ops before resolve) ---
-        get name()       { return _realProxy ? _realProxy.name       : ''; },
-        get tag()        { return _realProxy ? _realProxy.tag        : ''; },
-        get group()      { return _realProxy ? _realProxy.group      : ''; },
-        get visible()    { return _realProxy ? _realProxy.visible    : true; },
-        get alpha()      { return _realProxy ? _realProxy.alpha      : 1; },
-        get zOrder()     { return _realProxy ? _realProxy.zOrder     : 0; },
-        get physicsType(){ return _realProxy ? _realProxy.physicsType: 'none'; },
-        get health()     { return _realProxy ? _realProxy.health     : 100; },
-        get ammo()       { return _realProxy ? _realProxy.ammo       : 0; },
-        get state()      { return _realProxy ? _realProxy.state      : null; },
-        get isDead()     { return _realProxy ? _realProxy.isDead     : false; },
-        get isInvincible(){ return _realProxy ? _realProxy.isInvincible : false; },
-        get opts()       { return _realProxy ? _realProxy.opts       : {}; },
-        get text()       { return _realProxy ? _realProxy.text       : ''; },
+        // ── Readable getters (safe defaults before resolve) ───────────────────
+        get name()          { return _realProxy ? _realProxy.name          : ''; },
+        get tag()           { return _realProxy ? _realProxy.tag           : ''; },
+        get group()         { return _realProxy ? _realProxy.group         : ''; },
+        get x()             { return _realProxy ? _realProxy.x             : 0; },
+        get y()             { return _realProxy ? _realProxy.y             : 0; },
+        get scaleX()        { return _realProxy ? _realProxy.scaleX        : 1; },
+        get scaleY()        { return _realProxy ? _realProxy.scaleY        : 1; },
+        get rotation()      { return _realProxy ? _realProxy.rotation      : 0; },
+        get velocityX()     { return _realProxy ? _realProxy.velocityX     : 0; },
+        get velocityY()     { return _realProxy ? _realProxy.velocityY     : 0; },
+        get vx()            { return _realProxy ? _realProxy.vx            : 0; },
+        get vy()            { return _realProxy ? _realProxy.vy            : 0; },
+        get visible()       { return _realProxy ? _realProxy.visible       : true; },
+        get alpha()         { return _realProxy ? _realProxy.alpha         : 1; },
+        get tint()          { return _realProxy ? _realProxy.tint          : 0xffffff; },
+        get zOrder()        { return _realProxy ? _realProxy.zOrder        : 0; },
+        get physicsType()   { return _realProxy ? _realProxy.physicsType   : 'none'; },
+        get health()        { return _realProxy ? _realProxy.health        : 100; },
+        get maxHealth()     { return _realProxy ? _realProxy.maxHealth     : 100; },
+        get ammo()          { return _realProxy ? _realProxy.ammo          : 0; },
+        get state()         { return _realProxy ? _realProxy.state         : null; },
+        get isDead()        { return _realProxy ? _realProxy.isDead        : false; },
+        get isInvincible()  { return _realProxy ? _realProxy.isInvincible  : false; },
+        get opts()          { return _realProxy ? _realProxy.opts          : {}; },
+        get text()          { return _realProxy ? _realProxy.text          : ''; },
+        get width()         { return _realProxy ? _realProxy.width         : 1; },
+        get height()        { return _realProxy ? _realProxy.height        : 1; },
+        get destroyed()     { return _realProxy ? _realProxy.destroyed     : false; },
+        get isWalking()     { return _realProxy ? _realProxy.isWalking     : false; },
 
-        // --- Position / size (read) ---
-        get x()          { return _realProxy ? _realProxy.x         : 0; },
-        get y()          { return _realProxy ? _realProxy.y         : 0; },
-        get scaleX()     { return _realProxy ? _realProxy.scaleX    : 1; },
-        get scaleY()     { return _realProxy ? _realProxy.scaleY    : 1; },
-        get rotation()   { return _realProxy ? _realProxy.rotation  : 0; },
-        get velocityX()  { return _realProxy ? _realProxy.velocityX : 0; },
-        get velocityY()  { return _realProxy ? _realProxy.velocityY : 0; },
-        get vx()         { return _realProxy ? _realProxy.vx        : 0; },
-        get vy()         { return _realProxy ? _realProxy.vy        : 0; },
+        // ── Writable properties: live or queue ────────────────────────────────
+        set name(v)         { _s('name',v); },
+        set tag(v)          { _s('tag',v); },
+        set group(v)        { _s('group',v); },
+        set x(v)            { _s('x',v); },
+        set y(v)            { _s('y',v); },
+        set scaleX(v)       { _s('scaleX',v); },
+        set scaleY(v)       { _s('scaleY',v); },
+        set rotation(v)     { _s('rotation',v); },
+        set velocityX(v)    { _s('velocityX',v); },
+        set velocityY(v)    { _s('velocityY',v); },
+        set vx(v)           { _s('vx',v); },
+        set vy(v)           { _s('vy',v); },
+        set visible(v)      { _s('visible',v); },
+        set alpha(v)        { _s('alpha',v); },
+        set tint(v)         { _s('tint',v); },
+        set zOrder(v)       { _s('zOrder',v); },
+        set health(v)       { _s('health',v); },
+        set maxHealth(v)    { _s('maxHealth',v); },
+        set ammo(v)         { _s('ammo',v); },
+        set state(v)        { _s('state',v); },
+        set opts(v)         { _s('opts',v); },
+        set text(v)         { _s('text',v); },
+        set physicsType(v)  { _s('physicsType',v); },
 
-        // --- Writable properties: apply live or queue ---
-        set x(v)         { _realProxy ? (_realProxy.x         = v) : _pending.push({type:'set',key:'x',value:v}); },
-        set y(v)         { _realProxy ? (_realProxy.y         = v) : _pending.push({type:'set',key:'y',value:v}); },
-        set rotation(v)  { _realProxy ? (_realProxy.rotation  = v) : _pending.push({type:'set',key:'rotation',value:v}); },
-        set scaleX(v)    { _realProxy ? (_realProxy.scaleX    = v) : _pending.push({type:'set',key:'scaleX',value:v}); },
-        set scaleY(v)    { _realProxy ? (_realProxy.scaleY    = v) : _pending.push({type:'set',key:'scaleY',value:v}); },
-        set velocityX(v) { _realProxy ? (_realProxy.velocityX = v) : _pending.push({type:'set',key:'velocityX',value:v}); },
-        set velocityY(v) { _realProxy ? (_realProxy.velocityY = v) : _pending.push({type:'set',key:'velocityY',value:v}); },
-        set vx(v)        { _realProxy ? (_realProxy.vx        = v) : _pending.push({type:'set',key:'vx',value:v}); },
-        set vy(v)        { _realProxy ? (_realProxy.vy        = v) : _pending.push({type:'set',key:'vy',value:v}); },
-        set visible(v)   { _realProxy ? (_realProxy.visible   = v) : _pending.push({type:'set',key:'visible',value:v}); },
-        set alpha(v)     { _realProxy ? (_realProxy.alpha     = v) : _pending.push({type:'set',key:'alpha',value:v}); },
-        set health(v)    { _realProxy ? (_realProxy.health    = v) : _pending.push({type:'set',key:'health',value:v}); },
-        set ammo(v)      { _realProxy ? (_realProxy.ammo      = v) : _pending.push({type:'set',key:'ammo',value:v}); },
-        set state(v)     { _realProxy ? (_realProxy.state     = v) : _pending.push({type:'set',key:'state',value:v}); },
-        set opts(v)      { _realProxy ? (_realProxy.opts      = v) : _pending.push({type:'set',key:'opts',value:v}); },
-        set text(v)      { _realProxy ? (_realProxy.text      = v) : _pending.push({type:'set',key:'text',value:v}); },
-        set zOrder(v)    { _realProxy ? (_realProxy.zOrder    = v) : _pending.push({type:'set',key:'zOrder',value:v}); },
-        set tag(v)       { _realProxy ? (_realProxy.tag       = v) : _pending.push({type:'set',key:'tag',value:v}); },
-        set group(v)     { _realProxy ? (_realProxy.group     = v) : _pending.push({type:'set',key:'group',value:v}); },
+        // ── Methods: live or queue ────────────────────────────────────────────
+        hasTag(t)                { return _realProxy ? _realProxy.hasTag(t)         : false; },
+        getState()               { return _realProxy ? _realProxy.getState()        : null; },
+        getHealth()              { return _realProxy ? _realProxy.getHealth()       : 100; },
+        getMaxHealth()           { return _realProxy ? _realProxy.getMaxHealth()    : 100; },
+        getAmmo()                { return _realProxy ? _realProxy.getAmmo()         : 0; },
+        getMaxAmmo()             { return _realProxy ? _realProxy.getMaxAmmo()      : 0; },
+        distanceTo(a,b)          { return _realProxy ? _realProxy.distanceTo(a,b)   : Infinity; },
+        overlaps(o)              { return _realProxy ? _realProxy.overlaps(o)       : false; },
+        overlapsTag(t)           { return _realProxy ? _realProxy.overlapsTag(t)    : null; },
+        overlapsAllWithTag(t)    { return _realProxy ? _realProxy.overlapsAllWithTag(t) : []; },
+        canSee(t,o)              { return _realProxy ? _realProxy.canSee(t,o)       : false; },
+        inFOV(t,d,r)             { return _realProxy ? _realProxy.inFOV(t,d,r)      : false; },
+        lastKnownPos(t)          { return _realProxy ? _realProxy.lastKnownPos(t)   : null; },
+        isDead()                 { return _realProxy ? _realProxy.isDead            : false; },
+        get physics()            { return _realProxy ? _realProxy.physics           : null; },
+        get currentAnimation()   { return _realProxy ? _realProxy.currentAnimation  : null; },
 
-        // --- Methods: call live or queue ---
-        setVelocity(vx, vy)   { _realProxy ? _realProxy.setVelocity(vx, vy) : _pending.push({type:'call',key:'setVelocity',args:[vx,vy]}); },
-        destroy()             { _realProxy ? _realProxy.destroy()            : _pending.push({type:'call',key:'destroy',args:[]}); },
-        hasTag(t)             { return _realProxy ? _realProxy.hasTag(t)     : false; },
-        sendMessage(msg, data){ _realProxy ? _realProxy.sendMessage(msg, data) : _pending.push({type:'call',key:'sendMessage',args:[msg,data]}); },
-        takeDamage(amt, src)  { _realProxy ? _realProxy.takeDamage(amt, src)  : _pending.push({type:'call',key:'takeDamage',args:[amt,src]}); },
-        distanceTo(a, b)      { return _realProxy ? _realProxy.distanceTo(a, b) : Infinity; },
-        setText(v)            { _realProxy ? _realProxy.setText(v)           : _pending.push({type:'call',key:'setText',args:[v]}); },
-        setTextStyle(o)       { _realProxy ? _realProxy.setTextStyle(o)      : _pending.push({type:'call',key:'setTextStyle',args:[o]}); },
-        clone(wx,wy,cb)       { _realProxy ? _realProxy.clone(wx,wy,cb)      : _pending.push({type:'call',key:'clone',args:[wx,wy,cb]}); },
-        stopMovement()        { _realProxy ? _realProxy.stopMovement()        : _pending.push({type:'call',key:'stopMovement',args:[]}); },
-        addForce(fx,fy)       { _realProxy ? _realProxy.addForce(fx,fy)       : _pending.push({type:'call',key:'addForce',args:[fx,fy]}); },
-        bounceX()             { _realProxy ? _realProxy.bounceX()             : _pending.push({type:'call',key:'bounceX',args:[]}); },
-        bounceY()             { _realProxy ? _realProxy.bounceY()             : _pending.push({type:'call',key:'bounceY',args:[]}); },
+        destroy()                { _c('destroy',[]); },
+        setVelocity(vx,vy)       { _c('setVelocity',[vx,vy]); },
+        stopMovement()           { _c('stopMovement',[]); },
+        bounceX()                { _c('bounceX',[]); },
+        bounceY()                { _c('bounceY',[]); },
+        move(dx,dy)              { _c('move',[dx,dy]); },
+        moveTo(x,y)              { _c('moveTo',[x,y]); },
+        lookAt(tx,ty)            { _c('lookAt',[tx,ty]); },
+        flipX()                  { _c('flipX',[]); },
+        flipY()                  { _c('flipY',[]); },
+        setTint(v)               { _c('setTint',[v]); },
+        clearTint()              { _c('clearTint',[]); },
+        getTint()                { return _realProxy ? _realProxy.getTint() : '#ffffff'; },
+        playAnimation(name)      { _c('playAnimation',[name]); },
+        stopAnimation()          { _c('stopAnimation',[]); },
+        pauseAnimation()         { _c('pauseAnimation',[]); },
+        makeDraggable(opts)      { _c('makeDraggable',[opts]); },
+        walkTo(x,y,opts)         { _c('walkTo',[x,y,opts]); },
+        walkToObject(t,opts)     { _c('walkToObject',[t,opts]); },
+        stopWalking()            { _c('stopWalking',[]); },
+        pursue(t,opts)           { _c('pursue',[t,opts]); },
+        flee(t,opts)             { _c('flee',[t,opts]); },
+        wander(opts)             { _c('wander',[opts]); },
+        moveForward(speed)       { _c('moveForward',[speed]); },
+        lockRotation()           { _c('lockRotation',[]); },
+        unlockRotation()         { _c('unlockRotation',[]); },
+        setRotationLocked(v)     { _c('setRotationLocked',[v]); },
+        applyForce(fx,fy)        { _c('applyForce',[fx,fy]); },
+        applyImpulse(ix,iy)      { _c('applyImpulse',[ix,iy]); },
+        setAngularVelocity(r)    { _c('setAngularVelocity',[r]); },
+        stopPhysics()            { _c('stopPhysics',[]); },
+        setPhysicsType(t)        { _c('setPhysicsType',[t]); },
+        setCollision(v)          { _c('setCollision',[v]); },
+        setSensor(v)             { _c('setSensor',[v]); },
+        setImmovable(v)          { _c('setImmovable',[v]); },
+        takeDamage(amt,src)      { _c('takeDamage',[amt,src]); },
+        heal(amount)             { _c('heal',[amount]); },
+        invincible(dur)          { _c('invincible',[dur]); },
+        setState(name)           { _c('setState',[name]); },
+        setHealth(n)             { _c('setHealth',[n]); },
+        setMaxHealth(n)          { _c('setMaxHealth',[n]); },
+        setAmmo(n)               { _c('setAmmo',[n]); },
+        setMaxAmmo(n)            { _c('setMaxAmmo',[n]); },
+        reload(amount)           { _c('reload',[amount]); },
+        sendMessage(msg,data)    { _c('sendMessage',[msg,data]); },
+        clone(wx,wy,cb)          { _c('clone',[wx,wy,cb]); },
+        wait(s,fn)               { _c('wait',[s,fn]); },
+        tween(p,d,e,c)           { _c('tween',[p,d,e,c]); },
+        repeat(interval,fn)      { _c('repeat',[interval,fn]); },
+        hitFlash(col,dur)        { _c('hitFlash',[col,dur]); },
+        objectShake(amp,dur)     { _c('objectShake',[amp,dur]); },
+        destroyAfter(secs)       { _c('destroyAfter',[secs]); },
+        setText(v)               { _c('setText',[v]); },
+        setTextStyle(o)          { _c('setTextStyle',[o]); },
+        say(text,dur)            { _c('say',[text,dur]); },
+        think(text,dur)          { _c('think',[text,dur]); },
+        soundPlay(name,opts)     { _c('soundPlay',[name,opts]); },
+        soundStop(name)          { _c('soundStop',[name]); },
+        raycastFromSelf(d,m,o)   { return _realProxy ? _realProxy.raycastFromSelf(d,m,o) : null; },
     };
     return dp;
 }
 
 function _makeProxy(f) {
+    // Helper: find the live ScriptInstance for this object (may be null if no script)
+    function _inst() { return _instances.find(i => i.obj === f) ?? null; }
+
     return {
-        _ref:         f,
-        _isproxy:     true,          // lets sendMessage() and destroy() detect a proxy
+        _ref:    f,
+        _isproxy: true,
+
+        // ── Identity ──────────────────────────────────────────────────────────
         get name()    { return f.label; },
         set name(v)   { f.label = String(v); },
-        /** The object's script tag (set via setTag()). */
+
         get tag()     { return f._scriptTag   ?? ''; },
-        set tag(v)    { f._scriptTag = String(v); },
-        /** The object's group (set via setGroup()). */
+        set tag(v)    { f._scriptTag = String(v); const i = _inst(); if (i) i.obj._scriptTag = String(v); },
+
         get group()   { return f._scriptGroup ?? ''; },
-        set group(v)  { f._scriptGroup = String(v); },
-        /** World X position. */
-        get x()       { return  f.x  / 100; },
-        set x(v)      { f.x =  +v * 100; },
-        /** World Y position. */
-        get y()       { return -f.y  / 100; },
-        set y(v)      { f.y = -+v * 100; },
-        /** Horizontal scale (1 = normal, -1 = flipped). */
+        set group(v)  { f._scriptGroup = String(v); const i = _inst(); if (i) i.obj._scriptGroup = String(v); },
+
+        hasTag(t)     { return (f._scriptTag ?? '') === String(t); },
+
+        // ── Position ──────────────────────────────────────────────────────────
+        get x()       { return  f.x / 100; },
+        set x(v)      { f.x =  +v * 100; if (f.physicsBody === 'kinematic') { f._kinematicPrevX = f.x; } },
+
+        get y()       { return -f.y / 100; },
+        set y(v)      { f.y = -+v * 100; if (f.physicsBody === 'kinematic') { f._kinematicPrevY = f.y; } },
+
+        // ── Scale ─────────────────────────────────────────────────────────────
         get scaleX()  { return f.scale?.x ?? 1; },
-        set scaleX(v) { if (f.scale) { f.scale.x = +v; } else { f.scale = { x: +v, y: f.scale?.y ?? 1 }; } if (f.spriteGraphic) f.spriteGraphic.scale.x = +v; },
-        /** Vertical scale. */
+        set scaleX(v) {
+            if (!f.scale) f.scale = { x: 1, y: 1 };
+            f.scale.x = +v;
+            if (f.spriteGraphic) f.spriteGraphic.scale.x = +v;
+        },
+
         get scaleY()  { return f.scale?.y ?? 1; },
-        set scaleY(v) { if (f.scale) { f.scale.y = +v; } else { f.scale = { x: f.scale?.x ?? 1, y: +v }; } if (f.spriteGraphic) f.spriteGraphic.scale.y = +v; },
-        /** Rotation in degrees (positive = clockwise). */
-        get rotation(){ return -(f.rotation * 180 / Math.PI); },
-        set rotation(v){ f.rotation = -(+v * Math.PI / 180); if (f.spriteGraphic) f.spriteGraphic.rotation = f.rotation; },
+        set scaleY(v) {
+            if (!f.scale) f.scale = { x: 1, y: 1 };
+            f.scale.y = +v;
+            if (f.spriteGraphic) f.spriteGraphic.scale.y = +v;
+        },
+
+        // ── Rotation ──────────────────────────────────────────────────────────
+        get rotation() { return -(f.rotation * 180 / Math.PI); },
+        set rotation(v) {
+            f.rotation = -(+v * Math.PI / 180);
+            if (f.spriteGraphic) f.spriteGraphic.rotation = f.rotation;
+        },
+
+        // ── Velocity (script-driven, not physics) ─────────────────────────────
+        get velocityX() { const i = _inst(); return i ? i.api._vel.x : (f._spawnVx ?? 0); },
+        set velocityX(v) {
+            f._spawnVx = +v;
+            const i = _inst(); if (i) i.api._vel.x = +v;
+        },
+
+        get velocityY() { const i = _inst(); return i ? i.api._vel.y : (f._spawnVy ?? 0); },
+        set velocityY(v) {
+            f._spawnVy = +v;
+            const i = _inst(); if (i) i.api._vel.y = +v;
+        },
+
+        // Short aliases
+        get vx() { const i = _inst(); return i ? i.api._vel.x : (f._spawnVx ?? 0); },
+        set vx(v) { f._spawnVx = +v; const i = _inst(); if (i) i.api._vel.x = +v; },
+
+        get vy() { const i = _inst(); return i ? i.api._vel.y : (f._spawnVy ?? 0); },
+        set vy(v) { f._spawnVy = +v; const i = _inst(); if (i) i.api._vel.y = +v; },
+
+        setVelocity(vx, vy) {
+            f._spawnVx = +vx; f._spawnVy = +vy;
+            const i = _inst(); if (i) { i.api._vel.x = +vx; i.api._vel.y = +vy; }
+        },
+        stopMovement() {
+            f._spawnVx = 0; f._spawnVy = 0;
+            const i = _inst(); if (i) { i.api._vel.x = 0; i.api._vel.y = 0; }
+        },
+        bounceX() { const i = _inst(); if (i) i.api.bounceX(); },
+        bounceY() { const i = _inst(); if (i) i.api.bounceY(); },
+
+        // ── Visibility / alpha ────────────────────────────────────────────────
         get visible() { return f.visible; },
-        set visible(v){ f.visible = !!v; },
-        get alpha()   { return f.alpha; },
-        set alpha(v)  { f.alpha = +v; if (f.spriteGraphic) f.spriteGraphic.alpha = +v; },
-        /** Physics body type: "dynamic", "kinematic", "static", or "none". */
-        get physicsType() { return f.physicsBody ?? 'none'; },
-        /** Z-order / sort layer. */
+        set visible(v) {
+            f.visible = !!v;
+            if (f.spriteGraphic) f.spriteGraphic.visible = !!v;
+        },
+
+        get alpha() { return f.alpha ?? 1; },
+        set alpha(v) {
+            f.alpha = Math.max(0, Math.min(1, +v));
+            if (f.spriteGraphic) f.spriteGraphic.alpha = f.alpha;
+        },
+
+        // ── Tint ──────────────────────────────────────────────────────────────
+        get tint() {
+            if (!f.spriteGraphic) return 0xffffff;
+            const t = f.spriteGraphic.tint;
+            return (typeof t === 'number') ? t : 0xffffff;
+        },
+        set tint(v) {
+            const hex = (typeof v === 'string') ? parseInt(v.replace('#',''), 16) : +v;
+            if (f.spriteGraphic) f.spriteGraphic.tint = hex;
+        },
+        setTint(v) {
+            const hex = (typeof v === 'string') ? parseInt(v.replace('#',''), 16) : +v;
+            if (f.spriteGraphic) f.spriteGraphic.tint = hex;
+        },
+        clearTint() { if (f.spriteGraphic) f.spriteGraphic.tint = 0xffffff; },
+        getTint() {
+            if (!f.spriteGraphic) return '#ffffff';
+            return '#' + (f.spriteGraphic.tint ?? 0xffffff).toString(16).padStart(6,'0');
+        },
+
+        // ── Z order ───────────────────────────────────────────────────────────
         get zOrder()  { return f.unityZ ?? 0; },
         set zOrder(v) { f.unityZ = +v; },
 
-        /** Per-clone local variable bag (same as c.opts in cloneSelf callback). */
-        get opts()    { return f._opts ?? (f._opts = {}); },
-        set opts(v)   { f._opts = v ?? {}; },
-        /** Current health value (defaults to 100). */
+        // ── Size (read-only) ──────────────────────────────────────────────────
+        get width()   { return (f.spriteGraphic?.width  ?? 100) / 100; },
+        get height()  { return (f.spriteGraphic?.height ?? 100) / 100; },
+
+        // ── Physics body type ─────────────────────────────────────────────────
+        get physicsType() { return f.physicsBody ?? 'none'; },
+        set physicsType(v) { const i = _inst(); if (i) i.api.setPhysicsType(v); else f.physicsBody = v; },
+
+        setPhysicsType(type) {
+            const i = _inst();
+            if (i) i.api.setPhysicsType(type);
+            else f.physicsBody = type;
+        },
+        setCollision(v) { const i = _inst(); if (i) i.api.setCollision(v); },
+        setSensor(v)    { const i = _inst(); if (i) i.api.setSensor(v); },
+        setImmovable(v) { const i = _inst(); if (i) i.api.setImmovable(v); },
+
+        applyForce(fx, fy)    { const i = _inst(); if (i) i.api.physics?.applyForce(fx, fy); },
+        applyImpulse(ix, iy)  { const i = _inst(); if (i) i.api.physics?.applyImpulse(ix, iy); },
+        setAngularVelocity(r) { const i = _inst(); if (i) i.api.physics?.setAngularVelocity(r); },
+        stopPhysics()         { const i = _inst(); if (i) i.api.physics?.stop(); },
+
+        get physics() { const i = _inst(); return i ? i.api.physics : null; },
+
+        // ── Health ────────────────────────────────────────────────────────────
         get health()  { return f._health ?? 100; },
-        set health(v) { f._health = Math.max(0, v); },
-        /** True if this object is currently invincible. */
-        get isInvincible() { return f._isInvincible === true; },
-        /** Current ammo count. */
-        get ammo()    { return f._ammo ?? 0; },
-        set ammo(v)   { f._ammo = Math.max(0, v); },
-        /** Current state machine state string (null if not set). */
-        get state()   { return f._state ?? null; },
-        set state(v)  { f._state = v ? String(v) : null; },
-        /** True when health is at 0. */
+        set health(v) { f._health = Math.max(0, +v); },
+
+        get maxHealth() { return f._maxHealth ?? 100; },
+        set maxHealth(v) { f._maxHealth = Math.max(0, +v); },
+
         get isDead()  { return (f._health ?? 100) <= 0; },
 
-        /**
-         * Get/set velocity — works both before the script starts (spawn/clone callback)
-         * AND at runtime (e.g. var e = find("X"); e.velocityX = 5).
-         * Reads/writes the live ScriptInstance._vel when the instance is running,
-         * and falls back to _spawnVx/_spawnVy staging fields otherwise.
-         */
-        get velocityX()  {
-            const inst = _instances.find(i => i.obj === f);
-            return inst ? inst.api._vel.x : (f._spawnVx ?? 0);
+        setHealth(n)    { f._health = Math.max(0, +n); if (f._maxHealth == null) f._maxHealth = +n; },
+        getHealth()     { return f._health ?? 100; },
+        setMaxHealth(n) { f._maxHealth = Math.max(0, +n); },
+        getMaxHealth()  { return f._maxHealth ?? 100; },
+
+        takeDamage(amount, source) { const i = _inst(); if (i) i.api.takeDamage(amount, source); },
+        heal(amount) {
+            const i = _inst();
+            if (i) { i.api.heal(amount); }
+            else { f._health = Math.min(f._maxHealth ?? 100, (f._health ?? 100) + +amount); }
         },
-        set velocityX(v) {
-            f._spawnVx = +v;
-            const inst = _instances.find(i => i.obj === f);
-            if (inst) inst.api._vel.x = +v;
+        invincible(duration = 1) {
+            f._isInvincible = true;
+            setTimeout(() => { if (f) f._isInvincible = false; }, +duration * 1000);
         },
-        get velocityY()  {
-            const inst = _instances.find(i => i.obj === f);
-            return inst ? inst.api._vel.y : (f._spawnVy ?? 0);
+        get isInvincible() { return f._isInvincible === true; },
+        isInvincible()     { return f._isInvincible === true; },
+
+        // ── Ammo ──────────────────────────────────────────────────────────────
+        get ammo()    { return f._ammo ?? 0; },
+        set ammo(v)   { f._ammo = Math.max(0, +v); },
+
+        setAmmo(n)    { f._ammo = Math.max(0, +n); if (f._maxAmmo == null) f._maxAmmo = +n; },
+        getAmmo()     { return f._ammo ?? 0; },
+        setMaxAmmo(n) { f._maxAmmo = Math.max(0, +n); },
+        getMaxAmmo()  { return f._maxAmmo ?? 0; },
+        reload(amount){ const i = _inst(); if (i) i.api.reload(amount); else f._ammo = amount != null ? Math.min(f._maxAmmo ?? +amount, +amount) : (f._maxAmmo ?? 0); },
+
+        // ── State machine ─────────────────────────────────────────────────────
+        get state()   { return f._state ?? null; },
+        set state(v)  { const i = _inst(); if (i) i.api.setState(String(v)); else f._state = String(v); },
+
+        setState(name) { const i = _inst(); if (i) i.api.setState(name); else f._state = String(name); },
+        getState()     { return f._state ?? null; },
+
+        // ── Opts (per-clone vars) ─────────────────────────────────────────────
+        get opts()    { return f._opts ?? (f._opts = {}); },
+        set opts(v)   { f._opts = v ?? {}; },
+
+        // ── Transform helpers ─────────────────────────────────────────────────
+        move(dx, dy) {
+            if (f.physicsImmovable) return;
+            if (f.physicsBody === 'kinematic') {
+                if (!f._pendingKinematicDelta) f._pendingKinematicDelta = { x: 0, y: 0 };
+                f._pendingKinematicDelta.x +=  +dx * 100;
+                f._pendingKinematicDelta.y -= +dy * 100;
+            } else {
+                f.x += +dx * 100;
+                f.y -= +dy * 100;
+            }
         },
-        set velocityY(v) {
-            f._spawnVy = +v;
-            const inst = _instances.find(i => i.obj === f);
-            if (inst) inst.api._vel.y = +v;
+        moveTo(x, y) {
+            if (f.physicsImmovable) return;
+            f.x =  +x * 100;
+            f.y = -+y * 100;
+            if (f.physicsBody === 'kinematic') { f._kinematicPrevX = f.x; f._kinematicPrevY = f.y; }
         },
-        get vx() {
-            const inst = _instances.find(i => i.obj === f);
-            return inst ? inst.api._vel.x : (f._spawnVx ?? 0);
+        lookAt(tx, ty) {
+            f.rotation = -Math.atan2(-((-ty * 100) - f.y), (+tx * 100) - f.x);
+            if (f.spriteGraphic) f.spriteGraphic.rotation = f.rotation;
         },
-        set vx(v) {
-            f._spawnVx = +v;
-            const inst = _instances.find(i => i.obj === f);
-            if (inst) inst.api._vel.x = +v;
+        flipX() {
+            if (!f.scale) f.scale = { x: 1, y: 1 };
+            f.scale.x *= -1;
+            if (f.spriteGraphic) f.spriteGraphic.scale.x = f.scale.x;
         },
-        get vy() {
-            const inst = _instances.find(i => i.obj === f);
-            return inst ? inst.api._vel.y : (f._spawnVy ?? 0);
+        flipY() {
+            if (!f.scale) f.scale = { x: 1, y: 1 };
+            f.scale.y *= -1;
+            if (f.spriteGraphic) f.spriteGraphic.scale.y = f.scale.y;
         },
-        set vy(v) {
-            f._spawnVy = +v;
-            const inst = _instances.find(i => i.obj === f);
-            if (inst) inst.api._vel.y = +v;
-        },
-        setVelocity(vx, vy) {
-            f._spawnVx = +vx; f._spawnVy = +vy;
-            const inst = _instances.find(i => i.obj === f);
-            if (inst) { inst.api._vel.x = +vx; inst.api._vel.y = +vy; }
-        },
-        /** Stop all movement on this object — works at any time */
-        stopMovement() {
-            f._spawnVx = 0; f._spawnVy = 0;
-            const inst = _instances.find(i => i.obj === f);
-            if (inst) { inst.api._vel.x = 0; inst.api._vel.y = 0; }
-        },
-        /** Add an instant velocity impulse to this object (world units/s) */
-        addForce(fx, fy) {
-            const inst = _instances.find(i => i.obj === f);
-            if (inst) { inst.api._vel.x += +fx; inst.api._vel.y += +fy; }
-            else { f._spawnVx = (f._spawnVx ?? 0) + +fx; f._spawnVy = (f._spawnVy ?? 0) + +fy; }
-        },
-        /** Bounce this object's horizontal velocity (flip sign of vx) */
-        bounceX() {
-            const inst = _instances.find(i => i.obj === f);
-            if (inst) inst.api.bounceX();
-        },
-        /** Bounce this object's vertical velocity (flip sign of vy) */
-        bounceY() {
-            const inst = _instances.find(i => i.obj === f);
-            if (inst) inst.api.bounceY();
+        moveForward(speed) { const i = _inst(); if (i) i.api.moveForward(speed); },
+
+        lockRotation()          { const i = _inst(); if (i) i.api.lockRotation(); },
+        unlockRotation()        { const i = _inst(); if (i) i.api.unlockRotation(); },
+        setRotationLocked(v)    { const i = _inst(); if (i) i.api.setRotationLocked(v); },
+
+        // ── Animation ─────────────────────────────────────────────────────────
+        get currentAnimation() { const i = _inst(); return i ? i.api.currentAnimation : null; },
+
+        playAnimation(name)  { const i = _inst(); if (i) i.api.playAnimation(name); },
+        stopAnimation()      { const i = _inst(); if (i) i.api.stopAnimation(); },
+        pauseAnimation()     { const i = _inst(); if (i) i.api.pauseAnimation(); },
+
+        // ── AI / Navigation ───────────────────────────────────────────────────
+        get isWalking() { const i = _inst(); return i ? !!i.obj._nav?.active : false; },
+        get isStuck()   { const i = _inst(); return i ? !!i._isStuck : false; },
+
+        walkTo(x, y, opts)        { const i = _inst(); if (i) i.api.walkTo(x, y, opts ?? {}); },
+        walkToObject(target, opts){ const i = _inst(); if (i) i.api.walkToObject(target, opts ?? {}); },
+        stopWalking()             { const i = _inst(); if (i) i.api.stopWalking(); },
+        pursue(target, opts)      { const i = _inst(); if (i) i.api.pursue(target, opts ?? {}); },
+        flee(target, opts)        { const i = _inst(); if (i) i.api.flee(target, opts ?? {}); },
+        wander(opts)              { const i = _inst(); if (i) i.api.wander(opts ?? {}); },
+        canSee(target, opts)      { const i = _inst(); return i ? i.api.canSee(target, opts ?? {}) : false; },
+        inFOV(target, deg, range) { const i = _inst(); return i ? i.api.inFOV(target, deg, range) : false; },
+        lastKnownPos(target)      { const i = _inst(); return i ? i.api.lastKnownPos(target) : null; },
+
+        // ── Overlap / collision ───────────────────────────────────────────────
+        overlaps(other)          { const i = _inst(); return i ? i.api.overlaps(other) : false; },
+        overlapsTag(tag)         { const i = _inst(); return i ? i.api.overlapsTag(tag) : null; },
+        overlapsAllWithTag(tag)  { const i = _inst(); return i ? i.api.overlapsAllWithTag(tag) : []; },
+
+        // ── Draggable ─────────────────────────────────────────────────────────
+        makeDraggable(opts) { const i = _inst(); if (i) i.api.makeDraggable(opts); },
+
+        // ── Distance ──────────────────────────────────────────────────────────
+        distanceTo(targetOrX, y) {
+            let tx, ty;
+            if (typeof targetOrX === 'number' && typeof y === 'number') {
+                tx = +targetOrX * 100; ty = -+y * 100;
+            } else if (targetOrX?._ref) {
+                tx = targetOrX._ref.x; ty = targetOrX._ref.y;
+            } else if (targetOrX && typeof targetOrX.x === 'number') {
+                tx = +targetOrX.x * 100; ty = -+targetOrX.y * 100;
+            } else { return Infinity; }
+            const dx = f.x - tx, dy = f.y - ty;
+            return Math.sqrt(dx * dx + dy * dy) / 100;
         },
 
-        /**
-         * Deal damage to this specific instance (e.g. other.takeDamage(10)).
-         * Respects invincibility. Triggers onDamage + onDeath if needed.
-         */
-        takeDamage(amount, source) {
-            const inst = _instances.find(i => i.obj === f);
-            if (inst) inst.api.takeDamage(amount, source);
+        // ── Messaging ─────────────────────────────────────────────────────────
+        sendMessage(msg, data) {
+            const i = _inst();
+            if (i) _deliverMsg(i, msg, data);
         },
 
-        /**
-         * True if this object has the given tag.
-         *   if (other.hasTag("enemy")) { ... }
-         */
-        hasTag(t) { return (f._scriptTag ?? '') === String(t); },
+        // ── Timers / tweens ───────────────────────────────────────────────────
+        wait(secs, fn)                    { const i = _inst(); if (i) i.api.wait(secs, fn); },
+        tween(props, dur, easing, onDone) { const i = _inst(); if (i) return i.api.tween(props, dur, easing, onDone); },
+        repeat(interval, fn)              { const i = _inst(); return i ? i.api.repeat(interval, fn) : null; },
+        hitFlash(color, dur)              { const i = _inst(); if (i) i.api.hitFlash?.(color, dur); },
+        objectShake(amp, dur)             { const i = _inst(); if (i) i.api.objectShake?.(amp, dur); },
+        destroyAfter(secs)                { const i = _inst(); if (i) i.api.destroyAfter(secs); else setTimeout(() => { f._markedForDestroy = true; }, +secs * 1000); },
 
-        /**
-         * Destroy this specific instance immediately.
-         *   onCollisionEnter((other) => {
-         *     if (other.hasTag("bullet")) other.destroy();
-         *   })
-         */
+        // ── Destroy ───────────────────────────────────────────────────────────
         destroy() { f._markedForDestroy = true; },
 
-        /**
-         * Send a message to ONLY this specific instance (not broadcast to all with its tag).
-         * Perfect for targeting one enemy, one bullet, one instance.
-         *   onCollisionEnter((other) => {
-         *     other.sendMessage("takeDamage", 10);
-         *   })
-         */
-        sendMessage(msg, data) {
-            const inst = _instances.find(i => i.obj === f);
-            if (inst) _deliverMsg(inst, msg, data);
-        },
-
-        /**
-         * Clone this specific object at world (x, y).
-         * Copies sprite, scale, rotation, physics, tags, AND script — clone runs its script independently.
-         *   onCollisionEnter((other) => {
-         *     if (other.hasTag("slime")) {
-         *       other.clone(other.x - 1, other.y);  // split left
-         *       other.clone(other.x + 1, other.y);  // split right
-         *       other.destroy();
-         *     }
-         *   })
-         *   other.clone(5, 0, (c) => { c.velocityX = 3; })
-         */
+        // ── Clone ─────────────────────────────────────────────────────────────
         clone(wx, wy, onSpawned = null) {
             const asset = state.assets.find(a => a.id === f.assetId);
             if (!asset) return;
             import('./engine.objects.js').then(({ createImageObject }) => {
-                const newObj = createImageObject(asset, wx * 100, -wy * 100, { silent: true });
+                const newObj = createImageObject(asset, +wx * 100, -+wy * 100, { silent: true });
                 if (!newObj) return;
                 if (newObj._gizmoContainer) newObj._gizmoContainer.visible = false;
                 _deepCopyObjectProps(f, newObj);
@@ -3426,67 +3534,38 @@ function _makeProxy(f) {
                         } catch(_) {}
                     }
                 }
-            }).catch(e => {
-                _logConsole(`clone: module load failed — ${e?.message ?? e}`, '#f87171');
-            });
+            }).catch(e => _logConsole(`clone: failed — ${e?.message ?? e}`, '#f87171'));
         },
 
-        /**
-         * Distance from this object to another object/proxy/coords.
-         *   var d = other.distanceTo(find("Player"))
-         *   var d = other.distanceTo(3, 5)
-         */
-        distanceTo(targetOrX, y) {
-            let tx, ty;
-            if (typeof targetOrX === 'number' && typeof y === 'number') {
-                tx = targetOrX * 100; ty = -y * 100;
-            } else if (targetOrX && '_ref' in targetOrX) {
-                tx = targetOrX._ref.x; ty = targetOrX._ref.y;
-            } else if (targetOrX && typeof targetOrX.x === 'number') {
-                tx = targetOrX.x * 100; ty = -targetOrX.y * 100;
-            } else {
-                return Infinity;
-            }
-            const dx = f.x - tx, dy = f.y - ty;
-            return Math.sqrt(dx*dx + dy*dy) / 100;
-        },
+        // ── Speech / text ─────────────────────────────────────────────────────
+        say(text, duration)   { const i = _inst(); if (i) i.api.say?.(text, duration); },
+        think(text, duration) { const i = _inst(); if (i) i.api.think?.(text, duration); },
 
-        // ── Text object helpers ───────────────────────────────
-        /**
-         * Get or set the text content of a Text object.
-         * Usage:  find("ScoreLabel").text = score + " pts";
-         */
         get text() { return f.isText ? (f.textContent ?? '') : ''; },
         set text(v) {
             if (!f.isText || !f._pixiText) return;
-            f.textContent  = String(v);
+            f.textContent = String(v);
             f._pixiText.text = String(v);
         },
-        /**
-         * Set text content — callable form.
-         * find("ScoreLabel").setText("New text")
-         */
         setText(v) {
             if (!f.isText || !f._pixiText) return;
-            f.textContent  = String(v);
+            f.textContent = String(v);
             f._pixiText.text = String(v);
         },
-        /**
-         * Change text style properties at runtime.
-         * find("Title").setTextStyle({ fontSize: 48, fill: "#ff0000" })
-         * Supported keys: fontSize, fontFamily, fill, stroke, strokeThickness,
-         *   align, bold, italic, dropShadow, wordWrap, wordWrapWidth
-         */
         setTextStyle(opts = {}) {
             if (!f.isText || !f._pixiText) return;
             import('./engine.objects.js').then(({ setTextStyle }) => setTextStyle(f, opts)).catch(() => {});
         },
 
-        /** Send a message directly to this specific object */
-        sendMessage(msg, data) {
-            const inst = _instances.find(i => i.obj === f);
-            if (inst) _deliverMsg(inst, msg, data);
-        },
+        // ── Sound ─────────────────────────────────────────────────────────────
+        soundPlay(name, opts)  { const i = _inst(); if (i) i.api.soundPlay(name, opts ?? {}); },
+        soundStop(name)        { const i = _inst(); if (i) i.api.soundStop(name); },
+
+        // ── Raycast ───────────────────────────────────────────────────────────
+        raycastFromSelf(dir, maxDist, opts) { const i = _inst(); return i ? i.api.raycastFromSelf(dir, maxDist, opts) : null; },
+
+        // ── Utility ───────────────────────────────────────────────────────────
+        get destroyed() { return !!f._markedForDestroy; },
     };
 }
 
@@ -3733,7 +3812,7 @@ var _msgHandlers = new Map();
 var _onDamage=null, _onDeath=null, _onHeal=null;
 var _onLand=null, _onJump=null;
 var _onScreenExit=null, _onScreenEnter=null;
-var _onAmmoEmpty=null, _onReload=null;
+var _onReload=null;
 var _stateEnterHandlers=new Map(), _stateExitHandlers=new Map();
 
 // ═══════════════════════════════════════════════════════════════
@@ -3818,12 +3897,8 @@ function onJump(fn)              { _onJump   = fn; }
 function onScreenExit(fn)        { _onScreenExit  = fn; }
 /** Runs once when this object moves back inside the visible game area. */
 function onScreenEnter(fn)       { _onScreenEnter = fn; }
-
-// ── Shooter events ────────────────────────────────────────
-/** Runs when fireProjectile() is called but ammo is 0. */
-function onAmmoEmpty(fn)         { _onAmmoEmpty = fn; }
 /** Runs when reload() is called. */
-function onReload(fn)            { _onReload    = fn; }
+function onReload(fn)            { _onReload      = fn; }
 
 // ── State machine events ──────────────────────────────────
 /**
@@ -3852,8 +3927,6 @@ function getY()        { return api.y; }
 function setY(v)       { api.y = v; }
 /** Move by (dx, dy) world units */
 function move(dx, dy)  { api.move(dx, dy); }
-/** Same as move */
-function translate(dx, dy) { api.move(dx, dy); }
 /** Warp this object to exact position */
 function moveTo(x, y)  { api.moveTo(x, y); }
 
@@ -3961,10 +4034,6 @@ function moveForward(speed) { api.moveForward(speed); }
 function lookAt(tx, ty){ api.lookAt(tx, ty); }
 function flipX()       { api.flipX(); }
 function flipY()       { api.flipY(); }
-/** Width of this object in world units */
-function getWidth()    { return api.width; }
-/** Height of this object in world units */
-function getHeight()   { return api.height; }
 
 // ── Rotation and scale ────────────────────────────────────────
 /** this.rotation — degrees (clockwise positive) */
@@ -3997,15 +4066,6 @@ function stopMovement()     { api.stopMovement(); velocityX=0; vx=0; velocityY=0
 function bounceX()          { api.bounceX(); velocityX=api.velocityX; vx=velocityX; }
 function bounceY()          { api.bounceY(); velocityY=api.velocityY; vy=velocityY; }
 function _syncVelocityToApi() { api._vel.x = velocityX; api._vel.y = velocityY; vx = velocityX; vy = velocityY; }
-
-// ── Manual gravity ────────────────────────────────────────────
-/**
- * Apply gravity to this object (world units/s²).
- * Call once in onStart to enable:
- *   this.gravity(0, -9.8)   ← falls downward every frame
- *   this.gravity(0, 0)      ← disable gravity
- */
-function setGravity(gx, gy) { api.gravity(gx, gy); }
 
 // ── Display ───────────────────────────────────────────────────
 function show()           { api.visible = true; }
@@ -4812,24 +4872,6 @@ var PI = Math.PI;
 // ═══════════════════════════════════════════════════════════════
 
 /**
- * Apply simple manual gravity each frame — no physics body needed.
- * Call inside onUpdate(dt):
- *   fallVelocity = gravity(fallVelocity, dt)   ← updates and returns the velocity
- *
- * Example (Flappy Bird in 8 lines):
- *   var vy = 0;
- *   onUpdate((dt) => {
- *     vy = gravity(vy, dt);      // fall
- *     if (mouseJustDown()) vy = 8; // flap
- *     move(0, vy * dt);
- *     if (getY() < -5) destroy(); // fell off screen
- *   });
- */
-function gravity(currentVY, dt, strength) {
-    return currentVY - (strength ?? 20) * dt;
-}
-
-/**
  * Instantly destroy this object and remove it from the scene.
  * Same as api.destroy() but shorter.
  */
@@ -4902,8 +4944,7 @@ function cloneObject(nameOrProxy, x, y, onReady) {
 /**
  * Set velocity on this object (world units/sec, +Y = up).
  * Works for kinematic and script-velocity objects.
- *   launch(0, 12)   — shoot upward at speed 12
- *   launch(5, 0)    — move right
+ *   velocityX = 5; velocityY = 12;   — shoot upward at speed 12
  */
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -5092,13 +5133,6 @@ function aiChat(npcName, description, apiKey, options) {
     window._ze?.aiChat(npcName ?? api.name ?? 'NPC', description, apiKey, options);
 }
 
-
-
-function launch(lvx, lvy) {
-    api.velocityX = lvx; api.velocityY = lvy;
-    velocityX = lvx; vx = lvx; velocityY = lvy; vy = lvy;
-}
-
 /**
  * Add velocity to this object (world units/sec).
  * Good for impulse-style jumps or knockback:
@@ -5237,14 +5271,6 @@ function invincible(duration)      { api.invincible(duration); }
 /** True while invincible. */
 function isInvincible()            { return api.isInvincible(); }
 
-// ── KNOCKBACK ─────────────────────────────────────────────
-/**
- * Push this object away in a direction (degrees: 0=right, 90=up).
- *   knockback(180, 8)          — push left
- *   knockback(270, 10, 0.2)    — push down, stop after 0.2s
- */
-function knockback(angleDeg, force, stopAfter) { api.knockback(angleDeg, force, stopAfter); }
-
 // ── JUMP HELPER ───────────────────────────────────────────
 /**
  * Trigger a jump by firing the onJump event, which you handle yourself.
@@ -5270,18 +5296,6 @@ function getMaxAmmo()   { return api.getMaxAmmo(); }
  *   reload(30)  — set ammo to 30
  */
 function reload(amount) { api.reload(amount); }
-
-// ── FIRE PROJECTILE ───────────────────────────────────────
-/**
- * Spawn an asset as a projectile in a direction.
- *   fireProjectile('Bullet', 0, 12)
- *   fireProjectile('Bullet', 90, 15, { damage:10, lifetime:3, tag:'bullet' })
- *   fireProjectile('Arrow',  45, 10, { onSpawned: (b) => b.setTint('#ff0') })
- * angle: 0=right, 90=up, 180=left, 270=down
- */
-function fireProjectile(assetName, angleDeg, speed, opts2) {
-    return api.fireProjectile(assetName, angleDeg, speed, opts2);
-}
 
 // ── STATE MACHINE ─────────────────────────────────────────
 /**
@@ -5390,7 +5404,6 @@ __out._onLand            = _onLand;
 __out._onJump            = _onJump;
 __out._onScreenExit      = _onScreenExit;
 __out._onScreenEnter     = _onScreenEnter;
-__out._onAmmoEmpty       = _onAmmoEmpty;
 __out._onReload          = _onReload;
 __out._stateEnterHandlers= _stateEnterHandlers;
 __out._stateExitHandlers = _stateExitHandlers;
@@ -5463,7 +5476,6 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
             this._onJump             = out._onJump              ?? null;
             this._onScreenExit       = out._onScreenExit        ?? null;
             this._onScreenEnter      = out._onScreenEnter       ?? null;
-            this._onAmmoEmpty        = out._onAmmoEmpty         ?? null;
             this._onReload           = out._onReload            ?? null;
             this._stateEnterHandlers = out._stateEnterHandlers  ?? new Map();
             this._stateExitHandlers  = out._stateExitHandlers   ?? new Map();
@@ -5517,7 +5529,6 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
 
     update(dt) {
         const vel  = this.api._vel;
-        const grav = this.api._grav;
         const obj  = this.obj;
 
         // ── 1. Run the user's onUpdate first so changes take effect this frame ──
@@ -5593,10 +5604,6 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
         // Sync isWalking / isStuck local vars into script scope via the api
         if (this._syncIsWalking) try { this._syncIsWalking(); } catch(_) {}
         if (this._syncIsStuck)   try { this._syncIsStuck();   } catch(_) {}
-
-        // ── 3. Apply manual gravity accumulation ───────────────────────
-        if (grav.x !== 0) vel.x += grav.x * dt;
-        if (grav.y !== 0) vel.y += grav.y * dt;
 
         // ── 4. Apply velocity to position / physics body ───────────────
         const hasKinematicBody = obj.physicsBody === 'kinematic';
