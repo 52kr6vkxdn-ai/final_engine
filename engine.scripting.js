@@ -3221,6 +3221,10 @@ function _makeDeferredProxy() {
         setText(v)            { _realProxy ? _realProxy.setText(v)           : _pending.push({type:'call',key:'setText',args:[v]}); },
         setTextStyle(o)       { _realProxy ? _realProxy.setTextStyle(o)      : _pending.push({type:'call',key:'setTextStyle',args:[o]}); },
         clone(wx,wy,cb)       { _realProxy ? _realProxy.clone(wx,wy,cb)      : _pending.push({type:'call',key:'clone',args:[wx,wy,cb]}); },
+        stopMovement()        { _realProxy ? _realProxy.stopMovement()        : _pending.push({type:'call',key:'stopMovement',args:[]}); },
+        addForce(fx,fy)       { _realProxy ? _realProxy.addForce(fx,fy)       : _pending.push({type:'call',key:'addForce',args:[fx,fy]}); },
+        bounceX()             { _realProxy ? _realProxy.bounceX()             : _pending.push({type:'call',key:'bounceX',args:[]}); },
+        bounceY()             { _realProxy ? _realProxy.bounceY()             : _pending.push({type:'call',key:'bounceY',args:[]}); },
     };
     return dp;
 }
@@ -3280,20 +3284,74 @@ function _makeProxy(f) {
         get isDead()  { return (f._health ?? 100) <= 0; },
 
         /**
-         * Get/set velocity on a spawned object BEFORE its script starts.
-         * Used in spawnObject callbacks:
-         *   spawnObject("Bullet", x, y, (b) => { b.velocityX = 20; b.velocityY = 0; })
-         * The ScriptInstance reads _spawnVx/_spawnVy when it initialises _vel.
+         * Get/set velocity — works both before the script starts (spawn/clone callback)
+         * AND at runtime (e.g. var e = find("X"); e.velocityX = 5).
+         * Reads/writes the live ScriptInstance._vel when the instance is running,
+         * and falls back to _spawnVx/_spawnVy staging fields otherwise.
          */
-        get velocityX()  { return f._spawnVx ?? 0; },
-        set velocityX(v) { f._spawnVx = +v; },
-        get velocityY()  { return f._spawnVy ?? 0; },
-        set velocityY(v) { f._spawnVy = +v; },
-        get vx()         { return f._spawnVx ?? 0; },
-        set vx(v)        { f._spawnVx = +v; },
-        get vy()         { return f._spawnVy ?? 0; },
-        set vy(v)        { f._spawnVy = +v; },
-        setVelocity(vx, vy) { f._spawnVx = +vx; f._spawnVy = +vy; },
+        get velocityX()  {
+            const inst = _instances.find(i => i.obj === f);
+            return inst ? inst.api._vel.x : (f._spawnVx ?? 0);
+        },
+        set velocityX(v) {
+            f._spawnVx = +v;
+            const inst = _instances.find(i => i.obj === f);
+            if (inst) inst.api._vel.x = +v;
+        },
+        get velocityY()  {
+            const inst = _instances.find(i => i.obj === f);
+            return inst ? inst.api._vel.y : (f._spawnVy ?? 0);
+        },
+        set velocityY(v) {
+            f._spawnVy = +v;
+            const inst = _instances.find(i => i.obj === f);
+            if (inst) inst.api._vel.y = +v;
+        },
+        get vx() {
+            const inst = _instances.find(i => i.obj === f);
+            return inst ? inst.api._vel.x : (f._spawnVx ?? 0);
+        },
+        set vx(v) {
+            f._spawnVx = +v;
+            const inst = _instances.find(i => i.obj === f);
+            if (inst) inst.api._vel.x = +v;
+        },
+        get vy() {
+            const inst = _instances.find(i => i.obj === f);
+            return inst ? inst.api._vel.y : (f._spawnVy ?? 0);
+        },
+        set vy(v) {
+            f._spawnVy = +v;
+            const inst = _instances.find(i => i.obj === f);
+            if (inst) inst.api._vel.y = +v;
+        },
+        setVelocity(vx, vy) {
+            f._spawnVx = +vx; f._spawnVy = +vy;
+            const inst = _instances.find(i => i.obj === f);
+            if (inst) { inst.api._vel.x = +vx; inst.api._vel.y = +vy; }
+        },
+        /** Stop all movement on this object — works at any time */
+        stopMovement() {
+            f._spawnVx = 0; f._spawnVy = 0;
+            const inst = _instances.find(i => i.obj === f);
+            if (inst) { inst.api._vel.x = 0; inst.api._vel.y = 0; }
+        },
+        /** Add an instant velocity impulse to this object (world units/s) */
+        addForce(fx, fy) {
+            const inst = _instances.find(i => i.obj === f);
+            if (inst) { inst.api._vel.x += +fx; inst.api._vel.y += +fy; }
+            else { f._spawnVx = (f._spawnVx ?? 0) + +fx; f._spawnVy = (f._spawnVy ?? 0) + +fy; }
+        },
+        /** Bounce this object's horizontal velocity (flip sign of vx) */
+        bounceX() {
+            const inst = _instances.find(i => i.obj === f);
+            if (inst) inst.api.bounceX();
+        },
+        /** Bounce this object's vertical velocity (flip sign of vy) */
+        bounceY() {
+            const inst = _instances.find(i => i.obj === f);
+            if (inst) inst.api.bounceY();
+        },
 
         /**
          * Deal damage to this specific instance (e.g. other.takeDamage(10)).
@@ -5271,6 +5329,28 @@ function inRangeOf(target, radius) {
  */
 function onceAfter(seconds, fn) {
     api.wait(seconds).then(() => { try { fn(); } catch(_) {} });
+}
+
+// ── FOREVER LOOP ──────────────────────────────────────────
+/**
+ * Run a function every single frame — equivalent to onUpdate but
+ * can be called multiple times and from inside onCloneStart / onStart.
+ *
+ *   forever(() => {
+ *       x -= 3 * dt;          // move left each frame
+ *   });
+ *
+ * Each call to forever() stacks its own per-frame callback.
+ * Returns the function so it can be used inline.
+ */
+function forever(fn) {
+    if (typeof fn !== 'function') return;
+    var _prev = _onUpdate;
+    _onUpdate = function(dt) {
+        if (_prev) _prev(dt);
+        try { fn(dt); } catch(e) { /* silent to avoid spamming console */ }
+    };
+    return fn;
 }
 
 `;
