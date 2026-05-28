@@ -3527,7 +3527,31 @@ class ScriptInstance {
     _compile(code, api) {
         // ── The full scripting prelude — everything accessible in scripts ──
         const prelude = `
-var _onStart=null,_onUpdate=null,_onStop=null,_onCloneStart=null,_onDestroy=null;
+v/**
+ * Wait X seconds, then call a function.
+ *   wait(1.5, () => { destroySelf(); })
+ */
+function wait(seconds, fn) { api.wait(seconds, fn); }
+
+/**
+ * Call fn every X seconds on a loop. Returns an id to stop it.
+ *   var id = repeat(2, () => { spawnCoin(); });
+ *   cancelRepeat(id);
+ */
+function repeat(interval, fn) { return api.repeat(interval, fn); }
+/** Stop a repeat() loop by id. */
+function cancelRepeat(id)     { api.cancelRepeat(id); }
+
+/**
+ * Run a function every single frame — the simplest main loop.
+ *   forever(() => { x -= 3 * dt; });
+ * Returns an id for cancelForever(id).
+ */
+function forever(fn)          { return api.repeat(0, fn); }
+/** Stop a forever() loop by id. */
+function cancelForever(id)    { api.cancelRepeat(id); }
+
+ar _onStart=null,_onUpdate=null,_onStop=null,_onCloneStart=null,_onDestroy=null;
 var _onCollisionEnter=null,_onCollisionStay=null,_onCollisionExit=null;
 var _onOverlapEnter=null,_onOverlapExit=null;
 var _onVisible=null,_onHide=null,_onMouseClick=null,_onMouseEnter=null,_onMouseLeave=null;
@@ -3593,10 +3617,6 @@ function onCollisionExit(fn)     { _onCollisionExit  = fn; }
 function onOverlapEnter(fn)      { _onOverlapEnter   = fn; }
 /** Runs once when this object's AABB stops overlapping another */
 function onOverlapExit(fn)       { _onOverlapExit    = fn; }
-/** Runs when this object becomes visible */
-function onBecomeVisible(fn)     { _onVisible        = fn; }
-/** Runs when this object becomes hidden */
-function onBecomeHidden(fn)      { _onHide           = fn; }
 /** Runs when this object is clicked */
 function onMouseClick(fn)        { _onMouseClick     = fn; }
 /** Runs when the mouse enters this object's area */
@@ -3657,19 +3677,9 @@ function onStateExit(name, fn)   { _stateExitHandlers.set(String(name), fn); }
 // ─────────────────────────────────────────────────────────────
 // POSITION & MOVEMENT  —  where this object is and how it moves
 // ─────────────────────────────────────────────────────────────
-var self = api;  // "self" is a backup alias for "this"
-
 // ── Position ──────────────────────────────────────────────────
-/** this.x — world X position of this object */
-function getX()        { return api.x; }
-function setX(v)       { api.x = v; }
-/** this.y — world Y position (positive = up) */
-function getY()        { return api.y; }
-function setY(v)       { api.y = v; }
 /** Move by (dx, dy) world units */
 function move(dx, dy)  { api.move(dx, dy); }
-/** Same as move */
-function translate(dx, dy) { api.move(dx, dy); }
 /** Warp this object to exact position */
 function moveTo(x, y)  { api.moveTo(x, y); }
 
@@ -3783,20 +3793,12 @@ function getWidth()    { return api.width; }
 function getHeight()   { return api.height; }
 
 // ── Rotation and scale ────────────────────────────────────────
-/** this.rotation — degrees (clockwise positive) */
-function getRotation()   { return api.rotation; }
-function setRotation(v)  { api.rotation = v; }
 /** Lock this dynamic body's rotation — physics cannot spin it, but script can. */
 function lockRotation()            { api.lockRotation(); }
 /** Unlock this dynamic body's rotation — physics can spin it again. */
 function unlockRotation()          { api.unlockRotation(); }
 /** setRotationLocked(true/false) — one-call lock toggle */
 function setRotationLocked(v)      { api.setRotationLocked(v); }
-/** this.scaleX / this.scaleY */
-function getScaleX()     { return api.scaleX; }
-function setScaleX(v)    { api.scaleX = v; }
-function getScaleY()     { return api.scaleY; }
-function setScaleY(v)    { api.scaleY = v; }
 
 // ── Velocity (applied every frame automatically) ─────────────
 /**
@@ -3806,13 +3808,11 @@ function setScaleY(v)    { api.scaleY = v; }
  */
 var velocityX = 0;
 var velocityY = 0;
-var vx = 0;
-var vy = 0;
-function setVelocity(x, y)  { api.setVelocity(x, y); velocityX=x; vx=x; velocityY=y; vy=y; }
-function stopMovement()     { api.stopMovement(); velocityX=0; vx=0; velocityY=0; vy=0; }
-function bounceX()          { api.bounceX(); velocityX=api.velocityX; vx=velocityX; }
-function bounceY()          { api.bounceY(); velocityY=api.velocityY; vy=velocityY; }
-function _syncVelocityToApi() { api._vel.x = velocityX; api._vel.y = velocityY; vx = velocityX; vy = velocityY; }
+function setVelocity(x, y)  { api.setVelocity(x, y); velocityX=x; velocityY=y; }
+function stopMovement()     { api.stopMovement(); velocityX=0; velocityY=0; }
+function bounceX()          { api.bounceX(); velocityX=api.velocityX; }
+function bounceY()          { api.bounceY(); velocityY=api.velocityY; }
+function _syncVelocityToApi() { api._vel.x = velocityX; api._vel.y = velocityY; }
 
 // ── Manual gravity ────────────────────────────────────────────
 /**
@@ -3826,10 +3826,6 @@ function setGravity(gx, gy) { api.gravity(gx, gy); }
 // ── Display ───────────────────────────────────────────────────
 function show()           { api.visible = true; }
 function hide()           { api.visible = false; }
-function getVisible()     { return api.visible; }
-function setVisible(v)    { api.visible = v; }
-function getAlpha()       { return api.alpha; }
-function setAlpha(v)      { api.alpha = v; }
 function fadeIn(t, dt)    { api.alpha = Math.min(1, api.alpha + dt/Math.max(0.001,t)); }
 function fadeOut(t, dt)   { api.alpha = Math.max(0, api.alpha - dt/Math.max(0.001,t)); }
 
@@ -3868,13 +3864,11 @@ function sendMessage(tagOrProxy, msg, data) {
  * Same as sendMessage — explicit tag variant for clarity.
  *   sendMessageToTag("enemy", "stunned")
  */
-function sendMessageToTag(tag, msg, data) { api.sendMessage(tag, msg, data); }
 /**
  * Broadcast a message to ALL objects in the scene.
  *   broadcastMessage("gameOver")
  *   broadcastMessage("levelUp", { newLevel: 2 })
  */
-function broadcastMessage(msg, data) { api.broadcastMessage(msg, data); }
 /**
  * Send to ALL objects with this tag.
  * Example: broadcast("Enemy", "freeze")
@@ -3924,8 +3918,6 @@ function overlapsAllWithTag(tag)    { return api.overlapsAllWithTag(tag); }
 // ─────────────────────────────────────────────────────────────
 /** Remove this object from the scene */
 function destroySelf()              { api.destroySelf(); }
-/** Remove another specific object from the scene. To destroy THIS object use destroy() instead. */
-function destroyObject(other)       { api.destroy(other); }
 
 // ── Scene management ──────────────────────────────────────────
 /**
@@ -4008,584 +4000,7 @@ function applyImpulse(ix, iy)       { physics.applyImpulse(ix, iy); }
  */
 function setPhysicsVelocity(vx, vy) { physics.setVelocity(vx, vy); }
 
-/**
- * Read the actual velocity X of this body in world units/sec.
- * Works for Dynamic and Kinematic bodies.
- */
-function getVelX()                  { return physics.velX; }
-
-/**
- * Read the actual velocity Y of this body in world units/sec (+Y = up).
- * Works for Dynamic and Kinematic bodies.
- */
-function getVelY()                  { return physics.velY; }
-
-/**
- * Is this kinematic body resting on a floor?
- * Use to gate jumps:  if (isOnGround()) { applyImpulse(0, 8); }
- */
-function isOnGround()               { return physics.isOnGround; }
-
-/**
- * Is this kinematic body touching a ceiling?
- */
-function isOnCeiling()              { return physics.isOnCeiling; }
-
-/**
- * Is this kinematic body pressing against a wall?
- */
-function isOnWall()                 { return physics.isOnWall; }
-
-/**
- * Immediately stop all physics movement on this body.
- * Works for Dynamic and Kinematic bodies.
- */
-function stopPhysics()              { physics.stop(); }
-
-/**
- * Make this object physically immovable (no force can move it).
- * setImmovable(true)  — frozen in place (stronger than static)
- * setImmovable(false) — restore normal physics
- */
-function setImmovable(val)          { physics.setImmovable(val); }
-
-/**
- * Set the spin speed of this dynamic body (radians/sec).
- * Call every frame in onUpdate to maintain a constant rotation speed.
- * Positive = clockwise, negative = counter-clockwise.
- * Dynamic only.
- *   setAngularVelocity(3)   → spin clockwise at 3 rad/s
- *   setAngularVelocity(-2)  → spin counter-clockwise
- *   setAngularVelocity(0)   → stop spinning
- */
-function setAngularVelocity(radsPerSec) { physics.setAngularVelocity(radsPerSec); }
-
-/**
- * Apply a one-time spin kick to this dynamic body.
- * Positive = clockwise, negative = counter-clockwise.
- * Dynamic only.
- *   applyAngularImpulse(5)   → clockwise spin kick
- *   applyAngularImpulse(-3)  → counter-clockwise spin kick
- */
-function applyAngularImpulse(impulse)   { physics.applyAngularImpulse(impulse); }
-
-// ── Key / Mouse constants ─────────────────────────────────────
-// Use Key.W, Key.SPACE, Key.ARROW_LEFT etc. instead of raw strings.
-// Use Mouse.LEFT, Mouse.RIGHT, Mouse.MIDDLE for mouse button names.
-var Key   = window.Key   || {};
-var Mouse = window.Mouse || {};
-
-// ─────────────────────────────────────────────────────────────
-// INPUT  —  keyboard, mouse, touch
-// ─────────────────────────────────────────────────────────────
-var input = api.input;
-/** Is key currently held? Accepts Key.X constants or raw strings like "w".
- *  Pass Key.ANY to check if ANY key is held. */
-function isKeyDown(k)     {
-    if (k === '__any__' || k === Key.ANY) return api._anyKeyDown();
-    return input.isKeyDown(k);
-}
-/** Was key pressed for the first time this frame? */
-function isKeyJustDown(k) {
-    if (k === '__any__' || k === Key.ANY) return api._anyKeyJustDown();
-    return input.isKeyJustDown(k);
-}
-/** Was key released this frame? */
-function isKeyJustUp(k) {
-    if (k === '__any__' || k === Key.ANY) return api._anyKeyJustUp();
-    return input.isKeyJustUp(k);
-}
-/** Horizontal axis from A/D or arrow keys. Returns -1, 0, or 1 */
-function axisH()              { return input.axisH; }
-/** Vertical axis from W/S or arrow keys. Returns -1, 0, or 1 */
-function axisV()              { return input.axisV; }
-/** Mouse X in world units */
-function mouseX()             { return input.worldMouseX; }
-/** Mouse Y in world units */
-function mouseY()             { return input.worldMouseY; }
-/**
- * Mouse/finger X in raw screen pixels (same as clientX).
- * Useful for positioning DOM overlays or joysticks precisely.
- */
-function screenMouseX()       { return input.screenMouseX; }
-/**
- * Mouse/finger Y in raw screen pixels (same as clientY).
- */
-function screenMouseY()       { return input.screenMouseY; }
-/** Is mouse button held? */
-function mouseDown()          { return input.mouseDown; }
-/** Was mouse button clicked this frame? */
-function mouseJustDown()      { return input.mouseJustDown; }
-
-/**
- * Get all active touch points as an array of objects.
- * Each point: { id, x, y, screenX, screenY }
- *   x / y       — world units
- *   screenX/Y   — raw screen pixels
- *
- * Example:
- *   var touches = getTouches();
- *   if (touches.length > 0) { setPos(touches[0].x, touches[0].y); }
- */
-function getTouches()         { return input.touches; }
-/** Number of fingers currently touching the screen. */
-function touchCount()         { return input.touchCount; }
-
-/**
- * Make this object draggable in ONE LINE. Works on mouse and touch.
- * The engine handles grab, smooth follow, and release — you write nothing else.
- *
- *   makeDraggable()
- *   makeDraggable({ smooth: 20 })              — extra smooth lag
- *   makeDraggable({ smooth: 0 })               — instant snap to finger
- *   makeDraggable({ clamp: true })             — stay inside game canvas
- *   makeDraggable({ scale: 1.15 })             — grow while held
- *   makeDraggable({ onDrop: (x,y) => { log("landed at", x, y) } })
- *
- * No onUpdate, no mouseDown check, no stopDrag needed.
- */
-function makeDraggable(opts)       { api.makeDraggable(opts); }
-
-/** Low-level: start dragging an object right now (call from onMouseClick). */
-function dragObject(target, opts)  { api.dragObject(target, opts); }
-/** Stop the active drag (fires onDrop if set). */
-function stopDrag()                { api.stopDrag(); }
-/** True while a drag is active. */
-function isDragging()              { return api.isDragging; }
-
-/**
- * Create a virtual on-screen joystick for mobile/touch controls.
- *
- *   var joy = createJoystick()
- *   var joy = createJoystick({ x:150, y:150, fixed:true, size:120,
- *                               baseColor:"#0088ff44", knobColor:"#0088ffcc" })
- *
- * joy.axisH     — -1 (left) to 1 (right)
- * joy.axisV     — -1 (down) to 1 (up)  [game-space Y]
- * joy.angle     — degrees (0=right, 90=up, 180=left, 270=down)
- * joy.magnitude — 0 (center) to 1 (full tilt)
- * joy.active    — true when a finger is on the joystick
- * joy.destroy() — remove from screen
- */
-function createJoystick(opts)      { return api.createJoystick(opts); }
-/** Remove all joysticks. */
-function destroyAllJoysticks()     { api.destroyAllJoysticks(); }
-
-// ── Mobile / Touch ────────────────────────────────────────────
-/**
- * Is ANY finger currently touching the screen?
- * Works the same as mouseDown() on mobile.
- */
-function isTouching()         { return input.mouseDown; }
-/**
- * Did a new finger touch start this frame?
- * Works the same as mouseJustDown() on mobile.
- */
-function touchJustStarted()   { return input.mouseJustDown; }
-/**
- * Register a swipe handler using Hammer.js.
- * direction: "left" | "right" | "up" | "down" | "any"
- *
- * Example:
- *   onSwipe("left",  () => { move(-3, 0); });
- *   onSwipe("right", () => { move( 3, 0); });
- *   onSwipe("up",    () => { velocityY = 5; });
- *   onSwipe("any",   (dir) => { log("swiped " + dir); });
- */
-function onSwipe(direction, fn) { api.onSwipe(direction, fn); }
-/**
- * Register a pinch handler (two-finger pinch/zoom).
- * fn receives the pinch scale (>1 = zoom in, <1 = zoom out).
- *
- * Example:
- *   onPinch((scale) => { setScaleX(getScaleX() * scale); setScaleY(getScaleY() * scale); });
- */
-function onPinch(fn)            { api.onPinch(fn); }
-/**
- * Register a tap handler (triggered by a quick touch tap).
- *
- * Example:
- *   onTap(() => { gotoScene("Menu"); });
- */
-function onTap(fn)              { api.onTap(fn); }
-
-// ── Time ──────────────────────────────────────────────────────
-/** Total seconds since Play was pressed */
-function getTime()            { return api.time; }
-
-// ─────────────────────────────────────────────────────────────
-// SHARED VARIABLES  —  talk between scripts
-// ─────────────────────────────────────────────────────────────
-/**
- * sceneVar  — shared by ALL scripts in this scene. Resets on scene change.
- *   sceneVar.score = 0;
- *   sceneVar.score += 1;
- */
-var sceneVar  = api.sceneVar;
-/**
- * globalVar — persists even after switching scenes.
- *   globalVar.highScore = Math.max(globalVar.highScore || 0, score);
- */
-var globalVar = api.globalVar;
-
-// ── Per-script key/value store ────────────────────────────────
-/** store — private to this script, reset on Play stop */
-var store = api.store;
-
-// ─────────────────────────────────────────────────────────────
-// SOUND
-// ─────────────────────────────────────────────────────────────
-/**
- * Play a sound asset by name.
- * soundPlay("Jump")
- * soundPlay("BgMusic", { loop:true, volume:0.8, range:400 })
- * soundPlay("Boom", { x:3, y:2, range:600 })   // at world position
- */
-function soundPlay(name, opts)    { api.soundPlay(name, opts || {}); }
-/** Stop a specific sound by name */
-function soundStop(name)          { api.soundStop(name); }
-/** Stop all currently playing sounds */
-function soundStopAll()           { api.soundStopAll(); }
-
-// ─────────────────────────────────────────────────────────────
-// TIMERS  —  run something after a delay or on every frame
-// ─────────────────────────────────────────────────────────────
-/**
- * Wait X seconds, then call a function.
- *   wait(1.5, () => { destroySelf(); })
- */
-function wait(seconds, fn)        { api.wait(seconds, fn); }
-
-// ── Physics control ───────────────────────────────────────────
-/**
- * Change this object's physics body type.
- * setPhysicsType("static") | "kinematic" | "dynamic" | "none"
- */
-function setPhysicsType(type)     { api.setPhysicsType(type); }
-/**
- * Enable or disable collision for this object.
- * setCollision(false) — passes through everything
- */
-function setCollision(enabled)    { api.setCollision(enabled); }
-/** Make this object a sensor (no physical response but fires collision events) */
-function setSensor(v)             { api.setSensor(v); }
-/** Set collision layer category */
-function setCollisionCategory(c)  { api.setCollisionCategory(c); }
-/** Set collision layer mask (which layers to collide with) */
-function setCollisionMask(m)      { api.setCollisionMask(m); }
-
-// ── Tint ──────────────────────────────────────────────────────
-/**
- * Set this object's colour tint.
- * setTint("#ff0000")      — red tint
- * setTint("#ffffff")      — remove tint (white = no effect)
- * setTint(0x00ff00)       — green tint (hex number)
- */
-function setTint(v)               { api.tint = v; }
-function getTint()                { return api.tint; }
-
-// ── Distance ──────────────────────────────────────────────────
-/**
- * Distance from this object to another.
- * distanceTo("enemy")              — first object with tag "enemy"
- * distanceTo(find("Boss"))         — a specific object
- * distanceTo(3, 5)                 — world position x=3, y=5
- */
-function distanceTo(targetOrX, y) { return api.distanceTo(targetOrX, y); }
-
-// ─────────────────────────────────────────────────────────────
-// MATH HELPERS  —  lerp, clamp, rand, sin, cos, dist …
-// ─────────────────────────────────────────────────────────────
-var math    = api.math;
-var lerp    = math.lerp;
-var clamp   = math.clamp;
-var dist    = math.dist;
-var rand    = math.rand;
-var randInt = math.randInt;
-var sign    = math.sign;
-var toRad   = math.toRad;
-var toDeg   = math.toDeg;
-var mapRange= math.map;
-var wrap    = math.wrap;
-var sin     = math.sin;   var cos   = math.cos;   var tan   = math.tan;
-var abs     = math.abs;   var sqrt  = math.sqrt;  var pow   = math.pow;
-var atan2   = math.atan2; var floor = math.floor; var ceil  = math.ceil;
-var round   = math.round; var PI    = math.PI;
-var max     = math.max;   var min   = math.min;
-
-// ─────────────────────────────────────────────────────────────
-// LOGGING  —  print to the in-engine console
-// ─────────────────────────────────────────────────────────────
-/** Print to the console */
-function log(...a)    { api.log(...a); }
-/** Print a warning */
-function warn(...a)   { api.warn(...a); }
-/** Print an error */
-function error(...a)  { api.error(...a); }
-/** Returns the label/name of the game object this script is attached to */
-function selfName()   { return api.name; }
-
-// ── Tween ──────────────────────────────────────────────────────
-/**
- * Animate this object's properties over time.
- * tween({ x:5, alpha:0 }, 0.5)
- * tween({ scaleX:2 }, 1, "easeOut", () => { log("done!"); })
- * Easings: linear easeIn easeOut easeInOut easeInCubic easeOutCubic
- *          elastic elasticOut bounce steps2 steps4
- */
-function tween(props, duration, easing, onComplete) {
-    return api.tween(props, duration, easing, onComplete);
-}
-
-/**
- * Call fn every X seconds on a loop. Returns an id to cancel it.
- *   var id = repeat(2, () => { spawnCoin(); });
- *   cancelRepeat(id);   // stop the loop later
- */
-function repeat(interval, fn) { return api.repeat(interval, fn); }
-/** Cancel a repeating timer by id. */
-function cancelRepeat(id)     { api.cancelRepeat(id); }
-
-/**
- * Run a function every single frame — the simplest main loop.
- * Drop it anywhere: inside onStart, onCloneStart, a helper function.
- * Returns an id so you can stop it with cancelForever(id).
- *
- *   forever(() => {
- *     x -= 3 * dt;   // move left every frame
- *   });
- *
- *   onCloneStart(() => {
- *     forever(() => { x -= 4 * dt; });  // each clone moves independently
- *   });
- */
-function forever(fn) { return api.repeat(0, fn); }
-/** Stop a forever() loop. Pass the id returned by forever(). */
-function cancelForever(id) { api.cancelRepeat(id); }
-
-
-/**
- * Create a new object at a world position from an asset name, object name,
- * object tag, or prefab name.
- * spawnObject("Bullet", x, y)                          — by asset/prefab name
- * spawnObject("Bullet", x, y, (b) => { b.velocityX = 10; })  — with velocity
- * spawnObject("enemy", x, y)                          — by tag (first match)
- * The callback runs BEFORE the object's script starts, so velocity/tag/etc.
- * set there will be live when onStart fires.
- */
-function spawnObject(assetName, x, y, onSpawned) {
-    return api.spawnObject(assetName, x, y, onSpawned);
-}
-
-/**
- * Create a text object in the scene from a script.
- * Returns a proxy so you can immediately update it.
- *
- * Safe to call every frame in onUpdate — pass an \`id\` option to deduplicate:
- *   drawText("Score: " + score, 0, 3, { id: "score", fontSize: 36, fill: "#fff" });
- * Without an id, text is auto-deduplicated by position (same x/y = same node).
- *
- * Style options: fontSize, fontFamily, fill, stroke, strokeThickness,
- *   align, bold, italic, dropShadow, wordWrap, wordWrapWidth, id
- */
-function drawText(text, x, y, styleOpts = {}) {
-    // Runtime-only text creation. Uses api._sc / api._gameObjects instead of bare
-    // 'state' — the state module export is not accessible inside AsyncFunction sandbox.
-    const sc = api._sc;
-    if (!sc) { warn('drawText: scene not ready'); return { text: '', setText() {}, setTextStyle() {}, destroy() {} }; }
-
-    // ── Deduplication: same id or same x/y reuses the existing node ──────────
-    // This prevents duplicate text nodes when drawText is called every frame.
-    const cacheKey = styleOpts.id != null
-        ? String(styleOpts.id)
-        : \`_auto_\${x}_\${y}\`;
-    if (_drawTextCache.has(cacheKey)) {
-        const existing = _drawTextCache.get(cacheKey);
-        if (!existing._ref || existing._ref._markedForDestroy || !existing._ref._pixiText) {
-            _drawTextCache.delete(cacheKey); // stale — fall through to recreate
-        } else {
-            // Already exists — just update text content, return same proxy
-            existing.text = String(text);
-            existing.x = x ?? 0;
-            existing.y = y ?? 0;
-            return existing;
-        }
-    }
-
-    const px = (x  ?? 0) * 100;
-    const py = (-(y ?? 0)) * 100;
-
-    const style = new PIXI.TextStyle({
-        fontFamily:      styleOpts.fontFamily      ?? 'Arial',
-        fontSize:        styleOpts.fontSize        ?? 32,
-        fill:            styleOpts.fill            ?? '#ffffff',
-        stroke:          styleOpts.stroke          ?? '#000000',
-        strokeThickness: styleOpts.strokeThickness ?? 0,
-        align:           styleOpts.align           ?? 'left',
-        wordWrap:        styleOpts.wordWrap        ?? false,
-        wordWrapWidth:   styleOpts.wordWrapWidth   ?? 400,
-        fontWeight:      styleOpts.bold            ? 'bold'   : (styleOpts.fontWeight ?? 'normal'),
-        fontStyle:       styleOpts.italic          ? 'italic' : (styleOpts.fontStyle  ?? 'normal'),
-        dropShadow:      styleOpts.dropShadow      ?? false,
-    });
-
-    const pixiText = new PIXI.Text(String(text), style);
-    pixiText.anchor.set(0.5);
-
-    const container = new PIXI.Container();
-    container.x = px; container.y = py;
-    container.unityZ        = styleOpts.unityZ ?? 999;
-    container.label         = '_rt_text_' + Math.random().toString(36).slice(2);
-    container.isText        = true;
-    container.isImage       = false;
-    container.isLight       = false;
-    container._pixiText     = pixiText;
-    container.textContent   = String(text);
-    container.spriteGraphic = pixiText;
-    container._runtimeSpawned = true;
-    container._gizmoContainer = null;
-
-    // Store textStyle so downstream code (inspector, playmode restore) can read it
-    container.textStyle = {
-        fontFamily:       style.fontFamily,
-        fontSize:         style.fontSize,
-        fill:             style.fill,
-        stroke:           style.stroke,
-        strokeThickness:  style.strokeThickness,
-        align:            style.align,
-        wordWrap:         style.wordWrap,
-        wordWrapWidth:    style.wordWrapWidth,
-        fontWeight:       style.fontWeight,
-        fontStyle:        style.fontStyle,
-        dropShadow:       style.dropShadow,
-    };
-
-    container.addChild(pixiText);
-    sc.addChild(container);
-    api._gameObjects.push(container);
-
-    // Re-apply Z-order so runtime text with high unityZ appears on top
-    try {
-        const objs = api._gameObjects;
-        const sorted = objs.slice().sort((a, b) => (a.unityZ || 0) - (b.unityZ || 0));
-        sorted.forEach((obj, i) => {
-            try {
-                const cur = sc.getChildIndex(obj);
-                const tgt = Math.min(i, sc.children.length - 1);
-                if (cur !== tgt) sc.setChildIndex(obj, tgt);
-            } catch(_) {}
-        });
-    } catch(_) {}
-
-    const proxy = {
-        _ref: container,
-        get text()  { return this._ref._pixiText?.text ?? ''; },
-        set text(v) {
-            if (!this._ref?._pixiText) return;
-            this._ref.textContent    = String(v);
-            this._ref._pixiText.text = String(v);
-        },
-        setText(v) { this.text = v; },
-        setTextStyle(opts) {
-            if (!this._ref?._pixiText) return;
-            const s = this._ref._pixiText.style;
-            if (opts.fontSize        != null) s.fontSize        = opts.fontSize;
-            if (opts.fill            != null) s.fill            = opts.fill;
-            if (opts.fontFamily      != null) s.fontFamily      = opts.fontFamily;
-            if (opts.strokeThickness != null) s.strokeThickness = opts.strokeThickness;
-            if (opts.stroke          != null) s.stroke          = opts.stroke;
-            if (opts.bold            != null) s.fontWeight      = opts.bold ? 'bold' : 'normal';
-            if (opts.italic          != null) s.fontStyle       = opts.italic ? 'italic' : 'normal';
-            // Keep container.textStyle in sync so inspector/restore can read it
-            if (this._ref.textStyle) {
-                if (opts.fontSize        != null) this._ref.textStyle.fontSize        = s.fontSize;
-                if (opts.fill            != null) this._ref.textStyle.fill            = s.fill;
-                if (opts.fontFamily      != null) this._ref.textStyle.fontFamily      = s.fontFamily;
-                if (opts.strokeThickness != null) this._ref.textStyle.strokeThickness = s.strokeThickness;
-                if (opts.stroke          != null) this._ref.textStyle.stroke          = s.stroke;
-                if (opts.bold            != null) this._ref.textStyle.fontWeight      = s.fontWeight;
-                if (opts.italic          != null) this._ref.textStyle.fontStyle       = s.fontStyle;
-            }
-        },
-        get visible()  { return this._ref?.visible ?? true; },
-        set visible(v) { if (this._ref) this._ref.visible = !!v; },
-        get x()        { return this._ref ? this._ref.x / 100 : 0; },
-        set x(v)       { if (this._ref) this._ref.x = v * 100; },
-        get y()        { return this._ref ? -this._ref.y / 100 : 0; },
-        set y(v)       { if (this._ref) this._ref.y = -v * 100; },
-        destroy()      { if (this._ref) { this._ref._markedForDestroy = true; _drawTextCache.delete(cacheKey); } },
-    };
-    // Store in cache for deduplication on subsequent calls
-    _drawTextCache.set(cacheKey, proxy);
-    return proxy;
-}
-
-// ── Raycast (slab AABB) ────────────────────────────────────────
-/**
- * Fire a ray from (x1,y1) → (x2,y2) and return the FIRST object hit.
- * Uses a proper AABB slab intersection test.
- * raycast(x, y, x+10, y)              — any object
- * raycast(x, y, x+10, y, "enemy")    — only tagged "enemy"
- * Result has: .name, .x, .y  and  ._rayHit = { point, normal, distance, fraction }
- */
-function raycast(x1, y1, x2, y2, tag) { return api.raycast(x1, y1, x2, y2, tag ?? null); }
-
-/**
- * Fire a ray and return ALL objects hit, sorted nearest→farthest.
- * raycastAll(x, y, x+10, y)
- * raycastAll(x, y, x+10, y, "wall")
- * Returns array — each element has ._rayHit = { point, normal, distance, fraction }
- */
-function raycastAll(x1, y1, x2, y2, tag) { return api.raycastAll(x1, y1, x2, y2, tag ?? null); }
-
-/**
- * Fire a ray from THIS object's position in a given direction.
- * raycastFromSelf(0, 10)              — cast rightward 10 units
- * raycastFromSelf(90, 5)             — cast upward 5 units
- * raycastFromSelf(180, 8, "wall")    — leftward 8 units, only walls
- * angle: degrees (0=right, 90=up, 180=left, 270/−90=down)
- */
-function raycastFromSelf(angleDeg, distance, tag) {
-    return api.raycastFromSelf(angleDeg, distance, tag ?? null);
-}
-
-// ── Radius query ───────────────────────────────────────────────
-/**
- * Return all objects within radius world-units of (cx, cy).
- * getObjectsInRadius(x, y, 3)             — all
- * getObjectsInRadius(x, y, 3, "coin")    — only tagged "coin"
- */
-function getObjectsInRadius(cx, cy, radius, tag) {
-    return api.getObjectsInRadius(cx, cy, radius, tag);
-}
-
-// ── Z-order ────────────────────────────────────────────────────
-/** Set render order (higher = drawn on top). */
-function setZOrder(n)   { api.setZOrder(n); }
-/** Get current render order. */
-function getZOrder()    { return api.getZOrder(); }
-
-// ── Coordinate conversion ──────────────────────────────────────
-/** Convert screen pixel position → world position {x, y}. */
-function screenToWorld(sx, sy) { return api.screenToWorld(sx, sy); }
-/** Convert world position → screen pixel position {x, y}. */
-function worldToScreen(wx, wy) { return api.worldToScreen(wx, wy); }
-
-// ── Key event handlers ─────────────────────────────────────────
-/**
- * Fire a callback once each time a key is pressed.
- * onKeyDown("arrowleft", () => { moveLeft(); })
- * onKeyDown("any", (key) => { log("pressed:", key); })
- */
-function onKeyDown(key, fn) { api.onKeyDown(key, fn); }
-/** Fire a callback once each time a key is released. */
-function onKeyUp(key, fn)   { api.onKeyUp(key, fn); }
-
-// ── Physics helpers ────────────────────────────────────────────
-/** Actual physics body velocity X (world units/sec). Works for kinematic and dynamic. */
-function getPhysicsVelX()   { return api.getPhysicsVelX(); }
 /** Actual physics body velocity Y (world units/sec, positive = up). Works for kinematic and dynamic. */
-function getPhysicsVelY()   { return api.getPhysicsVelY(); }
 /** Change this object's gravity scale (0 = floats, 2 = 2× gravity). Dynamic bodies only. */
 function setGravityScale(n) { api.setGravityScale(n); }
 // isOnGround/isOnCeiling/isOnWall defined above in Physics section
@@ -4661,34 +4076,18 @@ var PI = Math.PI;
  *   fallVelocity = gravity(fallVelocity, dt)   ← updates and returns the velocity
  *
  * Example (Flappy Bird in 8 lines):
- *   var vy = 0;
- *   onUpdate((dt) => {
- *     vy = gravity(vy, dt);      // fall
+ *    *   onUpdate((dt) => {
+ *     vy = applyGravity(vy, dt); // fall
  *     if (mouseJustDown()) vy = 8; // flap
  *     move(0, vy * dt);
  *     if (getY() < -5) destroy(); // fell off screen
  *   });
  */
-function gravity(currentVY, dt, strength) {
+function applyGravity(currentVY, dt, strength) {
     return currentVY - (strength ?? 20) * dt;
 }
 
-/**
- * Instantly destroy this object and remove it from the scene.
- * Same as api.destroy() but shorter.
- */
-function destroy() { api.destroy(); }
 
-/**
- * Spawn a copy of any object in your scene by its name.
- * Returns a handle you can reposition immediately.
- *
- *   spawnCopy("Enemy", 5, 0)
- *   spawnCopy("Bullet", getX(), getY(), (b) => { b.velocityY = 10; })
- *
- * Equivalent to spawnObject() but clearer for cloning.
- */
-function spawnCopy(name, x, y, onReady) {
     return api.spawnObject(name, x, y, onReady);
 }
 
@@ -4712,14 +4111,6 @@ function cloneSelf(x, y, optsOrCb, cb) {
     return api.cloneSelf(x, y, optsOrCb, cb);
 }
 
-/**
- * Clone THIS object at its CURRENT position — shorthand for cloneSelf(getX(), getY()).
- *   cloneInPlace()
- *   cloneInPlace((c) => { c.velocityX = 5; })
- */
-function cloneInPlace(onReady) {
-    return api.cloneInPlace(onReady);
-}
 
 /** Returns true if this object was created by cloneSelf() or cloneObject(). */
 function isClone() { return api.isClone(); }
@@ -4938,18 +4329,6 @@ function aiChat(npcName, description, apiKey, options) {
 
 
 
-function launch(lvx, lvy) {
-    api.velocityX = lvx; api.velocityY = lvy;
-    velocityX = lvx; vx = lvx; velocityY = lvy; vy = lvy;
-}
-
-/**
- * Add velocity to this object (world units/sec).
- * Good for impulse-style jumps or knockback:
- *   addImpulse(0, 10)   — jump
- *   addImpulse(-5, 3)   — knockback left + up
- */
-function addImpulse(ivx, ivy) {
     const nx = (velocityX || 0) + ivx;
     const ny = (velocityY || 0) + ivy;
     api.velocityX = nx; api.velocityY = ny;
@@ -5140,7 +4519,6 @@ function getState()      { return api.getState(); }
 
 // ── CLONE IDENTITY ────────────────────────────────────────
 /** True if this object was spawned as a clone (not the original). */
-function isClone()       { return api.isClone(); }
 /** Returns this clone's numeric ID (0 for originals). */
 function getCloneId()    { return obj._cloneId ?? 0; }
 
@@ -5174,11 +4552,6 @@ function inRangeOf(target, radius) {
 }
 
 // ── ONE-SHOT TIMER ────────────────────────────────────────
-/**
- * Call fn once after 'seconds' seconds. Non-blocking.
- *   onceAfter(2, () => { destroySelf(); })
- */
-function onceAfter(seconds, fn) {
     api.wait(seconds).then(() => { try { fn(); } catch(_) {} });
 }
 
