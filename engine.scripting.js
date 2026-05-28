@@ -1786,6 +1786,11 @@ function _buildSandbox(obj, instRef) {
             obj._scriptTint = hex;
             if (obj.spriteGraphic) obj.spriteGraphic.tint = hex;
         },
+        /** Remove tint (reset to white / no colour effect). */
+        clearTint() {
+            obj._scriptTint = 0xffffff;
+            if (obj.spriteGraphic) obj.spriteGraphic.tint = 0xffffff;
+        },
 
         // ── DISTANCE ─────────────────────────────────────────
         /**
@@ -1952,6 +1957,7 @@ function _buildSandbox(obj, instRef) {
                 }
             }
 
+            const dp = _makeDeferredProxy();
             import('./engine.objects.js').then(({ createImageObject }) => {
                 const newObj = createImageObject(asset, wx * 100, -wy * 100, { silent: true });
                 if (!newObj) return;
@@ -1990,6 +1996,9 @@ function _buildSandbox(obj, instRef) {
                     }
                 }
 
+                // Resolve deferred proxy so any queued property writes are applied
+                dp._resolve(newObj);
+
                 // Auto-start the object's script if it has one and play mode is running
                 if (newObj.scriptName && window._zState?.isPlaying) {
                     const rec = getScript(newObj.scriptName);
@@ -2008,6 +2017,7 @@ function _buildSandbox(obj, instRef) {
                 _logConsole(`spawnObject("${assetName}"): module load failed — ${e?.message ?? e}`, '#f87171');
                 import('./engine.console.js').then(m => m.recordPlayError());
             });
+            return dp;
         },
 
         /**
@@ -2043,6 +2053,7 @@ function _buildSandbox(obj, instRef) {
                 _logConsole(`cloneSelf: clone limit (128) reached — call destroySelf() on old clones first`, '#f87171');
                 return null;
             }
+            const dp = _makeDeferredProxy();
             import('./engine.objects.js').then(({ createImageObject }) => {
                 const newObj = createImageObject(asset, wx * 100, -wy * 100, { silent: true });
                 if (!newObj) return;
@@ -2062,6 +2073,9 @@ function _buildSandbox(obj, instRef) {
                     }
                 }
 
+                // Resolve deferred proxy — applies any queued property writes
+                dp._resolve(newObj);
+
                 if (newObj.scriptName && window._zState?.isPlaying) {
                     const rec = getScript(newObj.scriptName);
                     if (rec?.code) {
@@ -2078,6 +2092,7 @@ function _buildSandbox(obj, instRef) {
             }).catch(e => {
                 _logConsole(`cloneSelf: module load failed — ${e?.message ?? e}`, '#f87171');
             });
+            return dp;
         },
 
         /**
@@ -2117,6 +2132,7 @@ function _buildSandbox(obj, instRef) {
             const asset = state.assets.find(a => a.id === templateObj.assetId);
             if (!asset) { _logConsole(`cloneObject: template has no asset`, '#facc15'); return null; }
 
+            const dp = _makeDeferredProxy();
             import('./engine.objects.js').then(({ createImageObject }) => {
                 const newObj = createImageObject(asset, wx * 100, -wy * 100, { silent: true });
                 if (!newObj) return;
@@ -2130,6 +2146,9 @@ function _buildSandbox(obj, instRef) {
                         for (const line of friendly) _logConsole(line, '#f87171');
                     }
                 }
+
+                // Resolve deferred proxy — applies any queued property writes
+                dp._resolve(newObj);
 
                 if (newObj.scriptName && window._zState?.isPlaying) {
                     const rec = getScript(newObj.scriptName);
@@ -2147,6 +2166,7 @@ function _buildSandbox(obj, instRef) {
             }).catch(e => {
                 _logConsole(`cloneObject: module load failed — ${e?.message ?? e}`, '#f87171');
             });
+            return dp;
         },
 
         // ── RAYCAST (AABB slab method) ────────────────────────
@@ -2953,6 +2973,7 @@ function _buildSandbox(obj, instRef) {
             const pvx = Math.cos(rad) * speed;
             const pvy = Math.sin(rad) * speed;
             const sx  = obj.x, sy = obj.y;
+            const dp = _makeDeferredProxy();
             import('./engine.objects.js').then(async m => {
                 const newObj = await m.createImageObject(assetName, sx, sy);
                 if (!newObj) return;
@@ -2968,10 +2989,12 @@ function _buildSandbox(obj, instRef) {
                 sb.api._vel.y = pvy;
                 if (opts.lifetime > 0) setTimeout(() => { newObj._markedForDestroy = true; }, opts.lifetime * 1000);
                 if (opts.onSpawned) try { opts.onSpawned(_makeProxy(newObj)); } catch(_) {}
+                // Resolve deferred proxy — applies any queued writes
+                dp._resolve(newObj);
             }).catch(e => {
                 _logConsole(`fireProjectile: module load failed — ${e?.message ?? e}`, '#f87171');
             });
-            return null;
+            return dp;
         },
 
         // ── STATE MACHINE ─────────────────────────────────────────
@@ -3099,36 +3122,145 @@ function _deepCopyObjectProps(src, dst) {
 }
 
 // ── Object proxy (returned by find / findWithTag etc.) ────────
+/**
+ * _makeDeferredProxy — returns a live proxy immediately, before the object exists.
+ *
+ * All spawn/clone functions use import().then() internally, so the real object
+ * isn't available yet when the call returns. This proxy queues every property
+ * write and method call that happens before the real object is ready, then
+ * replays them the instant _resolve(realObj) is called.
+ *
+ * Usage:
+ *   const dp = _makeDeferredProxy();
+ *   import(...).then(({ createImageObject }) => {
+ *       const newObj = createImageObject(...);
+ *       dp._resolve(newObj);   ← flushes queued writes, wires up live proxy
+ *   });
+ *   return dp;   ← caller gets this immediately
+ *
+ * After resolve, every get/set goes live through _makeProxy.
+ */
+function _makeDeferredProxy() {
+    let _realProxy = null;          // set once _resolve() is called
+    const _pending = [];            // queued { type, key, value, args } ops
+
+    // The object we hand back to the script
+    const dp = {
+        _isproxy:   true,
+        _deferred:  true,
+
+        // Called internally once the real game object exists
+        _resolve(realObj) {
+            _realProxy = _makeProxy(realObj);
+            // Replay all writes / method calls that arrived before resolve
+            for (const op of _pending) {
+                if (op.type === 'set') {
+                    try { _realProxy[op.key] = op.value; } catch(_) {}
+                } else if (op.type === 'call') {
+                    try { if (typeof _realProxy[op.key] === 'function') _realProxy[op.key](...op.args); } catch(_) {}
+                }
+            }
+            _pending.length = 0;
+        },
+
+        // --- Readable properties (safe no-ops before resolve) ---
+        get name()       { return _realProxy ? _realProxy.name       : ''; },
+        get tag()        { return _realProxy ? _realProxy.tag        : ''; },
+        get group()      { return _realProxy ? _realProxy.group      : ''; },
+        get visible()    { return _realProxy ? _realProxy.visible    : true; },
+        get alpha()      { return _realProxy ? _realProxy.alpha      : 1; },
+        get zOrder()     { return _realProxy ? _realProxy.zOrder     : 0; },
+        get physicsType(){ return _realProxy ? _realProxy.physicsType: 'none'; },
+        get health()     { return _realProxy ? _realProxy.health     : 100; },
+        get ammo()       { return _realProxy ? _realProxy.ammo       : 0; },
+        get state()      { return _realProxy ? _realProxy.state      : null; },
+        get isDead()     { return _realProxy ? _realProxy.isDead     : false; },
+        get isInvincible(){ return _realProxy ? _realProxy.isInvincible : false; },
+        get opts()       { return _realProxy ? _realProxy.opts       : {}; },
+        get text()       { return _realProxy ? _realProxy.text       : ''; },
+
+        // --- Position / size (read) ---
+        get x()          { return _realProxy ? _realProxy.x         : 0; },
+        get y()          { return _realProxy ? _realProxy.y         : 0; },
+        get scaleX()     { return _realProxy ? _realProxy.scaleX    : 1; },
+        get scaleY()     { return _realProxy ? _realProxy.scaleY    : 1; },
+        get rotation()   { return _realProxy ? _realProxy.rotation  : 0; },
+        get velocityX()  { return _realProxy ? _realProxy.velocityX : 0; },
+        get velocityY()  { return _realProxy ? _realProxy.velocityY : 0; },
+        get vx()         { return _realProxy ? _realProxy.vx        : 0; },
+        get vy()         { return _realProxy ? _realProxy.vy        : 0; },
+
+        // --- Writable properties: apply live or queue ---
+        set x(v)         { _realProxy ? (_realProxy.x         = v) : _pending.push({type:'set',key:'x',value:v}); },
+        set y(v)         { _realProxy ? (_realProxy.y         = v) : _pending.push({type:'set',key:'y',value:v}); },
+        set rotation(v)  { _realProxy ? (_realProxy.rotation  = v) : _pending.push({type:'set',key:'rotation',value:v}); },
+        set scaleX(v)    { _realProxy ? (_realProxy.scaleX    = v) : _pending.push({type:'set',key:'scaleX',value:v}); },
+        set scaleY(v)    { _realProxy ? (_realProxy.scaleY    = v) : _pending.push({type:'set',key:'scaleY',value:v}); },
+        set velocityX(v) { _realProxy ? (_realProxy.velocityX = v) : _pending.push({type:'set',key:'velocityX',value:v}); },
+        set velocityY(v) { _realProxy ? (_realProxy.velocityY = v) : _pending.push({type:'set',key:'velocityY',value:v}); },
+        set vx(v)        { _realProxy ? (_realProxy.vx        = v) : _pending.push({type:'set',key:'vx',value:v}); },
+        set vy(v)        { _realProxy ? (_realProxy.vy        = v) : _pending.push({type:'set',key:'vy',value:v}); },
+        set visible(v)   { _realProxy ? (_realProxy.visible   = v) : _pending.push({type:'set',key:'visible',value:v}); },
+        set alpha(v)     { _realProxy ? (_realProxy.alpha     = v) : _pending.push({type:'set',key:'alpha',value:v}); },
+        set health(v)    { _realProxy ? (_realProxy.health    = v) : _pending.push({type:'set',key:'health',value:v}); },
+        set ammo(v)      { _realProxy ? (_realProxy.ammo      = v) : _pending.push({type:'set',key:'ammo',value:v}); },
+        set state(v)     { _realProxy ? (_realProxy.state     = v) : _pending.push({type:'set',key:'state',value:v}); },
+        set opts(v)      { _realProxy ? (_realProxy.opts      = v) : _pending.push({type:'set',key:'opts',value:v}); },
+        set text(v)      { _realProxy ? (_realProxy.text      = v) : _pending.push({type:'set',key:'text',value:v}); },
+        set zOrder(v)    { _realProxy ? (_realProxy.zOrder    = v) : _pending.push({type:'set',key:'zOrder',value:v}); },
+        set tag(v)       { _realProxy ? (_realProxy.tag       = v) : _pending.push({type:'set',key:'tag',value:v}); },
+        set group(v)     { _realProxy ? (_realProxy.group     = v) : _pending.push({type:'set',key:'group',value:v}); },
+
+        // --- Methods: call live or queue ---
+        setVelocity(vx, vy)   { _realProxy ? _realProxy.setVelocity(vx, vy) : _pending.push({type:'call',key:'setVelocity',args:[vx,vy]}); },
+        destroy()             { _realProxy ? _realProxy.destroy()            : _pending.push({type:'call',key:'destroy',args:[]}); },
+        hasTag(t)             { return _realProxy ? _realProxy.hasTag(t)     : false; },
+        sendMessage(msg, data){ _realProxy ? _realProxy.sendMessage(msg, data) : _pending.push({type:'call',key:'sendMessage',args:[msg,data]}); },
+        takeDamage(amt, src)  { _realProxy ? _realProxy.takeDamage(amt, src)  : _pending.push({type:'call',key:'takeDamage',args:[amt,src]}); },
+        distanceTo(a, b)      { return _realProxy ? _realProxy.distanceTo(a, b) : Infinity; },
+        setText(v)            { _realProxy ? _realProxy.setText(v)           : _pending.push({type:'call',key:'setText',args:[v]}); },
+        setTextStyle(o)       { _realProxy ? _realProxy.setTextStyle(o)      : _pending.push({type:'call',key:'setTextStyle',args:[o]}); },
+        clone(wx,wy,cb)       { _realProxy ? _realProxy.clone(wx,wy,cb)      : _pending.push({type:'call',key:'clone',args:[wx,wy,cb]}); },
+    };
+    return dp;
+}
+
 function _makeProxy(f) {
     return {
         _ref:         f,
         _isproxy:     true,          // lets sendMessage() and destroy() detect a proxy
         get name()    { return f.label; },
+        set name(v)   { f.label = String(v); },
         /** The object's script tag (set via setTag()). */
         get tag()     { return f._scriptTag   ?? ''; },
+        set tag(v)    { f._scriptTag = String(v); },
         /** The object's group (set via setGroup()). */
         get group()   { return f._scriptGroup ?? ''; },
+        set group(v)  { f._scriptGroup = String(v); },
         /** World X position. */
         get x()       { return  f.x  / 100; },
+        set x(v)      { f.x =  +v * 100; },
         /** World Y position. */
         get y()       { return -f.y  / 100; },
+        set y(v)      { f.y = -+v * 100; },
         /** Horizontal scale (1 = normal, -1 = flipped). */
         get scaleX()  { return f.scale?.x ?? 1; },
-        set scaleX(v) { if (f.scale) f.scale.x = +v; },
+        set scaleX(v) { if (f.scale) { f.scale.x = +v; } else { f.scale = { x: +v, y: f.scale?.y ?? 1 }; } if (f.spriteGraphic) f.spriteGraphic.scale.x = +v; },
         /** Vertical scale. */
         get scaleY()  { return f.scale?.y ?? 1; },
-        set scaleY(v) { if (f.scale) f.scale.y = +v; },
+        set scaleY(v) { if (f.scale) { f.scale.y = +v; } else { f.scale = { x: f.scale?.x ?? 1, y: +v }; } if (f.spriteGraphic) f.spriteGraphic.scale.y = +v; },
         /** Rotation in degrees (positive = clockwise). */
         get rotation(){ return -(f.rotation * 180 / Math.PI); },
-        set rotation(v){ f.rotation = -(+v * Math.PI / 180); },
+        set rotation(v){ f.rotation = -(+v * Math.PI / 180); if (f.spriteGraphic) f.spriteGraphic.rotation = f.rotation; },
         get visible() { return f.visible; },
         set visible(v){ f.visible = !!v; },
         get alpha()   { return f.alpha; },
-        set alpha(v)  { f.alpha = v; },
+        set alpha(v)  { f.alpha = +v; if (f.spriteGraphic) f.spriteGraphic.alpha = +v; },
         /** Physics body type: "dynamic", "kinematic", "static", or "none". */
         get physicsType() { return f.physicsBody ?? 'none'; },
         /** Z-order / sort layer. */
         get zOrder()  { return f.unityZ ?? 0; },
+        set zOrder(v) { f.unityZ = +v; },
 
         /** Per-clone local variable bag (same as c.opts in cloneSelf callback). */
         get opts()    { return f._opts ?? (f._opts = {}); },
@@ -3426,7 +3558,7 @@ function _getErrorHint(msg, stack) {
             // Check if it looks like a common typo of an engine function
             const apiNames = ['log','warn','error','gotoScene','spawnObject','destroy','setPos','getPos','walkTo','walkToObject','stopWalking','isWalking',
                 'velocityX','velocityY','onStart','onUpdate','onStop','onCollisionEnter','isKeyDown',
-                'isKeyJustDown','mouseX','mouseY','sceneVar','globalVar','soundPlay','wait','repeat','forever','cancelForever','subevent'];
+                'isKeyJustDown','mouseX','mouseY','sceneVar','globalVar','soundPlay','wait','repeat'];
             const similar = apiNames.find(a => _levenshtein(a.toLowerCase(), name.toLowerCase()) <= 2 && a !== name);
             if (similar) return `Did you mean "${similar}"? Check the API reference (? button in the toolbar).`;
             return `"${name}" hasn't been declared. Check for typos, or declare it with: var ${name} = ...`;
@@ -3527,54 +3659,35 @@ class ScriptInstance {
     _compile(code, api) {
         // ── The full scripting prelude — everything accessible in scripts ──
         const prelude = `
-v/**
- * Wait X seconds, then call a function.
- *   wait(1.5, () => { destroySelf(); })
- */
-function wait(seconds, fn) { api.wait(seconds, fn); }
+var _onStart=null, _onUpdate=null, _onStop=null, _onCloneStart=null, _onDestroy=null;
+var _onCollisionEnter=null, _onCollisionStay=null, _onCollisionExit=null;
+var _onOverlapEnter=null, _onOverlapExit=null;
+var _onVisible=null, _onHide=null, _onMouseClick=null, _onMouseEnter=null, _onMouseLeave=null;
+var _msgHandlers = new Map();
+// ── Extended events ───────────────────────────────────────
+var _onDamage=null, _onDeath=null, _onHeal=null;
+var _onLand=null, _onJump=null;
+var _onScreenExit=null, _onScreenEnter=null;
+var _onAmmoEmpty=null, _onReload=null;
+var _stateEnterHandlers=new Map(), _stateExitHandlers=new Map();
 
-/**
- * Call fn every X seconds on a loop. Returns an id to stop it.
- *   var id = repeat(2, () => { spawnCoin(); });
- *   cancelRepeat(id);
- */
-function repeat(interval, fn) { return api.repeat(interval, fn); }
-/** Stop a repeat() loop by id. */
-function cancelRepeat(id)     { api.cancelRepeat(id); }
+// ═══════════════════════════════════════════════════════════════
+// EVENT REGISTRATION
+// Register functions to run at specific moments in the game loop.
+// ═══════════════════════════════════════════════════════════════
 
-/**
- * Run a function every single frame — the simplest main loop.
- *   forever(() => { x -= 3 * dt; });
- * Returns an id for cancelForever(id).
- */
-function forever(fn)          { return api.repeat(0, fn); }
-/** Stop a forever() loop by id. */
-function cancelForever(id)    { api.cancelRepeat(id); }
-
-ar _onStart=null,_onUpdate=null,_onStop=null,_onCloneStart=null,_onDestroy=null;
-var _onCollisionEnter=null,_onCollisionStay=null,_onCollisionExit=null;
-var _onOverlapEnter=null,_onOverlapExit=null;
-var _onVisible=null,_onHide=null,_onMouseClick=null,_onMouseEnter=null,_onMouseLeave=null;
-var _msgHandlers=new Map();
-var _onDamage=null,_onDeath=null,_onHeal=null;
-var _onLand=null,_onJump=null;
-var _onScreenExit=null,_onScreenEnter=null;
-var _onAmmoEmpty=null,_onReload=null;
-var _stateEnterHandlers=new Map(),_stateExitHandlers=new Map();
-
-// ─────────────────────────────────────────────────────────────
-// EVENTS  —  register a function to run at a specific moment
-// ─────────────────────────────────────────────────────────────
-
-/** Runs once when Play starts (not on clones — use onCloneStart for those) */
+/** Runs once when Play is pressed (only on original objects, NOT clones) */
 function onStart(fn)             { _onStart          = fn; }
 
 /**
- * Runs once when this object is SPAWNED AS A CLONE (via cloneSelf / cloneObject).
- * The original object runs onStart; clones run onCloneStart instead.
+ * Runs once when this object is spawned as a CLONE via cloneSelf() or cloneObject().
+ * Use this to give clones their own initialisation without causing infinite clone chains:
  *
+ *   onStart(() => {
+ *     cloneSelf(getX() + 1, getY());   // spawn ONE clone to the right
+ *   });
  *   onCloneStart(() => {
- *     forever(() => { x -= 3 * dt; }); // each clone slides left
+ *     // this code runs on the clone — NOT on the original
  *   });
  */
 function onCloneStart(fn)        { _onCloneStart      = fn; }
@@ -3582,25 +3695,6 @@ function onCloneStart(fn)        { _onCloneStart      = fn; }
 function onUpdate(fn)            { _onUpdate         = fn; }
 /** Runs once when Play is stopped */
 function onStop(fn)              { _onStop           = fn; }
-
-/**
- * subevent(eventFn, handler)
- * ─────────────────────────────────────────────────────────────
- * Package any behaviour into a named function and plug it into
- * any event block. Keeps big scripts tidy.
- *
- *   function makePipeClone() {
- *     subevent(onCloneStart, () => {
- *       forever(() => { x -= 4 * dt; });      // slide left every frame
- *       onScreenExit(() => { destroySelf(); });
- *     });
- *   }
- *
- *   onStart(() => {
- *     makePipeClone();   // wire it up
- *   });
- */
-function subevent(registrar, fn) { registrar(fn); }
 /**
  * Runs once just before this object is destroyed (via destroySelf() or destroy()).
  * Use it to play effects, drop items, remove HUD elements, etc.
@@ -3617,6 +3711,10 @@ function onCollisionExit(fn)     { _onCollisionExit  = fn; }
 function onOverlapEnter(fn)      { _onOverlapEnter   = fn; }
 /** Runs once when this object's AABB stops overlapping another */
 function onOverlapExit(fn)       { _onOverlapExit    = fn; }
+/** Runs when this object becomes visible */
+function onBecomeVisible(fn)     { _onVisible        = fn; }
+/** Runs when this object becomes hidden */
+function onBecomeHidden(fn)      { _onHide           = fn; }
 /** Runs when this object is clicked */
 function onMouseClick(fn)        { _onMouseClick     = fn; }
 /** Runs when the mouse enters this object's area */
@@ -3674,12 +3772,23 @@ function onStateEnter(name, fn)  { _stateEnterHandlers.set(String(name), fn); }
  */
 function onStateExit(name, fn)   { _stateExitHandlers.set(String(name), fn); }
 
-// ─────────────────────────────────────────────────────────────
-// POSITION & MOVEMENT  —  where this object is and how it moves
-// ─────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+// THIS OBJECT — use "this." prefix for clarity
+// All of these refer to the object this script is attached to.
+// ═══════════════════════════════════════════════════════════════
+var self = api;  // "self" is a backup alias for "this"
+
 // ── Position ──────────────────────────────────────────────────
+/** this.x — world X position of this object */
+function getX()        { return api.x; }
+function setX(v)       { api.x = v; }
+/** this.y — world Y position (positive = up) */
+function getY()        { return api.y; }
+function setY(v)       { api.y = v; }
 /** Move by (dx, dy) world units */
 function move(dx, dy)  { api.move(dx, dy); }
+/** Same as move */
+function translate(dx, dy) { api.move(dx, dy); }
 /** Warp this object to exact position */
 function moveTo(x, y)  { api.moveTo(x, y); }
 
@@ -3793,12 +3902,20 @@ function getWidth()    { return api.width; }
 function getHeight()   { return api.height; }
 
 // ── Rotation and scale ────────────────────────────────────────
+/** this.rotation — degrees (clockwise positive) */
+function getRotation()   { return api.rotation; }
+function setRotation(v)  { api.rotation = v; }
 /** Lock this dynamic body's rotation — physics cannot spin it, but script can. */
 function lockRotation()            { api.lockRotation(); }
 /** Unlock this dynamic body's rotation — physics can spin it again. */
 function unlockRotation()          { api.unlockRotation(); }
 /** setRotationLocked(true/false) — one-call lock toggle */
 function setRotationLocked(v)      { api.setRotationLocked(v); }
+/** this.scaleX / this.scaleY */
+function getScaleX()     { return api.scaleX; }
+function setScaleX(v)    { api.scaleX = v; }
+function getScaleY()     { return api.scaleY; }
+function setScaleY(v)    { api.scaleY = v; }
 
 // ── Velocity (applied every frame automatically) ─────────────
 /**
@@ -3808,11 +3925,13 @@ function setRotationLocked(v)      { api.setRotationLocked(v); }
  */
 var velocityX = 0;
 var velocityY = 0;
-function setVelocity(x, y)  { api.setVelocity(x, y); velocityX=x; velocityY=y; }
-function stopMovement()     { api.stopMovement(); velocityX=0; velocityY=0; }
-function bounceX()          { api.bounceX(); velocityX=api.velocityX; }
-function bounceY()          { api.bounceY(); velocityY=api.velocityY; }
-function _syncVelocityToApi() { api._vel.x = velocityX; api._vel.y = velocityY; }
+var vx = 0;
+var vy = 0;
+function setVelocity(x, y)  { api.setVelocity(x, y); velocityX=x; vx=x; velocityY=y; vy=y; }
+function stopMovement()     { api.stopMovement(); velocityX=0; vx=0; velocityY=0; vy=0; }
+function bounceX()          { api.bounceX(); velocityX=api.velocityX; vx=velocityX; }
+function bounceY()          { api.bounceY(); velocityY=api.velocityY; vy=velocityY; }
+function _syncVelocityToApi() { api._vel.x = velocityX; api._vel.y = velocityY; vx = velocityX; vy = velocityY; }
 
 // ── Manual gravity ────────────────────────────────────────────
 /**
@@ -3826,6 +3945,10 @@ function setGravity(gx, gy) { api.gravity(gx, gy); }
 // ── Display ───────────────────────────────────────────────────
 function show()           { api.visible = true; }
 function hide()           { api.visible = false; }
+function getVisible()     { return api.visible; }
+function setVisible(v)    { api.visible = v; }
+function getAlpha()       { return api.alpha; }
+function setAlpha(v)      { api.alpha = v; }
 function fadeIn(t, dt)    { api.alpha = Math.min(1, api.alpha + dt/Math.max(0.001,t)); }
 function fadeOut(t, dt)   { api.alpha = Math.max(0, api.alpha - dt/Math.max(0.001,t)); }
 
@@ -3864,11 +3987,13 @@ function sendMessage(tagOrProxy, msg, data) {
  * Same as sendMessage — explicit tag variant for clarity.
  *   sendMessageToTag("enemy", "stunned")
  */
+function sendMessageToTag(tag, msg, data) { api.sendMessage(tag, msg, data); }
 /**
  * Broadcast a message to ALL objects in the scene.
  *   broadcastMessage("gameOver")
  *   broadcastMessage("levelUp", { newLevel: 2 })
  */
+function broadcastMessage(msg, data) { api.broadcastMessage(msg, data); }
 /**
  * Send to ALL objects with this tag.
  * Example: broadcast("Enemy", "freeze")
@@ -3885,9 +4010,7 @@ function broadcastGroup(grp, msg, data)   { api.broadcastGroup(grp, msg, data); 
  */
 function broadcastAll(msg, data)          { api.broadcastAll(msg, data); }
 
-// ─────────────────────────────────────────────────────────────
-// FINDING OBJECTS  —  get a reference to any other object
-// ─────────────────────────────────────────────────────────────
+// ── Finding other objects ─────────────────────────────────────
 /**
  * Find an object by its exact name.
  * Returns an object proxy with .x, .y, .name, .sendMessage()
@@ -3913,11 +4036,11 @@ function overlapsTag(tag)           { return api.overlapsTag(tag); }
 /** Returns ALL objects with this tag that this object overlaps */
 function overlapsAllWithTag(tag)    { return api.overlapsAllWithTag(tag); }
 
-// ─────────────────────────────────────────────────────────────
-// SPAWNING & DESTROYING
-// ─────────────────────────────────────────────────────────────
+// ── Destroy ───────────────────────────────────────────────────
 /** Remove this object from the scene */
 function destroySelf()              { api.destroySelf(); }
+/** Remove another specific object from the scene. To destroy THIS object use destroy() instead. */
+function destroyObject(other)       { api.destroy(other); }
 
 // ── Scene management ──────────────────────────────────────────
 /**
@@ -3940,14 +4063,17 @@ function getSceneName(i)            { return api.getSceneName(i); }
  */
 function pauseScene(on = true)      { api.pauseScene(on); }
 /**
+ * Resume the scene after it was paused.
+ * Alias for pauseScene(false).
+ */
+function resumeScene()              { api.pauseScene(false); }
+/**
  * Restart the current scene without leaving play mode.
  * All objects, physics and scripts are reset to their initial state.
  */
 function restartScene()             { api.restartScene(); }
 
-// ─────────────────────────────────────────────────────────────
-// CAMERA
-// ─────────────────────────────────────────────────────────────
+// ── Camera ────────────────────────────────────────────────────
 /**
  * Make the camera follow an object smoothly.
  * Example:  cameraFollow(find("Player"))
@@ -4000,7 +4126,557 @@ function applyImpulse(ix, iy)       { physics.applyImpulse(ix, iy); }
  */
 function setPhysicsVelocity(vx, vy) { physics.setVelocity(vx, vy); }
 
+/**
+ * Read the actual velocity X of this body in world units/sec.
+ * Works for Dynamic and Kinematic bodies.
+ */
+function getVelX()                  { return physics.velX; }
+
+/**
+ * Read the actual velocity Y of this body in world units/sec (+Y = up).
+ * Works for Dynamic and Kinematic bodies.
+ */
+function getVelY()                  { return physics.velY; }
+
+/**
+ * Is this kinematic body resting on a floor?
+ * Use to gate jumps:  if (isOnGround()) { applyImpulse(0, 8); }
+ */
+function isOnGround()               { return physics.isOnGround; }
+
+/**
+ * Is this kinematic body touching a ceiling?
+ */
+function isOnCeiling()              { return physics.isOnCeiling; }
+
+/**
+ * Is this kinematic body pressing against a wall?
+ */
+function isOnWall()                 { return physics.isOnWall; }
+
+/**
+ * Immediately stop all physics movement on this body.
+ * Works for Dynamic and Kinematic bodies.
+ */
+function stopPhysics()              { physics.stop(); }
+
+/**
+ * Make this object physically immovable (no force can move it).
+ * setImmovable(true)  — frozen in place (stronger than static)
+ * setImmovable(false) — restore normal physics
+ */
+function setImmovable(val)          { physics.setImmovable(val); }
+
+/**
+ * Set the spin speed of this dynamic body (radians/sec).
+ * Call every frame in onUpdate to maintain a constant rotation speed.
+ * Positive = clockwise, negative = counter-clockwise.
+ * Dynamic only.
+ *   setAngularVelocity(3)   → spin clockwise at 3 rad/s
+ *   setAngularVelocity(-2)  → spin counter-clockwise
+ *   setAngularVelocity(0)   → stop spinning
+ */
+function setAngularVelocity(radsPerSec) { physics.setAngularVelocity(radsPerSec); }
+
+/**
+ * Apply a one-time spin kick to this dynamic body.
+ * Positive = clockwise, negative = counter-clockwise.
+ * Dynamic only.
+ *   applyAngularImpulse(5)   → clockwise spin kick
+ *   applyAngularImpulse(-3)  → counter-clockwise spin kick
+ */
+function applyAngularImpulse(impulse)   { physics.applyAngularImpulse(impulse); }
+
+// ── Key / Mouse constants ─────────────────────────────────────
+// Use Key.W, Key.SPACE, Key.ARROW_LEFT etc. instead of raw strings.
+// Use Mouse.LEFT, Mouse.RIGHT, Mouse.MIDDLE for mouse button names.
+var Key   = window.Key   || {};
+var Mouse = window.Mouse || {};
+
+// ── Input ─────────────────────────────────────────────────────
+var input = api.input;
+/** Is key currently held? Accepts Key.X constants or raw strings like "w".
+ *  Pass Key.ANY to check if ANY key is held. */
+function isKeyDown(k)     {
+    if (k === '__any__' || k === Key.ANY) return api._anyKeyDown();
+    return input.isKeyDown(k);
+}
+/** Was key pressed for the first time this frame? */
+function isKeyJustDown(k) {
+    if (k === '__any__' || k === Key.ANY) return api._anyKeyJustDown();
+    return input.isKeyJustDown(k);
+}
+/** Was key released this frame? */
+function isKeyJustUp(k) {
+    if (k === '__any__' || k === Key.ANY) return api._anyKeyJustUp();
+    return input.isKeyJustUp(k);
+}
+/** Horizontal axis from A/D or arrow keys. Returns -1, 0, or 1 */
+function axisH()              { return input.axisH; }
+/** Vertical axis from W/S or arrow keys. Returns -1, 0, or 1 */
+function axisV()              { return input.axisV; }
+/** Mouse X in world units */
+function mouseX()             { return input.worldMouseX; }
+/** Mouse Y in world units */
+function mouseY()             { return input.worldMouseY; }
+/**
+ * Mouse/finger X in raw screen pixels (same as clientX).
+ * Useful for positioning DOM overlays or joysticks precisely.
+ */
+function screenMouseX()       { return input.screenMouseX; }
+/**
+ * Mouse/finger Y in raw screen pixels (same as clientY).
+ */
+function screenMouseY()       { return input.screenMouseY; }
+/** Is mouse button held? */
+function mouseDown()          { return input.mouseDown; }
+/** Was mouse button clicked this frame? */
+function mouseJustDown()      { return input.mouseJustDown; }
+
+/**
+ * Get all active touch points as an array of objects.
+ * Each point: { id, x, y, screenX, screenY }
+ *   x / y       — world units
+ *   screenX/Y   — raw screen pixels
+ *
+ * Example:
+ *   var touches = getTouches();
+ *   if (touches.length > 0) { setPos(touches[0].x, touches[0].y); }
+ */
+function getTouches()         { return input.touches; }
+/** Number of fingers currently touching the screen. */
+function touchCount()         { return input.touchCount; }
+
+/**
+ * Make this object draggable in ONE LINE. Works on mouse and touch.
+ * The engine handles grab, smooth follow, and release — you write nothing else.
+ *
+ *   makeDraggable()
+ *   makeDraggable({ smooth: 20 })              — extra smooth lag
+ *   makeDraggable({ smooth: 0 })               — instant snap to finger
+ *   makeDraggable({ clamp: true })             — stay inside game canvas
+ *   makeDraggable({ scale: 1.15 })             — grow while held
+ *   makeDraggable({ onDrop: (x,y) => { log("landed at", x, y) } })
+ *
+ * No onUpdate, no mouseDown check, no stopDrag needed.
+ */
+function makeDraggable(opts)       { api.makeDraggable(opts); }
+
+/** Low-level: start dragging an object right now (call from onMouseClick). */
+function dragObject(target, opts)  { api.dragObject(target, opts); }
+/** Stop the active drag (fires onDrop if set). */
+function stopDrag()                { api.stopDrag(); }
+/** True while a drag is active. */
+function isDragging()              { return api.isDragging; }
+
+/**
+ * Create a virtual on-screen joystick for mobile/touch controls.
+ *
+ *   var joy = createJoystick()
+ *   var joy = createJoystick({ x:150, y:150, fixed:true, size:120,
+ *                               baseColor:"#0088ff44", knobColor:"#0088ffcc" })
+ *
+ * joy.axisH     — -1 (left) to 1 (right)
+ * joy.axisV     — -1 (down) to 1 (up)  [game-space Y]
+ * joy.angle     — degrees (0=right, 90=up, 180=left, 270=down)
+ * joy.magnitude — 0 (center) to 1 (full tilt)
+ * joy.active    — true when a finger is on the joystick
+ * joy.destroy() — remove from screen
+ */
+function createJoystick(opts)      { return api.createJoystick(opts); }
+/** Remove all joysticks. */
+function destroyAllJoysticks()     { api.destroyAllJoysticks(); }
+
+// ── Mobile / Touch ────────────────────────────────────────────
+/**
+ * Is ANY finger currently touching the screen?
+ * Works the same as mouseDown() on mobile.
+ */
+function isTouching()         { return input.mouseDown; }
+/**
+ * Did a new finger touch start this frame?
+ * Works the same as mouseJustDown() on mobile.
+ */
+function touchJustStarted()   { return input.mouseJustDown; }
+/**
+ * Register a swipe handler using Hammer.js.
+ * direction: "left" | "right" | "up" | "down" | "any"
+ *
+ * Example:
+ *   onSwipe("left",  () => { move(-3, 0); });
+ *   onSwipe("right", () => { move( 3, 0); });
+ *   onSwipe("up",    () => { velocityY = 5; });
+ *   onSwipe("any",   (dir) => { log("swiped " + dir); });
+ */
+function onSwipe(direction, fn) { api.onSwipe(direction, fn); }
+/**
+ * Register a pinch handler (two-finger pinch/zoom).
+ * fn receives the pinch scale (>1 = zoom in, <1 = zoom out).
+ *
+ * Example:
+ *   onPinch((scale) => { setScaleX(getScaleX() * scale); setScaleY(getScaleY() * scale); });
+ */
+function onPinch(fn)            { api.onPinch(fn); }
+/**
+ * Register a tap handler (triggered by a quick touch tap).
+ *
+ * Example:
+ *   onTap(() => { gotoScene("Menu"); });
+ */
+function onTap(fn)              { api.onTap(fn); }
+
+// ── Time ──────────────────────────────────────────────────────
+/** Total seconds since Play was pressed */
+function getTime()            { return api.time; }
+
+// ── Shared variables ──────────────────────────────────────────
+/**
+ * sceneVar — variables shared between ALL scripts in the current scene.
+ * Reset when you switch scenes.
+ * Example:  sceneVar.score = 0;   sceneVar.score += 1;
+ */
+var sceneVar  = api.sceneVar;
+/**
+ * globalVar — variables that survive even when you switch scenes.
+ * Example:  globalVar.totalDeaths += 1;
+ */
+var globalVar = api.globalVar;
+
+// ── Per-script key/value store ────────────────────────────────
+/** store — private to this script, reset on Play stop */
+var store = api.store;
+
+// ── Sound ─────────────────────────────────────────────────────
+/**
+ * Play a sound asset by name.
+ * soundPlay("Jump")
+ * soundPlay("BgMusic", { loop:true, volume:0.8, range:400 })
+ * soundPlay("Boom", { x:3, y:2, range:600 })   // at world position
+ */
+function soundPlay(name, opts)    { api.soundPlay(name, opts || {}); }
+/** Stop a specific sound by name */
+function soundStop(name)          { api.soundStop(name); }
+/** Stop all currently playing sounds */
+function soundStopAll()           { api.soundStopAll(); }
+
+// ── Timers ────────────────────────────────────────────────────
+/**
+ * Wait X seconds then run a function. Non-blocking.
+ * Example:  wait(2, () => { log("2 seconds!"); })
+ */
+function wait(seconds, fn)        { api.wait(seconds, fn); }
+
+// ── Physics control ───────────────────────────────────────────
+/**
+ * Change this object's physics body type.
+ * setPhysicsType("static") | "kinematic" | "dynamic" | "none"
+ */
+function setPhysicsType(type)     { api.setPhysicsType(type); }
+/**
+ * Enable or disable collision for this object.
+ * setCollision(false) — passes through everything
+ */
+function setCollision(enabled)    { api.setCollision(enabled); }
+/** Make this object a sensor (no physical response but fires collision events) */
+function setSensor(v)             { api.setSensor(v); }
+/** Set collision layer category */
+function setCollisionCategory(c)  { api.setCollisionCategory(c); }
+/** Set collision layer mask (which layers to collide with) */
+function setCollisionMask(m)      { api.setCollisionMask(m); }
+
+// ── Tint ──────────────────────────────────────────────────────
+/**
+ * Set this object's colour tint.
+ * setTint("#ff0000")      — red tint
+ * setTint("#ffffff")      — remove tint (white = no effect)
+ * setTint(0x00ff00)       — green tint (hex number)
+ */
+function setTint(v)               { api.tint = v; }
+function getTint()                { return api.tint; }
+/** Remove tint and restore the object's original colours. */
+function clearTint()              { api.clearTint(); }
+
+// ── Distance ──────────────────────────────────────────────────
+/**
+ * Distance from this object to another.
+ * distanceTo("enemy")              — first object with tag "enemy"
+ * distanceTo(find("Boss"))         — a specific object
+ * distanceTo(3, 5)                 — world position x=3, y=5
+ */
+function distanceTo(targetOrX, y) { return api.distanceTo(targetOrX, y); }
+
+// ── Math helpers ──────────────────────────────────────────────
+var math    = api.math;
+var lerp    = math.lerp;
+var clamp   = math.clamp;
+var dist    = math.dist;
+var rand    = math.rand;
+var randInt = math.randInt;
+var sign    = math.sign;
+var toRad   = math.toRad;
+var toDeg   = math.toDeg;
+var mapRange= math.map;
+var wrap    = math.wrap;
+var sin     = math.sin;   var cos   = math.cos;   var tan   = math.tan;
+var abs     = math.abs;   var sqrt  = math.sqrt;  var pow   = math.pow;
+var atan2   = math.atan2; var floor = math.floor; var ceil  = math.ceil;
+var round   = math.round; var PI    = math.PI;
+var max     = math.max;   var min   = math.min;
+
+// ── Debug ─────────────────────────────────────────────────────
+/** Print to the console */
+function log(...a)    { api.log(...a); }
+/** Print a warning */
+function warn(...a)   { api.warn(...a); }
+/** Print an error */
+function error(...a)  { api.error(...a); }
+/** Returns the label/name of the game object this script is attached to */
+function selfName()   { return api.name; }
+
+// ── Tween ──────────────────────────────────────────────────────
+/**
+ * Animate this object's properties over time.
+ * tween({ x:5, alpha:0 }, 0.5)
+ * tween({ scaleX:2 }, 1, "easeOut", () => { log("done!"); })
+ * Easings: linear easeIn easeOut easeInOut easeInCubic easeOutCubic
+ *          elastic elasticOut bounce steps2 steps4
+ */
+function tween(props, duration, easing, onComplete) {
+    return api.tween(props, duration, easing, onComplete);
+}
+
+// ── Repeat timers ──────────────────────────────────────────────
+/**
+ * Call fn every interval seconds. Returns an id for cancelRepeat().
+ * var id = repeat(2, () => { spawnCoin(); });
+ */
+function repeat(interval, fn) { return api.repeat(interval, fn); }
+/** Cancel a repeating timer by id. */
+function cancelRepeat(id)     { api.cancelRepeat(id); }
+
+// ── Spawn object ───────────────────────────────────────────────
+/**
+ * Create a new object at a world position from an asset name, object name,
+ * object tag, or prefab name.
+ * spawnObject("Bullet", x, y)                          — by asset/prefab name
+ * spawnObject("Bullet", x, y, (b) => { b.velocityX = 10; })  — with velocity
+ * spawnObject("enemy", x, y)                          — by tag (first match)
+ * The callback runs BEFORE the object's script starts, so velocity/tag/etc.
+ * set there will be live when onStart fires.
+ */
+function spawnObject(assetName, x, y, onSpawned) {
+    return api.spawnObject(assetName, x, y, onSpawned);
+}
+
+/**
+ * Create a text object in the scene from a script.
+ * Returns a proxy so you can immediately update it.
+ *
+ * Safe to call every frame in onUpdate — pass an \`id\` option to deduplicate:
+ *   drawText("Score: " + score, 0, 3, { id: "score", fontSize: 36, fill: "#fff" });
+ * Without an id, text is auto-deduplicated by position (same x/y = same node).
+ *
+ * Style options: fontSize, fontFamily, fill, stroke, strokeThickness,
+ *   align, bold, italic, dropShadow, wordWrap, wordWrapWidth, id
+ */
+function drawText(text, x, y, styleOpts = {}) {
+    // Runtime-only text creation. Uses api._sc / api._gameObjects instead of bare
+    // 'state' — the state module export is not accessible inside AsyncFunction sandbox.
+    const sc = api._sc;
+    if (!sc) { warn('drawText: scene not ready'); return { text: '', setText() {}, setTextStyle() {}, destroy() {} }; }
+
+    // ── Deduplication: same id or same x/y reuses the existing node ──────────
+    // This prevents duplicate text nodes when drawText is called every frame.
+    const cacheKey = styleOpts.id != null
+        ? String(styleOpts.id)
+        : \`_auto_\${x}_\${y}\`;
+    if (_drawTextCache.has(cacheKey)) {
+        const existing = _drawTextCache.get(cacheKey);
+        if (!existing._ref || existing._ref._markedForDestroy || !existing._ref._pixiText) {
+            _drawTextCache.delete(cacheKey); // stale — fall through to recreate
+        } else {
+            // Already exists — just update text content, return same proxy
+            existing.text = String(text);
+            existing.x = x ?? 0;
+            existing.y = y ?? 0;
+            return existing;
+        }
+    }
+
+    const px = (x  ?? 0) * 100;
+    const py = (-(y ?? 0)) * 100;
+
+    const style = new PIXI.TextStyle({
+        fontFamily:      styleOpts.fontFamily      ?? 'Arial',
+        fontSize:        styleOpts.fontSize        ?? 32,
+        fill:            styleOpts.fill            ?? '#ffffff',
+        stroke:          styleOpts.stroke          ?? '#000000',
+        strokeThickness: styleOpts.strokeThickness ?? 0,
+        align:           styleOpts.align           ?? 'left',
+        wordWrap:        styleOpts.wordWrap        ?? false,
+        wordWrapWidth:   styleOpts.wordWrapWidth   ?? 400,
+        fontWeight:      styleOpts.bold            ? 'bold'   : (styleOpts.fontWeight ?? 'normal'),
+        fontStyle:       styleOpts.italic          ? 'italic' : (styleOpts.fontStyle  ?? 'normal'),
+        dropShadow:      styleOpts.dropShadow      ?? false,
+    });
+
+    const pixiText = new PIXI.Text(String(text), style);
+    pixiText.anchor.set(0.5);
+
+    const container = new PIXI.Container();
+    container.x = px; container.y = py;
+    container.unityZ        = styleOpts.unityZ ?? 999;
+    container.label         = '_rt_text_' + Math.random().toString(36).slice(2);
+    container.isText        = true;
+    container.isImage       = false;
+    container.isLight       = false;
+    container._pixiText     = pixiText;
+    container.textContent   = String(text);
+    container.spriteGraphic = pixiText;
+    container._runtimeSpawned = true;
+    container._gizmoContainer = null;
+
+    // Store textStyle so downstream code (inspector, playmode restore) can read it
+    container.textStyle = {
+        fontFamily:       style.fontFamily,
+        fontSize:         style.fontSize,
+        fill:             style.fill,
+        stroke:           style.stroke,
+        strokeThickness:  style.strokeThickness,
+        align:            style.align,
+        wordWrap:         style.wordWrap,
+        wordWrapWidth:    style.wordWrapWidth,
+        fontWeight:       style.fontWeight,
+        fontStyle:        style.fontStyle,
+        dropShadow:       style.dropShadow,
+    };
+
+    container.addChild(pixiText);
+    sc.addChild(container);
+    api._gameObjects.push(container);
+
+    // Re-apply Z-order so runtime text with high unityZ appears on top
+    try {
+        const objs = api._gameObjects;
+        const sorted = objs.slice().sort((a, b) => (a.unityZ || 0) - (b.unityZ || 0));
+        sorted.forEach((obj, i) => {
+            try {
+                const cur = sc.getChildIndex(obj);
+                const tgt = Math.min(i, sc.children.length - 1);
+                if (cur !== tgt) sc.setChildIndex(obj, tgt);
+            } catch(_) {}
+        });
+    } catch(_) {}
+
+    const proxy = {
+        _ref: container,
+        get text()  { return this._ref._pixiText?.text ?? ''; },
+        set text(v) {
+            if (!this._ref?._pixiText) return;
+            this._ref.textContent    = String(v);
+            this._ref._pixiText.text = String(v);
+        },
+        setText(v) { this.text = v; },
+        setTextStyle(opts) {
+            if (!this._ref?._pixiText) return;
+            const s = this._ref._pixiText.style;
+            if (opts.fontSize        != null) s.fontSize        = opts.fontSize;
+            if (opts.fill            != null) s.fill            = opts.fill;
+            if (opts.fontFamily      != null) s.fontFamily      = opts.fontFamily;
+            if (opts.strokeThickness != null) s.strokeThickness = opts.strokeThickness;
+            if (opts.stroke          != null) s.stroke          = opts.stroke;
+            if (opts.bold            != null) s.fontWeight      = opts.bold ? 'bold' : 'normal';
+            if (opts.italic          != null) s.fontStyle       = opts.italic ? 'italic' : 'normal';
+            // Keep container.textStyle in sync so inspector/restore can read it
+            if (this._ref.textStyle) {
+                if (opts.fontSize        != null) this._ref.textStyle.fontSize        = s.fontSize;
+                if (opts.fill            != null) this._ref.textStyle.fill            = s.fill;
+                if (opts.fontFamily      != null) this._ref.textStyle.fontFamily      = s.fontFamily;
+                if (opts.strokeThickness != null) this._ref.textStyle.strokeThickness = s.strokeThickness;
+                if (opts.stroke          != null) this._ref.textStyle.stroke          = s.stroke;
+                if (opts.bold            != null) this._ref.textStyle.fontWeight      = s.fontWeight;
+                if (opts.italic          != null) this._ref.textStyle.fontStyle       = s.fontStyle;
+            }
+        },
+        get visible()  { return this._ref?.visible ?? true; },
+        set visible(v) { if (this._ref) this._ref.visible = !!v; },
+        get x()        { return this._ref ? this._ref.x / 100 : 0; },
+        set x(v)       { if (this._ref) this._ref.x = v * 100; },
+        get y()        { return this._ref ? -this._ref.y / 100 : 0; },
+        set y(v)       { if (this._ref) this._ref.y = -v * 100; },
+        destroy()      { if (this._ref) { this._ref._markedForDestroy = true; _drawTextCache.delete(cacheKey); } },
+    };
+    // Store in cache for deduplication on subsequent calls
+    _drawTextCache.set(cacheKey, proxy);
+    return proxy;
+}
+
+// ── Raycast (slab AABB) ────────────────────────────────────────
+/**
+ * Fire a ray from (x1,y1) → (x2,y2) and return the FIRST object hit.
+ * Uses a proper AABB slab intersection test.
+ * raycast(x, y, x+10, y)              — any object
+ * raycast(x, y, x+10, y, "enemy")    — only tagged "enemy"
+ * Result has: .name, .x, .y  and  ._rayHit = { point, normal, distance, fraction }
+ */
+function raycast(x1, y1, x2, y2, tag) { return api.raycast(x1, y1, x2, y2, tag ?? null); }
+
+/**
+ * Fire a ray and return ALL objects hit, sorted nearest→farthest.
+ * raycastAll(x, y, x+10, y)
+ * raycastAll(x, y, x+10, y, "wall")
+ * Returns array — each element has ._rayHit = { point, normal, distance, fraction }
+ */
+function raycastAll(x1, y1, x2, y2, tag) { return api.raycastAll(x1, y1, x2, y2, tag ?? null); }
+
+/**
+ * Fire a ray from THIS object's position in a given direction.
+ * raycastFromSelf(0, 10)              — cast rightward 10 units
+ * raycastFromSelf(90, 5)             — cast upward 5 units
+ * raycastFromSelf(180, 8, "wall")    — leftward 8 units, only walls
+ * angle: degrees (0=right, 90=up, 180=left, 270/−90=down)
+ */
+function raycastFromSelf(angleDeg, distance, tag) {
+    return api.raycastFromSelf(angleDeg, distance, tag ?? null);
+}
+
+// ── Radius query ───────────────────────────────────────────────
+/**
+ * Return all objects within radius world-units of (cx, cy).
+ * getObjectsInRadius(x, y, 3)             — all
+ * getObjectsInRadius(x, y, 3, "coin")    — only tagged "coin"
+ */
+function getObjectsInRadius(cx, cy, radius, tag) {
+    return api.getObjectsInRadius(cx, cy, radius, tag);
+}
+
+// ── Z-order ────────────────────────────────────────────────────
+/** Set render order (higher = drawn on top). */
+function setZOrder(n)   { api.setZOrder(n); }
+/** Get current render order. */
+function getZOrder()    { return api.getZOrder(); }
+
+// ── Coordinate conversion ──────────────────────────────────────
+/** Convert screen pixel position → world position {x, y}. */
+function screenToWorld(sx, sy) { return api.screenToWorld(sx, sy); }
+/** Convert world position → screen pixel position {x, y}. */
+function worldToScreen(wx, wy) { return api.worldToScreen(wx, wy); }
+
+// ── Key event handlers ─────────────────────────────────────────
+/**
+ * Fire a callback once each time a key is pressed.
+ * onKeyDown("arrowleft", () => { moveLeft(); })
+ * onKeyDown("any", (key) => { log("pressed:", key); })
+ */
+function onKeyDown(key, fn) { api.onKeyDown(key, fn); }
+/** Fire a callback once each time a key is released. */
+function onKeyUp(key, fn)   { api.onKeyUp(key, fn); }
+
+// ── Physics helpers ────────────────────────────────────────────
+/** Actual physics body velocity X (world units/sec). Works for kinematic and dynamic. */
+function getPhysicsVelX()   { return api.getPhysicsVelX(); }
 /** Actual physics body velocity Y (world units/sec, positive = up). Works for kinematic and dynamic. */
+function getPhysicsVelY()   { return api.getPhysicsVelY(); }
 /** Change this object's gravity scale (0 = floats, 2 = 2× gravity). Dynamic bodies only. */
 function setGravityScale(n) { api.setGravityScale(n); }
 // isOnGround/isOnCeiling/isOnWall defined above in Physics section
@@ -4076,18 +4752,34 @@ var PI = Math.PI;
  *   fallVelocity = gravity(fallVelocity, dt)   ← updates and returns the velocity
  *
  * Example (Flappy Bird in 8 lines):
- *    *   onUpdate((dt) => {
- *     vy = applyGravity(vy, dt); // fall
+ *   var vy = 0;
+ *   onUpdate((dt) => {
+ *     vy = gravity(vy, dt);      // fall
  *     if (mouseJustDown()) vy = 8; // flap
  *     move(0, vy * dt);
  *     if (getY() < -5) destroy(); // fell off screen
  *   });
  */
-function applyGravity(currentVY, dt, strength) {
+function gravity(currentVY, dt, strength) {
     return currentVY - (strength ?? 20) * dt;
 }
 
+/**
+ * Instantly destroy this object and remove it from the scene.
+ * Same as api.destroy() but shorter.
+ */
+function destroy() { api.destroy(); }
 
+/**
+ * Spawn a copy of any object in your scene by its name.
+ * Returns a handle you can reposition immediately.
+ *
+ *   spawnCopy("Enemy", 5, 0)
+ *   spawnCopy("Bullet", getX(), getY(), (b) => { b.velocityY = 10; })
+ *
+ * Equivalent to spawnObject() but clearer for cloning.
+ */
+function spawnCopy(name, x, y, onReady) {
     return api.spawnObject(name, x, y, onReady);
 }
 
@@ -4111,6 +4803,14 @@ function cloneSelf(x, y, optsOrCb, cb) {
     return api.cloneSelf(x, y, optsOrCb, cb);
 }
 
+/**
+ * Clone THIS object at its CURRENT position — shorthand for cloneSelf(getX(), getY()).
+ *   cloneInPlace()
+ *   cloneInPlace((c) => { c.velocityX = 5; })
+ */
+function cloneInPlace(onReady) {
+    return api.cloneInPlace(onReady);
+}
 
 /** Returns true if this object was created by cloneSelf() or cloneObject(). */
 function isClone() { return api.isClone(); }
@@ -4329,6 +5029,18 @@ function aiChat(npcName, description, apiKey, options) {
 
 
 
+function launch(lvx, lvy) {
+    api.velocityX = lvx; api.velocityY = lvy;
+    velocityX = lvx; vx = lvx; velocityY = lvy; vy = lvy;
+}
+
+/**
+ * Add velocity to this object (world units/sec).
+ * Good for impulse-style jumps or knockback:
+ *   addImpulse(0, 10)   — jump
+ *   addImpulse(-5, 3)   — knockback left + up
+ */
+function addImpulse(ivx, ivy) {
     const nx = (velocityX || 0) + ivx;
     const ny = (velocityY || 0) + ivy;
     api.velocityX = nx; api.velocityY = ny;
@@ -4519,6 +5231,7 @@ function getState()      { return api.getState(); }
 
 // ── CLONE IDENTITY ────────────────────────────────────────
 /** True if this object was spawned as a clone (not the original). */
+function isClone()       { return api.isClone(); }
 /** Returns this clone's numeric ID (0 for originals). */
 function getCloneId()    { return obj._cloneId ?? 0; }
 
@@ -4552,6 +5265,11 @@ function inRangeOf(target, radius) {
 }
 
 // ── ONE-SHOT TIMER ────────────────────────────────────────
+/**
+ * Call fn once after 'seconds' seconds. Non-blocking.
+ *   onceAfter(2, () => { destroySelf(); })
+ */
+function onceAfter(seconds, fn) {
     api.wait(seconds).then(() => { try { fn(); } catch(_) {} });
 }
 
