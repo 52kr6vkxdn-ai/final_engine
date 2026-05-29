@@ -1181,11 +1181,19 @@ function _buildSandbox(obj, instRef) {
         // ── ROTATION / SCALE ─────────────────────────────────
         /** This object's rotation in degrees */
         get rotation()   { return -(obj.rotation * 180 / Math.PI); },
-        set rotation(v)  { obj.rotation = -(v * Math.PI / 180); },
+        set rotation(v)  {
+            obj.rotation = -(v * Math.PI / 180);
+        },
         get scaleX()     { return obj.scale?.x ?? 1; },
-        set scaleX(v)    { if (obj.scale) obj.scale.x = v; },
+        set scaleX(v)    {
+            if (!obj.scale) obj.scale = { x: 1, y: 1 };
+            obj.scale.x = +v;
+        },
         get scaleY()     { return obj.scale?.y ?? 1; },
-        set scaleY(v)    { if (obj.scale) obj.scale.y = v; },
+        set scaleY(v)    {
+            if (!obj.scale) obj.scale = { x: 1, y: 1 };
+            obj.scale.y = +v;
+        },
         /** Width in world units */
         get width()      { return (obj.spriteGraphic?.width  ?? 100) / 100; },
         /** Height in world units */
@@ -1243,8 +1251,14 @@ function _buildSandbox(obj, instRef) {
                 obj.y -= dy;
             }
         },
-        flipX() { if (obj.scale) obj.scale.x *= -1; },
-        flipY() { if (obj.scale) obj.scale.y *= -1; },
+        flipX() {
+            if (!obj.scale) obj.scale = { x: 1, y: 1 };
+            obj.scale.x *= -1;
+        },
+        flipY() {
+            if (!obj.scale) obj.scale = { x: 1, y: 1 };
+            obj.scale.y *= -1;
+        },
 
         // ── PHYSICS BODY ─────────────────────────────────────
         physics: {
@@ -1941,10 +1955,12 @@ function _buildSandbox(obj, instRef) {
                 }
             }
 
-            const dp = _makeDeferredProxy();
+            const dp = _makeDeferredProxy(wx, wy);
             import('./engine.objects.js').then(({ createImageObject }) => {
+                if (!state.isPlaying) return;  // play stopped while import was pending
                 const newObj = createImageObject(asset, wx * 100, -wy * 100, { silent: true });
                 if (!newObj) return;
+                newObj._runtimeSpawned = true;
                 if (newObj._gizmoContainer) newObj._gizmoContainer.visible = false;
 
                 // Deep-copy all properties from template or prefab if found
@@ -2037,10 +2053,12 @@ function _buildSandbox(obj, instRef) {
                 _logConsole(`cloneSelf: clone limit (128) reached — call destroySelf() on old clones first`, '#f87171');
                 return null;
             }
-            const dp = _makeDeferredProxy();
+            const dp = _makeDeferredProxy(wx, wy);
             import('./engine.objects.js').then(({ createImageObject }) => {
+                if (!state.isPlaying) return;  // play stopped while import was pending
                 const newObj = createImageObject(asset, wx * 100, -wy * 100, { silent: true });
                 if (!newObj) return;
+                newObj._runtimeSpawned = true;
                 if (newObj._gizmoContainer) newObj._gizmoContainer.visible = false;
                 _deepCopyObjectProps(obj, newObj);
                 // Track which original spawned this clone
@@ -2116,10 +2134,12 @@ function _buildSandbox(obj, instRef) {
             const asset = state.assets.find(a => a.id === templateObj.assetId);
             if (!asset) { _logConsole(`cloneObject: template has no asset`, '#facc15'); return null; }
 
-            const dp = _makeDeferredProxy();
+            const dp = _makeDeferredProxy(wx, wy);
             import('./engine.objects.js').then(({ createImageObject }) => {
+                if (!state.isPlaying) return;  // play stopped while import was pending
                 const newObj = createImageObject(asset, wx * 100, -wy * 100, { silent: true });
                 if (!newObj) return;
+                newObj._runtimeSpawned = true;
                 if (newObj._gizmoContainer) newObj._gizmoContainer.visible = false;
                 _deepCopyObjectProps(templateObj, newObj);
 
@@ -3066,12 +3086,16 @@ function _deepCopyObjectProps(src, dst) {
  *
  * After resolve, every get/set goes live through _makeProxy.
  */
-function _makeDeferredProxy() {
+function _makeDeferredProxy(spawnX = 0, spawnY = 0) {
     let _realProxy = null;
     const _pending = [];
 
     // Helper: live or queue a setter
-    function _s(key, v) { _realProxy ? (_realProxy[key] = v) : _pending.push({type:'set', key, value:v}); }
+    function _s(key, v) {
+        if (key === 'x') spawnX = v;
+        if (key === 'y') spawnY = v;
+        _realProxy ? (_realProxy[key] = v) : _pending.push({type:'set', key, value:v});
+    }
     // Helper: live or queue a method call
     function _c(key, args) { _realProxy ? (typeof _realProxy[key]==='function' && _realProxy[key](...args)) : _pending.push({type:'call', key, args}); }
 
@@ -3094,8 +3118,8 @@ function _makeDeferredProxy() {
         get name()          { return _realProxy ? _realProxy.name          : ''; },
         get tag()           { return _realProxy ? _realProxy.tag           : ''; },
         get group()         { return _realProxy ? _realProxy.group         : ''; },
-        get x()             { return _realProxy ? _realProxy.x             : 0; },
-        get y()             { return _realProxy ? _realProxy.y             : 0; },
+        get x()             { return _realProxy ? _realProxy.x             : spawnX; },
+        get y()             { return _realProxy ? _realProxy.y             : spawnY; },
         get scaleX()        { return _realProxy ? _realProxy.scaleX        : 1; },
         get scaleY()        { return _realProxy ? _realProxy.scaleY        : 1; },
         get rotation()      { return _realProxy ? _realProxy.rotation      : 0; },
@@ -4061,11 +4085,33 @@ var velocityX = 0;
 var velocityY = 0;
 var vx = 0;
 var vy = 0;
-function setVelocity(x, y)  { api.setVelocity(x, y); velocityX=x; vx=x; velocityY=y; vy=y; }
-function stopMovement()     { api.stopMovement(); velocityX=0; vx=0; velocityY=0; vy=0; }
-function bounceX()          { api.bounceX(); velocityX=api.velocityX; vx=velocityX; }
-function bounceY()          { api.bounceY(); velocityY=api.velocityY; vy=velocityY; }
-function _syncVelocityToApi() { api._vel.x = velocityX; api._vel.y = velocityY; vx = velocityX; vy = velocityY; }
+function setVelocity(x, y)  { api.setVelocity(x, y); velocityX=x; vx=x; velocityY=y; vy=y; _velXWritten=x; _velYWritten=y; }
+function stopMovement()     { api.stopMovement(); velocityX=0; vx=0; velocityY=0; vy=0; _velXWritten=0; _velYWritten=0; }
+function bounceX()          { api.bounceX(); velocityX=api.velocityX; vx=velocityX; _velXWritten=velocityX; }
+function bounceY()          { api.bounceY(); velocityY=api.velocityY; vy=velocityY; _velYWritten=velocityY; }
+// Tracks the last value this script wrote, so we can tell if the user's
+// own code changed velocityX/Y vs an external proxy setting api._vel directly.
+var _velXWritten = 0, _velYWritten = 0;
+function _syncVelocityToApi() {
+    // If the local var changed since last frame → script wrote it → push to api
+    if (velocityX !== _velXWritten) {
+        api._vel.x = velocityX;
+        _velXWritten = velocityX;
+    } else {
+        // No local write → pull from api (proxy or navigation may have set it)
+        velocityX = api._vel.x;
+        _velXWritten = velocityX;
+    }
+    if (velocityY !== _velYWritten) {
+        api._vel.y = velocityY;
+        _velYWritten = velocityY;
+    } else {
+        velocityY = api._vel.y;
+        _velYWritten = velocityY;
+    }
+    vx = api._vel.x;
+    vy = api._vel.y;
+}
 
 // ── Display ───────────────────────────────────────────────────
 function show()           { api.visible = true; }
@@ -4102,8 +4148,8 @@ function getGroup()       { return api.group; }
  */
 function sendMessage(tagOrProxy, msg, data) {
     if (tagOrProxy && typeof tagOrProxy === 'object' && tagOrProxy._isproxy) {
-        // Direct proxy target
-        tagOrProxy._sendDirect?.(msg, data);
+        // Direct proxy target — deliver the message to that object
+        tagOrProxy.sendMessage(msg, data);
     } else {
         api.sendMessage(tagOrProxy, msg, data);
     }
@@ -4920,7 +4966,7 @@ function cloneInPlace(onReady) {
 }
 
 /** Returns true if this object was created by cloneSelf() or cloneObject(). */
-function isClone() { return api.isClone(); }
+function isClone() { return api.isClone; }
 
 /** Destroy this object after {seconds} seconds. */
 function destroyAfter(secs) { api.destroyAfter(secs); }
@@ -5310,7 +5356,7 @@ function getState()      { return api.getState(); }
 
 // ── CLONE IDENTITY ────────────────────────────────────────
 /** True if this object was spawned as a clone (not the original). */
-function isClone()       { return api.isClone(); }
+function isClone()       { return api.isClone; }
 /** Returns this clone's numeric ID (0 for originals). */
 function getCloneId()    { return obj._cloneId ?? 0; }
 
@@ -5469,6 +5515,7 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
             this._messageHandlers    = out._msgHandlers         ?? new Map();
             this._syncVel            = out._syncVel             ?? null;
             this._syncIsWalking      = out._syncIsWalking       ?? null;
+            this._syncIsStuck        = out._syncIsStuck         ?? null;
             this._onDamage           = out._onDamage            ?? null;
             this._onDeath            = out._onDeath             ?? null;
             this._onHeal             = out._onHeal              ?? null;
