@@ -513,13 +513,20 @@ export function collisionGeom(obj) {
     const ab  = alphaBounds(obj) || { w: raw.w, h: raw.h, ox: 0, oy: 0 };
     const ps  = obj.physicsSize || {};
 
-    const w = (typeof ps.w === 'number' && ps.w > 0) ? ps.w : ab.w;
-    const h = (typeof ps.h === 'number' && ps.h > 0) ? ps.h : ab.h;
-    const r = (typeof ps.r === 'number' && ps.r > 0)
-        ? ps.r
-        : Math.min(ab.w, ab.h) / 2;
-    const ox = (typeof ps.ox === 'number') ? ps.ox : ab.ox;
-    const oy = (typeof ps.oy === 'number') ? ps.oy : ab.oy;
+    // Per-frame shape override: physicsFrameShapes[currentFrameId] or .shared
+    const fsh = (() => {
+        const map = obj.physicsFrameShapes;
+        if (!map) return null;
+        const fid = obj._runtimePhysicsFrameId;
+        if (fid && map[fid]) return map[fid];
+        return map.shared || null;
+    })();
+
+    const w = (fsh?.w  > 0) ? fsh.w  : (typeof ps.w === 'number' && ps.w > 0) ? ps.w : ab.w;
+    const h = (fsh?.h  > 0) ? fsh.h  : (typeof ps.h === 'number' && ps.h > 0) ? ps.h : ab.h;
+    const r = (fsh?.r  > 0) ? fsh.r  : (typeof ps.r === 'number' && ps.r > 0) ? ps.r : Math.min(ab.w, ab.h) / 2;
+    const ox = (fsh?.ox != null) ? fsh.ox : (typeof ps.ox === 'number') ? ps.ox : ab.ox;
+    const oy = (fsh?.oy != null) ? fsh.oy : (typeof ps.oy === 'number') ? ps.oy : ab.oy;
     return { w, h, r, ox, oy, raw, alpha: ab };
 }
 

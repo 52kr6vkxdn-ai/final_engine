@@ -126,6 +126,16 @@ function _getActivePolygon(obj) {
     return null;
 }
 
+// ── Active per-frame shape override (shape type + dimensions) ────────────
+// Returns { shape, w?, h?, r?, capW?, capH?, ox?, oy? } or null when no override.
+function _getActiveFrameShape(obj) {
+    const map = obj.physicsFrameShapes;
+    if (!map) return null;
+    const frameId = obj._runtimePhysicsFrameId;
+    if (frameId && map[frameId]) return map[frameId];
+    return map.shared || null;
+}
+
 // ── Fixture / body options ────────────────────────────────────
 function _bodyOpts(obj) {
     return {
@@ -164,11 +174,13 @@ function _makeBody(obj, cx, cy, bodyType) {
     const sx   = Math.abs(obj.scale?.x ?? 1) || 1;
     const sy   = Math.abs(obj.scale?.y ?? 1) || 1;
     const g    = collisionGeom(obj);
-    const w    = g.w * sx;
-    const h    = g.h * sy;
-    const r    = g.r * Math.min(sx, sy);
-    const ox   = (g.ox || 0) * sx;
-    const oy   = (g.oy || 0) * sy;
+    // Per-frame shape override may provide its own dimensions
+    const _fsh = _getActiveFrameShape(obj);
+    const w    = (_fsh?.w  ? _fsh.w  * sx : g.w * sx);
+    const h    = (_fsh?.h  ? _fsh.h  * sy : g.h * sy);
+    const r    = (_fsh?.r  ? _fsh.r  * Math.min(sx, sy) : g.r * Math.min(sx, sy));
+    const ox   = (_fsh?.ox != null ? _fsh.ox * sx : (g.ox || 0) * sx);
+    const oy   = (_fsh?.oy != null ? _fsh.oy * sy : (g.oy || 0) * sy);
 
     // Body positioned at the collider centre (includes rotated offset)
     const rot  = obj.rotation || 0;
@@ -176,7 +188,8 @@ function _makeBody(obj, cx, cy, bodyType) {
     const bcx  = cx + ox * cosR - oy * sinR;
     const bcy  = cy + ox * sinR + oy * cosR;
 
-    const shape = obj.physicsShape ?? 'box';
+    // Per-frame shape override takes full priority over the global physicsShape
+    const shape = _fsh?.shape ?? obj.physicsShape ?? 'box';
     const poly  = _getActivePolygon(obj);
 
     // kinematic bodies: treated as static + manually teleported each frame
@@ -205,8 +218,8 @@ function _makeBody(obj, cx, cy, bodyType) {
     if (shape === 'circle') {
         body.createFixture({ ...fixDef, shape: P.Circle(Math.max(r, 2)) });
     } else if (shape === 'capsule') {
-        const capW = (obj.physicsSize?.capW ?? g.w) * sx;
-        const capH = (obj.physicsSize?.capH ?? g.h) * sy;
+        const capW = (_fsh?.capW ?? obj.physicsSize?.capW ?? g.w) * sx;
+        const capH = (_fsh?.capH ?? obj.physicsSize?.capH ?? g.h) * sy;
         const capR = Math.min(capW, capH) / 2;
         const len  = Math.max(capW, capH) / 2 - capR;
         const capFix = { ...fixDef, density: bodyType === 'dynamic' ? ((opts.density || 0.001) / 3) : 0 };
@@ -884,8 +897,12 @@ function _rebuildBodyForFrame(entry) {
         : null;
     const hasPFPolygon = Array.isArray(pfPoly) && pfPoly.length >= 3;
 
-    if (!hasPFPolygon && shape !== 'polygon' && shape !== 'shared') {
-        // No per-frame polygon defined for this frame — keep existing body as-is.
+    // Also check for a per-frame box/circle/capsule override
+    const _pfShapeOverride = obj.physicsFrameShapes?.[obj._runtimePhysicsFrameId]
+                          || obj.physicsFrameShapes?.shared;
+
+    if (!hasPFPolygon && shape !== 'polygon' && shape !== 'shared' && !_pfShapeOverride) {
+        // No per-frame shape defined for this frame — keep existing body as-is.
         return;
     }
 
