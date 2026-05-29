@@ -321,22 +321,8 @@ export async function startPhysics() {
         _bodies.push(entry);
         obj._physicsBody = body;
 
-        // Per-frame collision shape swap for animated sprites
-        const as    = obj._runtimeSprite;
-        const anim  = obj.animations?.[obj.activeAnimIndex ?? 0];
-        const frArr = anim?.frames;
-        if (type !== 'static' && as && as.onFrameChange !== undefined && frArr?.length > 1) {
-            obj._runtimePhysicsFrameId = frArr[as.currentFrame ?? 0]?.id || frArr[0].id;
-            as.onFrameChange = (idx) => {
-                const f = frArr[idx];
-                if (!f || obj._runtimePhysicsFrameId === f.id) return;
-                obj._runtimePhysicsFrameId = f.id;
-                _rebuildBodyForFrame(entry);
-            };
-        } else if (type !== 'static') {
-            const f0 = frArr?.[0];
-            if (f0?.id) obj._runtimePhysicsFrameId = f0.id;
-        }
+        // Per-frame collision shape swap for animated sprites (all body types)
+        _attachFrameChangeCallback(entry);
     }
 
     // Wire Planck.js collision events
@@ -749,7 +735,7 @@ export function stepPhysics(dt) {
 export function stopPhysics() {
     _rafId = null;
     for (const { obj } of _bodies) {
-        const as = obj?._runtimeSprite;
+        const as = obj?._animSprite || obj?._runtimeSprite;
         if (as && as.onFrameChange) as.onFrameChange = null;
         if (obj) {
             delete obj._runtimePhysicsFrameId;
@@ -830,26 +816,60 @@ export function rebuildBodyForObject(obj) {
         obj._kinematicPrevY        = obj.y;
         _kinematicContacts.set(obj, new Set());
         const kBody = _makeBody(obj, obj.x, obj.y, 'kinematic');
-        if (kBody) {
-            _bodies.push({ obj, body: kBody, type: 'kinematic' });
-            obj._physicsBody = kBody;
-        } else {
-            _bodies.push({ obj, body: null, type: 'kinematic' });
-        }
+        const kEntry = { obj, body: kBody || null, type: 'kinematic' };
+        _bodies.push(kEntry);
+        if (kBody) obj._physicsBody = kBody;
+        _attachFrameChangeCallback(kEntry);
         return;
     }
 
     const body = _makeBody(obj, obj.x, obj.y, type);
     if (!body) return;
-    _bodies.push({ obj, body, type });
+    const entry = { obj, body, type };
+    _bodies.push(entry);
     obj._physicsBody = body;
+    _attachFrameChangeCallback(entry);
+}
+
+// ── Accessor so external modules can find a body entry by object ─
+export function _getBodies() { return _bodies; }
+
+// ── Wire onFrameChange on the live AnimatedSprite for an entry ─
+// Called at startPhysics and again whenever playAnimation() swaps
+// the sprite so the callback always points at the current instance.
+export function _attachFrameChangeCallback(entry) {
+    const { obj, type } = entry;
+    // Prefer _animSprite (set by reapplyAnimationToObject) then _runtimeSprite
+    const as    = obj._animSprite || obj._runtimeSprite;
+    const anim  = obj.animations?.[obj.activeAnimIndex ?? 0];
+    const frArr = anim?.frames;
+
+    // Seed the current frame id (all body types need this)
+    if (frArr?.length) {
+        const curIdx = as?.currentFrame ?? 0;
+        obj._runtimePhysicsFrameId = frArr[curIdx]?.id || frArr[0].id;
+    }
+
+    if (as && as.onFrameChange !== undefined && frArr?.length > 1) {
+        as.onFrameChange = (idx) => {
+            const f = frArr[idx];
+            if (!f || obj._runtimePhysicsFrameId === f.id) return;
+            obj._runtimePhysicsFrameId = f.id;
+            _rebuildBodyForFrame(entry);
+        };
+    }
 }
 
 // ── Rebuild body when animation frame changes ─────────────────
 function _rebuildBodyForFrame(entry) {
     if (!_world) return;
-    const { obj, body: oldBody, type } = entry;
-    if (!oldBody || type === 'kinematic') return;
+    const { obj, type } = entry;
+    const oldBody = entry.body;
+
+    // Kinematic bodies use a manually-teleported static Planck body.
+    // We still need to rebuild it so the correct collision shape is used
+    // when pushing dynamic bodies out during the substep loop.
+    // Static bodies also need a rebuild so their shape reflects the new frame.
 
     // Only rebuild the body if this specific frame has a dedicated polygon shape.
     // For box / circle / capsule shapes — or polygon shapes without per-frame
@@ -869,20 +889,44 @@ function _rebuildBodyForFrame(entry) {
         return;
     }
 
-    const pos    = oldBody.getPosition();
-    const vel    = oldBody.getLinearVelocity();
-    const angle  = oldBody.getAngle();
-    const angVel = oldBody.getAngularVelocity();
+    // For kinematic / static bodies we don't read position from the Planck body
+    // (it may lag by a substep). Use the object's live world position instead,
+    // applying the collider offset, so the rebuilt body lands exactly where the
+    // sweep / static placement expects it — no teleport artefact.
+    let bx, by, angle, vel, angVel;
+    if (type === 'kinematic' || type === 'static') {
+        const P    = window.planck;
+        const g    = collisionGeom(obj);
+        const sx   = Math.abs(obj.scale?.x ?? 1) || 1;
+        const sy   = Math.abs(obj.scale?.y ?? 1) || 1;
+        const ox   = (g.ox || 0) * sx;
+        const oy   = (g.oy || 0) * sy;
+        const rot  = obj.rotation || 0;
+        const cosR = Math.cos(rot), sinR = Math.sin(rot);
+        bx    = obj.x + ox * cosR - oy * sinR;
+        by    = obj.y + ox * sinR + oy * cosR;
+        angle = rot;
+        vel   = P.Vec2(0, 0);
+        angVel = 0;
+    } else {
+        if (!oldBody) return;
+        const p = oldBody.getPosition();
+        bx    = p.x;
+        by    = p.y;
+        angle = oldBody.getAngle();
+        vel   = oldBody.getLinearVelocity();
+        angVel = oldBody.getAngularVelocity();
+    }
 
-    const newBody = _makeBody(obj, pos.x, pos.y, type);
+    const newBody = _makeBody(obj, bx, by, type);
     if (!newBody) return;
-    newBody.setTransform(pos, angle);
-    if (type !== 'static') {
+    newBody.setTransform(window.planck.Vec2(bx, by), angle);
+    if (type === 'dynamic') {
         newBody.setLinearVelocity(vel);
         newBody.setAngularVelocity(angVel);
     }
 
-    _world.destroyBody(oldBody);
+    if (oldBody) _world.destroyBody(oldBody);
     entry.body       = newBody;
     obj._physicsBody = newBody;
 }
