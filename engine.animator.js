@@ -550,14 +550,6 @@ function _wire(modal, obj) {
             _updateColFrameInfo();
             _showToast(modal, '🎯 Shape auto-fitted from frame');
             import('./engine.collision-overlay.js').then(m => m.refreshCollisionOverlay());
-            // Update the live physics body immediately — no need to leave/re-enter frame
-            import('./engine.physics.js').then(m => {
-                if (m.rebuildBodyForObject) {
-                    // Seed the frame id so _makeBody picks up the new polygon
-                    obj._runtimePhysicsFrameId = frame.id;
-                    m.rebuildBodyForObject(obj);
-                }
-            });
         });
         _dirty = true;
     });
@@ -922,6 +914,9 @@ function _applyAnimToObject(obj) {
     animSprite.gotoAndStop(0);
     if (window._zState?.isPlaying) {
         animSprite.play();
+        // Fix 1: the old sprite's onFrameChange pointed at the old entry.
+        // Re-wire it to the new AnimatedSprite so physics callbacks keep working.
+        import('./engine.physics.js').then(m => m.rewireAnimSpriteCallback?.(obj, animSprite));
     }
 }
 
@@ -1056,15 +1051,23 @@ function _drawCollisionOnCanvas(ctx, obj, frame, cvW, cvH) {
     const ratioX = 1 / innerSx;   // container-px → canvas-px
     const ratioY = 1 / innerSy;
 
-    // Per-frame shape override from physicsFrameShapes (set via frame shape editor)
-    const _fsh  = (frame?.id && obj.physicsFrameShapes?.[frame.id])
-                || obj.physicsFrameShapes?.shared
-                || null;
-    const shape = _fsh?.shape ?? obj.physicsShape ?? 'box';
+    // Fix 4: check physicsFrameShapes for a per-frame shape type override.
+    // This map stores { shape, r?, w?, h? } and takes priority over global settings.
+    const frameOvr = frame.id ? (obj.physicsFrameShapes?.[frame.id] || null) : null;
+    const shape = frameOvr?.shape ?? obj.physicsShape ?? 'box';
+
+    // Build an effective physicsSize that merges frame override dimensions in.
+    const ps = {
+        ...(obj.physicsSize || {}),
+        ...(frameOvr ? {
+            ...(frameOvr.w != null ? { w: frameOvr.w } : {}),
+            ...(frameOvr.h != null ? { h: frameOvr.h } : {}),
+            ...(frameOvr.r != null ? { r: frameOvr.r } : {}),
+        } : {}),
+    };
+
     const cx    = cvW / 2;
     const cy    = cvH / 2;
-    // Merge per-frame dimensions over global physicsSize
-    const ps    = _fsh ? { ...(obj.physicsSize || {}), ..._fsh } : (obj.physicsSize || {});
     const ox    = (typeof ps.ox === 'number' ? ps.ox : 0) * ratioX;
     const oy    = (typeof ps.oy === 'number' ? ps.oy : 0) * ratioY;
 
@@ -1160,8 +1163,11 @@ function _drawCollisionOnCanvas(ctx, obj, frame, cvW, cvH) {
 
     // Label what source the shape is from
     if (obj.physicsBody && obj.physicsBody !== 'none') {
-        const isFrameSpecific = frame.id && Array.isArray(polyMap[frame.id]) && polyMap[frame.id].length >= 3;
-        const label = isFrameSpecific ? '⬡ frame' : (polyMap.shared?.length >= 3 ? '⬡ shared' : '⬡ default');
+        const hasFrameShapeOvr  = !!(frame.id && obj.physicsFrameShapes?.[frame.id]);
+        const isFrameSpecificPoly = frame.id && Array.isArray(polyMap[frame.id]) && polyMap[frame.id].length >= 3;
+        const label = hasFrameShapeOvr   ? '⬡ frame-shape'
+                    : isFrameSpecificPoly ? '⬡ frame'
+                    : (polyMap.shared?.length >= 3 ? '⬡ shared' : '⬡ default');
         ctx.globalAlpha = 0.7;
         ctx.fillStyle   = col;
         ctx.font        = 'bold 8px monospace';

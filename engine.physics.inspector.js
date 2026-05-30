@@ -72,23 +72,20 @@ export function buildPhysicsInspectorHTML(obj) {
 
     const anims   = obj.animations || [];
     const frames  = anims.flatMap(a => (a.frames || []).map(f => ({ id: f.id, name: f.name || f.id })));
-    const polyMap    = obj.physicsPolygons    || {};
-    const frameShapes = obj.physicsFrameShapes || {};
-    // A frame has an override if it has a per-frame polygon OR a physicsFrameShapes entry
-    const _frameHasOverride = (fid) =>
-        !!(polyMap[fid]?.length >= 3) || !!(frameShapes[fid]);
+    const polyMap   = obj.physicsPolygons   || {};
+    const shapeMap  = obj.physicsFrameShapes || {};
     const frameTabsHTML = frames.length > 0
         ? `<div style="margin-top:4px;">
             <div style="color:#888;font-size:9px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;">Per-frame shapes</div>
             <div style="display:flex;flex-wrap:wrap;gap:3px;">
               <button class="pe-frame-btn" data-frame="shared"
-                style="${_frameBtn(_frameHasOverride('shared') || !frames.some(f => _frameHasOverride(f.id)), 'shared')}">
+                style="${_frameBtn(!frames.some(f => (polyMap[f.id]?.length >= 3 || shapeMap[f.id])), 'shared', false)}">
                 All frames
               </button>
               ${frames.map(f => `
               <button class="pe-frame-btn" data-frame="${f.id}"
-                style="${_frameBtn(_frameHasOverride(f.id), f.id)}">
-                ${f.name}
+                style="${_frameBtn(!!(polyMap[f.id]?.length >= 3 || shapeMap[f.id]), f.id, !!shapeMap[f.id])}">
+                ${f.name}${shapeMap[f.id] ? ' ◈' : ''}
               </button>`).join('')}
             </div>
           </div>`
@@ -290,10 +287,12 @@ export function buildPhysicsInspectorHTML(obj) {
     </div>`;
 }
 
-function _frameBtn(hasShape, _frameId) {
+// Fix 3/5: hasShapeOvr = true when a physicsFrameShapes override exists (◈ icon, teal accent)
+function _frameBtn(hasShape, frameId, hasShapeOvr = false) {
     const active = hasShape;
-    return `background:${active ? '#1a1a30' : '#0a0a18'};border:1px solid ${active ? '#7c3aed' : '#1a1a30'};
-            color:${active ? '#a78bfa' : '#555'};border-radius:3px;padding:2px 6px;cursor:pointer;
+    const accent = hasShapeOvr ? '#06b6d4' : '#7c3aed';
+    return `background:${active ? '#0a1a20' : '#0a0a18'};border:1px solid ${active ? accent : '#1a1a30'};
+            color:${active ? (hasShapeOvr ? '#67e8f9' : '#a78bfa') : '#555'};border-radius:3px;padding:2px 6px;cursor:pointer;
             font-size:9px;font-weight:${active ? '700' : '400'};`;
 }
 
@@ -482,11 +481,11 @@ export function bindPhysicsInspector(obj) {
     document.getElementById('phys-autofit')?.addEventListener('click', () => {
         _autoFitCollisionShape(obj, () => {
             _pushUndo();
+            // Fix 6: rebuild the live Planck body immediately so the new shape takes effect
+            // without needing to leave the frame and come back.
+            import('./engine.physics.js').then(m => m.rebuildBodyForObject?.(obj));
             import('./engine.ui.js').then(m => m.syncPixiToInspector?.());
             import('./engine.collision-overlay.js').then(m => { if (!state.showCollision) m.setCollisionVisible(true); m.refreshCollisionOverlay(); });
-            // Rebuild the live physics body immediately so the new shape is active
-            // without needing to leave and re-enter the frame.
-            import('./engine.physics.js').then(m => m.rebuildBodyForObject?.(obj));
             const toast = document.createElement('div');
             toast.style.cssText = 'position:fixed;bottom:40px;left:50%;transform:translateX(-50%);background:#0a2a1a;border:1px solid #4ade80;color:#4ade80;border-radius:4px;padding:6px 18px;font-size:11px;z-index:99999;pointer-events:none;';
             toast.textContent = '🎯 Collision shape auto-fitted';
@@ -495,8 +494,17 @@ export function bindPhysicsInspector(obj) {
         });
     });
 
+    // Fix 5: per-frame buttons now open a shape-picker panel first instead of
+    // jumping straight to the polygon vertex editor.  "All frames / shared" still
+    // goes directly to the polygon editor (no shape-type concept for shared).
     document.querySelectorAll('.pe-frame-btn').forEach(btn => {
-        btn.addEventListener('click', () => openFrameShapeEditor(obj, btn.dataset.frame));
+        btn.addEventListener('click', () => {
+            if (btn.dataset.frame === 'shared') {
+                openPolygonEditor(obj, 'shared');
+            } else {
+                openFrameShapePicker(obj, btn.dataset.frame);
+            }
+        });
     });
 
     fricEl?.addEventListener('change', () => { obj.physicsFriction = Math.max(0, Math.min(1, parseFloat(fricEl.value) || 0)); _pushUndo(); });
@@ -530,188 +538,143 @@ export function bindPhysicsInspector(obj) {
 
 function _pushUndo() { import('./engine.history.js').then(({ pushUndo }) => pushUndo()); }
 
-// ── Per-frame shape editor ─────────────────────────────────────────────────
-// Opens a small panel for editing a single frame's collision shape override.
-// frameId = 'shared' | actual frame id
-export function openFrameShapeEditor(obj, frameId = 'shared') {
-    document.getElementById('frame-shape-editor')?.remove();
+// ── Fix 5: Per-frame shape picker panel ──────────────────────
+// Opens a small panel where the user picks the shape type for this frame,
+// fills in dimensions, and optionally proceeds to the polygon vertex editor.
+export function openFrameShapePicker(obj, frameId) {
+    document.getElementById('frame-shape-picker')?.remove();
 
-    if (!obj.physicsFrameShapes) obj.physicsFrameShapes = {};
-    const fsh = obj.physicsFrameShapes[frameId] || {};
+    // Resolve the frame name for display
+    let frameName = frameId;
+    for (const anim of (obj.animations || [])) {
+        const f = (anim.frames || []).find(fr => fr.id === frameId);
+        if (f) { frameName = f.name || f.id; break; }
+    }
 
-    // Current values (fall back to global then auto)
-    const globalShape = obj.physicsShape ?? 'box';
-    import('./engine.collision-overlay.js').then(({ collisionGeom }) => {
-        const g = collisionGeom(obj);
-        const curShape = fsh.shape ?? globalShape;
-        const curW     = fsh.w    ?? g.w;
-        const curH     = fsh.h    ?? g.h;
-        const curR     = fsh.r    ?? g.r;
-        const curCapW  = fsh.capW ?? g.w;
-        const curCapH  = fsh.capH ?? g.h;
-        const curOx    = fsh.ox   ?? 0;
-        const curOy    = fsh.oy   ?? 0;
-        const hasOverride = !!obj.physicsFrameShapes[frameId];
+    const existing  = obj.physicsFrameShapes?.[frameId] || null;
+    const polyData  = obj.physicsPolygons?.[frameId];
+    const hasPoly   = Array.isArray(polyData) && polyData.length >= 3;
+    const curShape  = existing?.shape || (hasPoly ? 'polygon' : obj.physicsShape || 'box');
+    const curW      = existing?.w ?? obj.physicsSize?.w ?? 40;
+    const curH      = existing?.h ?? obj.physicsSize?.h ?? 40;
+    const curR      = existing?.r ?? obj.physicsSize?.r ?? 20;
 
-        // Frame label for the title
-        let frameLabel = 'All frames';
-        if (frameId !== 'shared') {
-            for (const anim of (obj.animations || [])) {
-                const f = (anim.frames || []).find(fr => fr.id === frameId);
-                if (f) { frameLabel = f.name || frameId; break; }
-            }
-        }
+    const panel = document.createElement('div');
+    panel.id = 'frame-shape-picker';
+    panel.style.cssText = 'position:fixed;inset:0;z-index:10001;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.75);backdrop-filter:blur(3px);font-family:sans-serif;';
 
-        const _s = (k) => `style="${k}"`;
-        const inputStyle = 'background:#0a0a18;border:1px solid #1a1a30;color:#e0e0e0;border-radius:3px;padding:3px 6px;font-size:11px;';
-        const labelStyle = 'color:#888;font-size:10px;min-width:68px;';
-        const rowStyle   = 'display:flex;align-items:center;gap:8px;margin-bottom:4px;';
-        const selOpt = (v, sel) => `<option value="${v}" ${curShape === v ? 'selected' : ''}>${sel}</option>`;
-
-        const panel = document.createElement('div');
-        panel.id = 'frame-shape-editor';
-        panel.style.cssText = [
-            'position:fixed;z-index:100010;',
-            'top:50%;left:50%;transform:translate(-50%,-50%);',
-            'background:#111827;border:1px solid #2a2a4a;border-radius:6px;',
-            'padding:14px 16px;min-width:260px;max-width:300px;',
-            'box-shadow:0 8px 32px #000a;font-family:inherit;',
-        ].join('');
-
-        panel.innerHTML = `
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-            <span style="color:#a78bfa;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;">
-              Frame Shape — ${frameLabel}
-            </span>
-            <button id="fse-close" style="background:none;border:none;color:#555;font-size:14px;cursor:pointer;padding:0 2px;">✕</button>
+    panel.innerHTML = `
+    <div style="background:#0d0d1e;border:1px solid #06b6d466;border-radius:8px;overflow:hidden;
+                width:min(340px,95vw);display:flex;flex-direction:column;">
+      <div style="padding:10px 14px;border-bottom:1px solid #1a1a30;display:flex;align-items:center;gap:8px;">
+        <span style="color:#06b6d4;font-weight:700;font-size:12px;">Frame Shape Override</span>
+        <span style="color:#555;font-size:10px;margin-left:4px;">→ ${frameName}</span>
+      </div>
+      <div style="padding:12px 14px;display:flex;flex-direction:column;gap:10px;">
+        <div>
+          <div style="color:#888;font-size:9px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;">Shape type for this frame</div>
+          <div style="display:flex;gap:4px;flex-wrap:wrap;">
+            <button class="fps-type-btn" data-shape="box"     style="${_fpsTypeBtn(curShape==='box')    }">□ Box</button>
+            <button class="fps-type-btn" data-shape="circle"  style="${_fpsTypeBtn(curShape==='circle') }">○ Circle</button>
+            <button class="fps-type-btn" data-shape="capsule" style="${_fpsTypeBtn(curShape==='capsule')}">⬬ Capsule</button>
+            <button class="fps-type-btn" data-shape="polygon" style="${_fpsTypeBtn(curShape==='polygon')}">⬡ Polygon</button>
           </div>
+        </div>
 
-          ${hasOverride ? `<div id="fse-override-badge" style="background:#1a1a30;border:1px solid #7c3aed33;border-radius:3px;padding:3px 8px;font-size:9px;color:#a78bfa;margin-bottom:8px;">
-            ✓ Per-frame override active
-          </div>` : `<div style="background:#1a1400;border:1px solid #facc1533;border-radius:3px;padding:3px 8px;font-size:9px;color:#facc1577;margin-bottom:8px;">
-            Using global shape (no override yet)
-          </div>`}
+        <div id="fps-box-dims"     style="display:${curShape==='box'    ?'flex':'none'};flex-direction:column;gap:6px;background:#0a0a18;border:1px solid #1a1a30;border-radius:4px;padding:8px;">
+          <div class="prop-row"><span class="prop-label">Width (px)</span>
+            <input id="fps-w" type="number" min="1" step="1" value="${curW}" style="width:70px;${_inp()}"></div>
+          <div class="prop-row"><span class="prop-label">Height (px)</span>
+            <input id="fps-h" type="number" min="1" step="1" value="${curH}" style="width:70px;${_inp()}"></div>
+        </div>
 
-          <div style="${rowStyle}">
-            <span style="${labelStyle}">Shape</span>
-            <select id="fse-shape" style="${inputStyle}width:140px;">
-              ${selOpt('box','Box')}
-              ${selOpt('circle','Circle')}
-              ${selOpt('capsule','Capsule')}
-              ${selOpt('polygon','Polygon')}
-            </select>
-          </div>
+        <div id="fps-circle-dims"  style="display:${curShape==='circle' ?'flex':'none'};flex-direction:column;gap:6px;background:#0a0a18;border:1px solid #1a1a30;border-radius:4px;padding:8px;">
+          <div class="prop-row"><span class="prop-label">Radius (px)</span>
+            <input id="fps-r" type="number" min="1" step="1" value="${curR}" style="width:70px;${_inp()}"></div>
+        </div>
 
-          <div id="fse-box-fields" style="display:${curShape==='box'?'block':'none'}">
-            <div style="${rowStyle}"><span style="${labelStyle}">Width</span>
-              <input id="fse-w" type="number" min="1" step="1" value="${curW.toFixed(1)}" style="${inputStyle}width:80px;"></div>
-            <div style="${rowStyle}"><span style="${labelStyle}">Height</span>
-              <input id="fse-h" type="number" min="1" step="1" value="${curH.toFixed(1)}" style="${inputStyle}width:80px;"></div>
-          </div>
-          <div id="fse-circle-fields" style="display:${curShape==='circle'?'block':'none'}">
-            <div style="${rowStyle}"><span style="${labelStyle}">Radius</span>
-              <input id="fse-r" type="number" min="1" step="1" value="${curR.toFixed(1)}" style="${inputStyle}width:80px;"></div>
-          </div>
-          <div id="fse-capsule-fields" style="display:${curShape==='capsule'?'block':'none'}">
-            <div style="${rowStyle}"><span style="${labelStyle}">Width</span>
-              <input id="fse-capw" type="number" min="1" step="1" value="${curCapW.toFixed(1)}" style="${inputStyle}width:80px;"></div>
-            <div style="${rowStyle}"><span style="${labelStyle}">Height</span>
-              <input id="fse-caph" type="number" min="1" step="1" value="${curCapH.toFixed(1)}" style="${inputStyle}width:80px;"></div>
-          </div>
-          <div id="fse-polygon-fields" style="display:${curShape==='polygon'?'block':'none'}">
-            <button id="fse-edit-poly" style="background:#7c3aed33;border:1px solid #7c3aed55;color:#a78bfa;border-radius:3px;padding:4px 10px;font-size:10px;cursor:pointer;width:100%;margin-bottom:4px;">
-              ✏ Edit polygon vertices
-            </button>
-          </div>
+        <div id="fps-capsule-dims" style="display:${curShape==='capsule'?'flex':'none'};flex-direction:column;gap:6px;background:#0a0a18;border:1px solid #1a1a30;border-radius:4px;padding:8px;">
+          <div class="prop-row"><span class="prop-label">Width (px)</span>
+            <input id="fps-cap-w" type="number" min="1" step="1" value="${curW}" style="width:70px;${_inp()}"></div>
+          <div class="prop-row"><span class="prop-label">Height (px)</span>
+            <input id="fps-cap-h" type="number" min="1" step="1" value="${curH}" style="width:70px;${_inp()}"></div>
+        </div>
 
-          <div style="border-top:1px solid #1a1a30;margin:8px 0 6px;"></div>
-          <div style="${rowStyle}">
-            <span style="${labelStyle}">Offset X</span>
-            <input id="fse-ox" type="number" step="0.5" value="${curOx.toFixed(1)}" style="${inputStyle}width:80px;">
-          </div>
-          <div style="${rowStyle}">
-            <span style="${labelStyle}">Offset Y</span>
-            <input id="fse-oy" type="number" step="0.5" value="${curOy.toFixed(1)}" style="${inputStyle}width:80px;">
-          </div>
+        <div id="fps-polygon-note" style="display:${curShape==='polygon'?'block':'none'};color:#888;font-size:10px;background:#0a0a18;border:1px solid #1a1a30;border-radius:4px;padding:8px;">
+          ${hasPoly ? `<span style="color:#a78bfa;">✓ ${polyData.length} vertices defined</span>` : '<span style="color:#555;">No vertices yet — open the vertex editor below</span>'}
+        </div>
 
-          <div style="display:flex;gap:6px;margin-top:10px;">
-            <button id="fse-apply" style="flex:1;background:#7c3aed;border:none;color:#fff;border-radius:3px;padding:5px;font-size:11px;cursor:pointer;font-weight:700;">Apply</button>
-            <button id="fse-clear" style="flex:1;background:#1a1a30;border:1px solid #ef444433;color:#ef4444;border-radius:3px;padding:5px;font-size:11px;cursor:pointer;">Clear override</button>
-          </div>
-        `;
+        <div style="color:#4a5a6a;font-size:9px;">Leave shape empty to fall back to global settings.</div>
+      </div>
+      <div style="padding:10px 14px;border-top:1px solid #1a1a30;display:flex;justify-content:space-between;gap:6px;">
+        <button id="fps-clear"  style="${_btn('#ef4444')}font-size:10px;">✕ Clear override</button>
+        <div style="display:flex;gap:6px;">
+          <button id="fps-cancel" style="${_btn('#555')}">Cancel</button>
+          <button id="fps-vertex" style="display:${curShape==='polygon'?'inline-flex':'none'};${_btn('#7c3aed')}">✏ Vertex editor</button>
+          <button id="fps-save"   style="${_btn('#06b6d4')}font-weight:700;">✓ Apply</button>
+        </div>
+      </div>
+    </div>`;
 
-        document.body.appendChild(panel);
+    document.body.appendChild(panel);
 
-        // Show/hide shape fields on shape change
-        const shapeEl = document.getElementById('fse-shape');
-        const _updateFields = () => {
-            const v = shapeEl.value;
-            document.getElementById('fse-box-fields').style.display     = v === 'box'     ? 'block' : 'none';
-            document.getElementById('fse-circle-fields').style.display  = v === 'circle'  ? 'block' : 'none';
-            document.getElementById('fse-capsule-fields').style.display = v === 'capsule' ? 'block' : 'none';
-            document.getElementById('fse-polygon-fields').style.display = v === 'polygon' ? 'block' : 'none';
-        };
-        shapeEl.addEventListener('change', _updateFields);
+    let activeShape = curShape;
 
-        document.getElementById('fse-close').addEventListener('click', () => panel.remove());
-
-        document.getElementById('fse-edit-poly').addEventListener('click', () => {
-            panel.remove();
-            openPolygonEditor(obj, frameId);
+    // Shape type button toggling
+    panel.querySelectorAll('.fps-type-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            activeShape = btn.dataset.shape;
+            panel.querySelectorAll('.fps-type-btn').forEach(b => b.style.cssText = _fpsTypeBtn(b === btn));
+            panel.querySelector('#fps-box-dims').style.display     = activeShape === 'box'     ? 'flex' : 'none';
+            panel.querySelector('#fps-circle-dims').style.display  = activeShape === 'circle'  ? 'flex' : 'none';
+            panel.querySelector('#fps-capsule-dims').style.display = activeShape === 'capsule' ? 'flex' : 'none';
+            panel.querySelector('#fps-polygon-note').style.display = activeShape === 'polygon' ? 'block': 'none';
+            panel.querySelector('#fps-vertex').style.display       = activeShape === 'polygon' ? 'inline-flex' : 'none';
         });
-
-        document.getElementById('fse-apply').addEventListener('click', () => {
-            const shape = shapeEl.value;
-            const entry = { shape };
-            if (shape === 'box') {
-                entry.w = Math.max(1, parseFloat(document.getElementById('fse-w').value) || 1);
-                entry.h = Math.max(1, parseFloat(document.getElementById('fse-h').value) || 1);
-            } else if (shape === 'circle') {
-                entry.r = Math.max(1, parseFloat(document.getElementById('fse-r').value) || 1);
-            } else if (shape === 'capsule') {
-                entry.capW = Math.max(1, parseFloat(document.getElementById('fse-capw').value) || 1);
-                entry.capH = Math.max(1, parseFloat(document.getElementById('fse-caph').value) || 1);
-            }
-            const ox = parseFloat(document.getElementById('fse-ox').value);
-            const oy = parseFloat(document.getElementById('fse-oy').value);
-            if (ox) entry.ox = ox;
-            if (oy) entry.oy = oy;
-            if (!obj.physicsFrameShapes) obj.physicsFrameShapes = {};
-            obj.physicsFrameShapes[frameId] = entry;
-            _pushUndo();
-            import('./engine.collision-overlay.js').then(m => {
-                if (!window._zState?.showCollision) m.setCollisionVisible?.(true);
-                m.refreshCollisionOverlay();
-            });
-            // Rebuild live physics body if playing
-            if (window._zState?.isPlaying) {
-                import('./engine.physics.js').then(m => m.rebuildBodyForObject(obj));
-            }
-            panel.remove();
-            // Re-open inspector so the button highlights update
-            import('./engine.ui.js').then(m => m.syncPixiToInspector?.());
-        });
-
-        document.getElementById('fse-clear').addEventListener('click', () => {
-            if (obj.physicsFrameShapes) {
-                delete obj.physicsFrameShapes[frameId];
-                if (!Object.keys(obj.physicsFrameShapes).length) delete obj.physicsFrameShapes;
-            }
-            _pushUndo();
-            import('./engine.collision-overlay.js').then(m => m.refreshCollisionOverlay());
-            if (window._zState?.isPlaying) {
-                import('./engine.physics.js').then(m => m.rebuildBodyForObject(obj));
-            }
-            panel.remove();
-            import('./engine.ui.js').then(m => m.syncPixiToInspector?.());
-        });
-
-        // Close on backdrop click
-        const onOutside = (e) => {
-            if (!panel.contains(e.target)) { panel.remove(); document.removeEventListener('pointerdown', onOutside, true); }
-        };
-        setTimeout(() => document.addEventListener('pointerdown', onOutside, true), 100);
     });
+
+    function _applyAndClose() {
+        if (!obj.physicsFrameShapes) obj.physicsFrameShapes = {};
+        const ovr = { shape: activeShape };
+        if (activeShape === 'box' || activeShape === 'capsule') {
+            ovr.w = Math.max(1, parseFloat(panel.querySelector(activeShape === 'box' ? '#fps-w' : '#fps-cap-w')?.value) || 1);
+            ovr.h = Math.max(1, parseFloat(panel.querySelector(activeShape === 'box' ? '#fps-h' : '#fps-cap-h')?.value) || 1);
+        } else if (activeShape === 'circle') {
+            ovr.r = Math.max(1, parseFloat(panel.querySelector('#fps-r')?.value) || 1);
+        }
+        obj.physicsFrameShapes[frameId] = ovr;
+        _pushUndo();
+        import('./engine.physics.js').then(m => m.rebuildBodyForObject?.(obj));
+        import('./engine.collision-overlay.js').then(m => { if (!state.showCollision) m.setCollisionVisible(true); m.refreshCollisionOverlay(); });
+        panel.remove();
+    }
+
+    panel.querySelector('#fps-save').addEventListener('click', () => {
+        _applyAndClose();
+        import('./engine.ui.js').then(m => m.syncPixiToInspector?.());
+    });
+
+    panel.querySelector('#fps-vertex').addEventListener('click', () => {
+        _applyAndClose();
+        openPolygonEditor(obj, frameId);
+    });
+
+    panel.querySelector('#fps-clear').addEventListener('click', () => {
+        if (obj.physicsFrameShapes) delete obj.physicsFrameShapes[frameId];
+        _pushUndo();
+        import('./engine.physics.js').then(m => m.rebuildBodyForObject?.(obj));
+        import('./engine.collision-overlay.js').then(m => m.refreshCollisionOverlay());
+        import('./engine.ui.js').then(m => m.syncPixiToInspector?.());
+        panel.remove();
+    });
+
+    panel.querySelector('#fps-cancel').addEventListener('click', () => panel.remove());
+    panel.addEventListener('click', e => { if (e.target === panel) panel.remove(); });
+}
+
+function _fpsTypeBtn(active) {
+    return `background:${active?'#0a1a20':'#0a0a18'};border:1px solid ${active?'#06b6d4':'#1a1a30'};
+            color:${active?'#67e8f9':'#555'};border-radius:3px;padding:3px 9px;cursor:pointer;font-size:10px;font-weight:${active?'700':'400'};`;
 }
 
 // ── Polygon Editor ────────────────────────────────────────────
@@ -1040,9 +1003,11 @@ export function snapshotPhysics(obj) {
         physicsImmovable:         !!obj.physicsImmovable,
         physicsCollisionCategory: obj.physicsCollisionCategory ?? 1,
         physicsCollisionMask:     obj.physicsCollisionMask     ?? -1,
-        physicsSize:     obj.physicsSize     ? JSON.parse(JSON.stringify(obj.physicsSize))     : null,
-        physicsPolygon:  obj.physicsPolygon  ? JSON.parse(JSON.stringify(obj.physicsPolygon))  : null,
-        physicsPolygons: obj.physicsPolygons ? JSON.parse(JSON.stringify(obj.physicsPolygons)) : null,
+        physicsSize:        obj.physicsSize        ? JSON.parse(JSON.stringify(obj.physicsSize))        : null,
+        physicsPolygon:     obj.physicsPolygon     ? JSON.parse(JSON.stringify(obj.physicsPolygon))     : null,
+        physicsPolygons:    obj.physicsPolygons    ? JSON.parse(JSON.stringify(obj.physicsPolygons))    : null,
+        // Fix 3: persist per-frame shape type overrides across undo/redo and save/load
+        physicsFrameShapes: obj.physicsFrameShapes ? JSON.parse(JSON.stringify(obj.physicsFrameShapes)) : null,
         _polyUnit:               obj._polyUnit || null,
         _collisionShapeInit:     !!obj._collisionShapeInit,
     };
@@ -1064,9 +1029,10 @@ export function restorePhysics(obj, snap) {
     obj.physicsImmovable         = !!snap.physicsImmovable;
     obj.physicsCollisionCategory = snap.physicsCollisionCategory ?? 1;
     obj.physicsCollisionMask     = snap.physicsCollisionMask     ?? -1;
-    obj.physicsSize     = snap.physicsSize     ? JSON.parse(JSON.stringify(snap.physicsSize))     : null;
-    obj.physicsPolygon  = snap.physicsPolygon  ? JSON.parse(JSON.stringify(snap.physicsPolygon))  : null;
-    obj.physicsPolygons = snap.physicsPolygons ? JSON.parse(JSON.stringify(snap.physicsPolygons)) : null;
+    obj.physicsSize        = snap.physicsSize        ? JSON.parse(JSON.stringify(snap.physicsSize))        : null;
+    obj.physicsPolygon     = snap.physicsPolygon     ? JSON.parse(JSON.stringify(snap.physicsPolygon))     : null;
+    obj.physicsPolygons    = snap.physicsPolygons    ? JSON.parse(JSON.stringify(snap.physicsPolygons))    : null;
+    obj.physicsFrameShapes = snap.physicsFrameShapes ? JSON.parse(JSON.stringify(snap.physicsFrameShapes)) : null;
     obj._polyUnit            = snap._polyUnit || null;
     obj._collisionShapeInit  = !!snap._collisionShapeInit;
 }

@@ -394,6 +394,38 @@ export function refreshSceneSettingsPanel() {
       <span style="color:#5a4a2a;font-size:9px;margin-top:4px;display:block;">Tip: use <code style="color:#facc15;">this.velocityY -= 9.8 * dt</code> for manual gravity</span>
     </div>
   </div>
+</div>
+<div class="component-block" style="border-left:3px solid #2a4a6a; margin:0;">
+  <div class="component-header" style="background:#0a1220;">
+    <svg viewBox="0 0 24 24" class="comp-icon" style="color:#4a8ab4;">
+      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+    </svg>
+    <span style="color:#7ab0d4;font-weight:600;">Lighting / Darkness</span>
+  </div>
+  <div class="component-body" style="gap:8px;">
+    <div style="color:#5a7a8a;font-size:10px;margin-bottom:2px;">
+      Sets the color of <b style="color:#8ab8c8;">unlit (dark)</b> areas when lights are active in the scene.
+    </div>
+    <div class="prop-row">
+      <span class="prop-label" style="min-width:90px;">Play darkness</span>
+      <input type="color" id="scene-ambient-play"
+        value="${'#' + ((state.ambientPlay ?? 0x0e0e1a) & 0xFFFFFF).toString(16).padStart(6,'0')}"
+        style="width:44px;height:22px;border:none;border-radius:3px;cursor:pointer;padding:1px;">
+      <button id="scene-ambient-play-reset" title="Reset to default"
+        style="margin-left:4px;background:#1a2030;border:1px solid #2a3a50;color:#6a8aaa;border-radius:3px;padding:1px 7px;cursor:pointer;font-size:10px;">↺</button>
+    </div>
+    <div style="color:#4a5a6a;font-size:9px;padding-left:2px;">
+      Editor ambient uses a lighter value so the scene stays visible while editing.
+    </div>
+    <div class="prop-row">
+      <span class="prop-label" style="min-width:90px;">Editor ambient</span>
+      <input type="color" id="scene-ambient-edit"
+        value="${'#' + ((state.ambientEdit ?? 0x6e6e80) & 0xFFFFFF).toString(16).padStart(6,'0')}"
+        style="width:44px;height:22px;border:none;border-radius:3px;cursor:pointer;padding:1px;">
+      <button id="scene-ambient-edit-reset" title="Reset to default"
+        style="margin-left:4px;background:#1a2030;border:1px solid #2a3a50;color:#6a8aaa;border-radius:3px;padding:1px 7px;cursor:pointer;font-size:10px;">↺</button>
+    </div>
+  </div>
 </div>`;
 
     // Bind events
@@ -441,6 +473,25 @@ export function refreshSceneSettingsPanel() {
     scalingEl?.addEventListener('change', () => {
         state.sceneSettings.scalingMode = scalingEl.value;
         if (scalingInfo) scalingInfo.textContent = _scalingModeInfo(scalingEl.value);
+    });
+
+    // ── Darkness / ambient color bindings ─────────────────
+    const ambPlayEl = panel.querySelector('#scene-ambient-play');
+    ambPlayEl?.addEventListener('input', () => {
+        state.ambientPlay = parseInt(ambPlayEl.value.replace('#', ''), 16);
+    });
+    panel.querySelector('#scene-ambient-play-reset')?.addEventListener('click', () => {
+        state.ambientPlay = 0x0e0e1a;
+        if (ambPlayEl) ambPlayEl.value = '#0e0e1a';
+    });
+
+    const ambEditEl = panel.querySelector('#scene-ambient-edit');
+    ambEditEl?.addEventListener('input', () => {
+        state.ambientEdit = parseInt(ambEditEl.value.replace('#', ''), 16);
+    });
+    panel.querySelector('#scene-ambient-edit-reset')?.addEventListener('click', () => {
+        state.ambientEdit = 0x6e6e80;
+        if (ambEditEl) ambEditEl.value = '#6e6e80';
     });
 }
 

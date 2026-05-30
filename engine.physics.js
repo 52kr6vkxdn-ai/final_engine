@@ -126,14 +126,12 @@ function _getActivePolygon(obj) {
     return null;
 }
 
-// ── Active per-frame shape override (shape type + dimensions) ────────────
-// Returns { shape, w?, h?, r?, capW?, capH?, ox?, oy? } or null when no override.
-function _getActiveFrameShape(obj) {
-    const map = obj.physicsFrameShapes;
-    if (!map) return null;
-    const frameId = obj._runtimePhysicsFrameId;
-    if (frameId && map[frameId]) return map[frameId];
-    return map.shared || null;
+// ── Fix 3: Per-frame shape override (physicsFrameShapes map) ──
+// Returns { shape, r?, w?, h? } for the current runtime frame, or null.
+function _activeFrameShapeOverride(obj) {
+    const fid = obj._runtimePhysicsFrameId;
+    if (!fid || !obj.physicsFrameShapes) return null;
+    return obj.physicsFrameShapes[fid] || null;
 }
 
 // ── Fixture / body options ────────────────────────────────────
@@ -174,13 +172,15 @@ function _makeBody(obj, cx, cy, bodyType) {
     const sx   = Math.abs(obj.scale?.x ?? 1) || 1;
     const sy   = Math.abs(obj.scale?.y ?? 1) || 1;
     const g    = collisionGeom(obj);
-    // Per-frame shape override may provide its own dimensions
-    const _fsh = _getActiveFrameShape(obj);
-    const w    = (_fsh?.w  ? _fsh.w  * sx : g.w * sx);
-    const h    = (_fsh?.h  ? _fsh.h  * sy : g.h * sy);
-    const r    = (_fsh?.r  ? _fsh.r  * Math.min(sx, sy) : g.r * Math.min(sx, sy));
-    const ox   = (_fsh?.ox != null ? _fsh.ox * sx : (g.ox || 0) * sx);
-    const oy   = (_fsh?.oy != null ? _fsh.oy * sy : (g.oy || 0) * sy);
+
+    // Fix 3: apply per-frame shape override before falling back to global settings
+    const frameOvr = _activeFrameShapeOverride(obj);
+    const shape = frameOvr?.shape ?? obj.physicsShape ?? 'box';
+    const w    = ((frameOvr?.w != null) ? frameOvr.w : g.w) * sx;
+    const h    = ((frameOvr?.h != null) ? frameOvr.h : g.h) * sy;
+    const r    = ((frameOvr?.r != null) ? frameOvr.r : g.r) * Math.min(sx, sy);
+    const ox   = (g.ox || 0) * sx;
+    const oy   = (g.oy || 0) * sy;
 
     // Body positioned at the collider centre (includes rotated offset)
     const rot  = obj.rotation || 0;
@@ -188,8 +188,6 @@ function _makeBody(obj, cx, cy, bodyType) {
     const bcx  = cx + ox * cosR - oy * sinR;
     const bcy  = cy + ox * sinR + oy * cosR;
 
-    // Per-frame shape override takes full priority over the global physicsShape
-    const shape = _fsh?.shape ?? obj.physicsShape ?? 'box';
     const poly  = _getActivePolygon(obj);
 
     // kinematic bodies: treated as static + manually teleported each frame
@@ -218,8 +216,8 @@ function _makeBody(obj, cx, cy, bodyType) {
     if (shape === 'circle') {
         body.createFixture({ ...fixDef, shape: P.Circle(Math.max(r, 2)) });
     } else if (shape === 'capsule') {
-        const capW = (_fsh?.capW ?? obj.physicsSize?.capW ?? g.w) * sx;
-        const capH = (_fsh?.capH ?? obj.physicsSize?.capH ?? g.h) * sy;
+        const capW = (obj.physicsSize?.capW ?? g.w) * sx;
+        const capH = (obj.physicsSize?.capH ?? g.h) * sy;
         const capR = Math.min(capW, capH) / 2;
         const len  = Math.max(capW, capH) / 2 - capR;
         const capFix = { ...fixDef, density: bodyType === 'dynamic' ? ((opts.density || 0.001) / 3) : 0 };
@@ -334,8 +332,23 @@ export async function startPhysics() {
         _bodies.push(entry);
         obj._physicsBody = body;
 
-        // Per-frame collision shape swap for animated sprites (all body types)
-        _attachFrameChangeCallback(entry);
+        // Fix 1+2: Per-frame collision shape swap for animated sprites.
+        // Now wires ALL body types (including static/kinematic) when per-frame data exists.
+        const as    = obj._runtimeSprite;
+        const anim  = obj.animations?.[obj.activeAnimIndex ?? 0];
+        const frArr = anim?.frames;
+        if (as && as.onFrameChange !== undefined && frArr?.length > 1) {
+            obj._runtimePhysicsFrameId = frArr[as.currentFrame ?? 0]?.id || frArr[0].id;
+            as.onFrameChange = (idx) => {
+                const f = frArr[idx];
+                if (!f || obj._runtimePhysicsFrameId === f.id) return;
+                obj._runtimePhysicsFrameId = f.id;
+                _rebuildBodyForFrame(entry);
+            };
+        } else {
+            const f0 = frArr?.[0];
+            if (f0?.id) obj._runtimePhysicsFrameId = f0.id;
+        }
     }
 
     // Wire Planck.js collision events
@@ -748,7 +761,7 @@ export function stepPhysics(dt) {
 export function stopPhysics() {
     _rafId = null;
     for (const { obj } of _bodies) {
-        const as = obj?._animSprite || obj?._runtimeSprite;
+        const as = obj?._runtimeSprite;
         if (as && as.onFrameChange) as.onFrameChange = null;
         if (obj) {
             delete obj._runtimePhysicsFrameId;
@@ -829,71 +842,52 @@ export function rebuildBodyForObject(obj) {
         obj._kinematicPrevY        = obj.y;
         _kinematicContacts.set(obj, new Set());
         const kBody = _makeBody(obj, obj.x, obj.y, 'kinematic');
-        const kEntry = { obj, body: kBody || null, type: 'kinematic' };
-        _bodies.push(kEntry);
-        if (kBody) obj._physicsBody = kBody;
-        _attachFrameChangeCallback(kEntry);
+        if (kBody) {
+            _bodies.push({ obj, body: kBody, type: 'kinematic' });
+            obj._physicsBody = kBody;
+        } else {
+            _bodies.push({ obj, body: null, type: 'kinematic' });
+        }
         return;
     }
 
     const body = _makeBody(obj, obj.x, obj.y, type);
     if (!body) return;
-    const entry = { obj, body, type };
-    _bodies.push(entry);
+    _bodies.push({ obj, body, type });
     obj._physicsBody = body;
-    _attachFrameChangeCallback(entry);
-}
-
-// ── Accessor so external modules can find a body entry by object ─
-export function _getBodies() { return _bodies; }
-
-// ── Wire onFrameChange on the live AnimatedSprite for an entry ─
-// Called at startPhysics and again whenever playAnimation() swaps
-// the sprite so the callback always points at the current instance.
-export function _attachFrameChangeCallback(entry) {
-    const { obj, type } = entry;
-    // Prefer _animSprite (set by reapplyAnimationToObject) then _runtimeSprite
-    const as    = obj._animSprite || obj._runtimeSprite;
-    const anim  = obj.animations?.[obj.activeAnimIndex ?? 0];
-    const frArr = anim?.frames;
-
-    // Seed the current frame id (all body types need this)
-    if (frArr?.length) {
-        const curIdx = as?.currentFrame ?? 0;
-        obj._runtimePhysicsFrameId = frArr[curIdx]?.id || frArr[0].id;
-    }
-
-    if (as && as.onFrameChange !== undefined && frArr?.length > 1) {
-        as.onFrameChange = (idx) => {
-            const f = frArr[idx];
-            if (!f || obj._runtimePhysicsFrameId === f.id) return;
-            obj._runtimePhysicsFrameId = f.id;
-            _rebuildBodyForFrame(entry);
-        };
-    }
 }
 
 // ── Rebuild body when animation frame changes ─────────────────
+// Fix 2: now handles kinematic and static bodies too.
+// Fix 3: also checks physicsFrameShapes for per-frame shape type overrides.
 function _rebuildBodyForFrame(entry) {
     if (!_world) return;
     const { obj, type } = entry;
     const oldBody = entry.body;
 
-    // Kinematic bodies use a manually-teleported static Planck body.
-    // We still need to rebuild it so the correct collision shape is used
-    // when pushing dynamic bodies out during the substep loop.
-    // Static bodies also need a rebuild so their shape reflects the new frame.
+    const frameId    = obj._runtimePhysicsFrameId;
+    const pfPoly     = frameId && obj.physicsPolygons ? obj.physicsPolygons[frameId] : null;
+    const hasPFPoly  = Array.isArray(pfPoly) && pfPoly.length >= 3;
+    const hasPFShape = !!(frameId && obj.physicsFrameShapes?.[frameId]);
+    const shape      = obj.physicsShape ?? 'box';
 
-    // Always rebuild so per-frame physicsPolygons and physicsFrameShapes are applied.
-    // _makeBody reads _runtimePhysicsFrameId to pick the correct shape/size for this frame.
+    // Only rebuild when per-frame data exists that would change the collision shape.
+    if (!hasPFPoly && !hasPFShape && shape !== 'polygon' && shape !== 'shared') return;
 
-    // For kinematic / static bodies we don't read position from the Planck body
-    // (it may lag by a substep). Use the object's live world position instead,
-    // applying the collider offset, so the rebuilt body lands exactly where the
-    // sweep / static placement expects it — no teleport artefact.
-    let bx, by, angle, vel, angVel;
-    if (type === 'kinematic' || type === 'static') {
-        const P    = window.planck;
+    // Compute the body centre position for the new body.
+    // Fix 2: for dynamic read from Planck (most accurate); for kinematic/static
+    // derive directly from obj.x/y + collider offset so we're never substep-behind.
+    let newCx, newCy, angle = 0, vel = null, angVel = 0;
+
+    if (type === 'dynamic' && oldBody) {
+        const pos = oldBody.getPosition();
+        vel    = oldBody.getLinearVelocity();
+        angle  = oldBody.getAngle();
+        angVel = oldBody.getAngularVelocity();
+        newCx  = pos.x;
+        newCy  = pos.y;
+    } else {
+        // kinematic or static — compute centre from scene position + collider offset
         const g    = collisionGeom(obj);
         const sx   = Math.abs(obj.scale?.x ?? 1) || 1;
         const sy   = Math.abs(obj.scale?.y ?? 1) || 1;
@@ -901,32 +895,41 @@ function _rebuildBodyForFrame(entry) {
         const oy   = (g.oy || 0) * sy;
         const rot  = obj.rotation || 0;
         const cosR = Math.cos(rot), sinR = Math.sin(rot);
-        bx    = obj.x + ox * cosR - oy * sinR;
-        by    = obj.y + ox * sinR + oy * cosR;
-        angle = rot;
-        vel   = P.Vec2(0, 0);
-        angVel = 0;
-    } else {
-        if (!oldBody) return;
-        const p = oldBody.getPosition();
-        bx    = p.x;
-        by    = p.y;
-        angle = oldBody.getAngle();
-        vel   = oldBody.getLinearVelocity();
-        angVel = oldBody.getAngularVelocity();
+        newCx = obj.x + ox * cosR - oy * sinR;
+        newCy = obj.y + ox * sinR + oy * cosR;
+        angle = (type === 'static') ? 0 : rot;
     }
 
-    const newBody = _makeBody(obj, bx, by, type);
-    if (!newBody) return;
-    newBody.setTransform(window.planck.Vec2(bx, by), angle);
-    if (type === 'dynamic') {
+    if (oldBody) { try { _world.destroyBody(oldBody); } catch (_) {} }
+
+    const newBody = _makeBody(obj, newCx, newCy, type);
+    if (!newBody) { entry.body = null; return; }
+    newBody.setTransform(window.planck.Vec2(newCx, newCy), angle);
+    if (type === 'dynamic' && vel) {
         newBody.setLinearVelocity(vel);
         newBody.setAngularVelocity(angVel);
     }
 
-    if (oldBody) _world.destroyBody(oldBody);
     entry.body       = newBody;
     obj._physicsBody = newBody;
+}
+
+// ── Fix 1: Re-wire onFrameChange after playAnimation() swaps the sprite ──
+// Called by engine.animator.js after it replaces the AnimatedSprite instance.
+export function rewireAnimSpriteCallback(obj, newSprite) {
+    if (!_world || !newSprite) return;
+    const entry = _bodies.find(e => e.obj === obj);
+    if (!entry) return;
+    const anim  = obj.animations?.[obj.activeAnimIndex ?? 0];
+    const frArr = anim?.frames;
+    if (!frArr?.length || newSprite.onFrameChange === undefined) return;
+    obj._runtimePhysicsFrameId = frArr[newSprite.currentFrame ?? 0]?.id || frArr[0].id;
+    newSprite.onFrameChange = (idx) => {
+        const f = frArr[idx];
+        if (!f || obj._runtimePhysicsFrameId === f.id) return;
+        obj._runtimePhysicsFrameId = f.id;
+        _rebuildBodyForFrame(entry);
+    };
 }
 
 
@@ -939,3 +942,6 @@ export {
     snapshotPhysics,
     restorePhysics,
 } from './engine.physics.inspector.js';
+
+// ── Re-export per-frame shape helpers for inspector use ───────
+export { _activeFrameShapeOverride as getActiveFrameShapeOverride };

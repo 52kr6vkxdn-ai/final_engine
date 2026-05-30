@@ -1398,16 +1398,6 @@ function _buildSandbox(obj, instRef) {
                 reapplyAnimationToObject(obj);
                 const s = obj._animSprite;
                 if (s?.play) s.gotoAndPlay(0);
-                // Re-wire the per-frame physics callback to the new AnimatedSprite.
-                // The old sprite was destroyed by reapplyAnimationToObject, so the
-                // callback registered at startPhysics() is now pointing at a dead
-                // object. Find the physics entry for this object and reattach.
-                import('./engine.physics.js').then(({ _attachFrameChangeCallback, _getBodies }) => {
-                    const bodies = _getBodies?.();
-                    if (!bodies) return;
-                    const entry = bodies.find(e => e.obj === obj);
-                    if (entry) _attachFrameChangeCallback(entry);
-                });
             });
         },
         stopAnimation() {

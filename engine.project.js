@@ -214,7 +214,8 @@ function _saveActiveScene() {
                 physicsShape:       obj.physicsShape       ?? 'box',
                 physicsSize:        obj.physicsSize     ? JSON.parse(JSON.stringify(obj.physicsSize))     : null,
                 physicsPolygon:     obj.physicsPolygon  ? JSON.parse(JSON.stringify(obj.physicsPolygon))  : null,
-                physicsPolygons:    obj.physicsPolygons ? JSON.parse(JSON.stringify(obj.physicsPolygons)) : null,
+                physicsPolygons:    obj.physicsPolygons    ? JSON.parse(JSON.stringify(obj.physicsPolygons))    : null,
+                physicsFrameShapes: obj.physicsFrameShapes ? JSON.parse(JSON.stringify(obj.physicsFrameShapes)) : null,
                 _polyUnit:          obj._polyUnit || null,
                 _collisionShapeInit: !!obj._collisionShapeInit,
                 // ── Visibility / alpha ──────────────────────────────
