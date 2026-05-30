@@ -884,27 +884,8 @@ function _rebuildBodyForFrame(entry) {
     // when pushing dynamic bodies out during the substep loop.
     // Static bodies also need a rebuild so their shape reflects the new frame.
 
-    // Only rebuild the body if this specific frame has a dedicated polygon shape.
-    // For box / circle / capsule shapes — or polygon shapes without per-frame
-    // polygon data — the collision dimensions must stay constant when the
-    // animation frame changes (even if sprite resolution differs).
-    // This prevents the collision shape from glitching when switching
-    // animations that have different source image resolutions.
-    const shape = obj.physicsShape ?? 'box';
-    const frameId = obj._runtimePhysicsFrameId;
-    const pfPoly = frameId && obj.physicsPolygons
-        ? obj.physicsPolygons[frameId]
-        : null;
-    const hasPFPolygon = Array.isArray(pfPoly) && pfPoly.length >= 3;
-
-    // Also check for a per-frame box/circle/capsule override
-    const _pfShapeOverride = obj.physicsFrameShapes?.[obj._runtimePhysicsFrameId]
-                          || obj.physicsFrameShapes?.shared;
-
-    if (!hasPFPolygon && shape !== 'polygon' && shape !== 'shared' && !_pfShapeOverride) {
-        // No per-frame shape defined for this frame — keep existing body as-is.
-        return;
-    }
+    // Always rebuild so per-frame physicsPolygons and physicsFrameShapes are applied.
+    // _makeBody reads _runtimePhysicsFrameId to pick the correct shape/size for this frame.
 
     // For kinematic / static bodies we don't read position from the Planck body
     // (it may lag by a substep). Use the object's live world position instead,

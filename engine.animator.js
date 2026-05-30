@@ -550,6 +550,14 @@ function _wire(modal, obj) {
             _updateColFrameInfo();
             _showToast(modal, '🎯 Shape auto-fitted from frame');
             import('./engine.collision-overlay.js').then(m => m.refreshCollisionOverlay());
+            // Update the live physics body immediately — no need to leave/re-enter frame
+            import('./engine.physics.js').then(m => {
+                if (m.rebuildBodyForObject) {
+                    // Seed the frame id so _makeBody picks up the new polygon
+                    obj._runtimePhysicsFrameId = frame.id;
+                    m.rebuildBodyForObject(obj);
+                }
+            });
         });
         _dirty = true;
     });
@@ -1048,10 +1056,15 @@ function _drawCollisionOnCanvas(ctx, obj, frame, cvW, cvH) {
     const ratioX = 1 / innerSx;   // container-px → canvas-px
     const ratioY = 1 / innerSy;
 
-    const shape = obj.physicsShape ?? 'box';
+    // Per-frame shape override from physicsFrameShapes (set via frame shape editor)
+    const _fsh  = (frame?.id && obj.physicsFrameShapes?.[frame.id])
+                || obj.physicsFrameShapes?.shared
+                || null;
+    const shape = _fsh?.shape ?? obj.physicsShape ?? 'box';
     const cx    = cvW / 2;
     const cy    = cvH / 2;
-    const ps    = obj.physicsSize || {};
+    // Merge per-frame dimensions over global physicsSize
+    const ps    = _fsh ? { ...(obj.physicsSize || {}), ..._fsh } : (obj.physicsSize || {});
     const ox    = (typeof ps.ox === 'number' ? ps.ox : 0) * ratioX;
     const oy    = (typeof ps.oy === 'number' ? ps.oy : 0) * ratioY;
 

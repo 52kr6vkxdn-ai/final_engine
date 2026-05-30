@@ -484,6 +484,9 @@ export function bindPhysicsInspector(obj) {
             _pushUndo();
             import('./engine.ui.js').then(m => m.syncPixiToInspector?.());
             import('./engine.collision-overlay.js').then(m => { if (!state.showCollision) m.setCollisionVisible(true); m.refreshCollisionOverlay(); });
+            // Rebuild the live physics body immediately so the new shape is active
+            // without needing to leave and re-enter the frame.
+            import('./engine.physics.js').then(m => m.rebuildBodyForObject?.(obj));
             const toast = document.createElement('div');
             toast.style.cssText = 'position:fixed;bottom:40px;left:50%;transform:translateX(-50%);background:#0a2a1a;border:1px solid #4ade80;color:#4ade80;border-radius:4px;padding:6px 18px;font-size:11px;z-index:99999;pointer-events:none;';
             toast.textContent = '🎯 Collision shape auto-fitted';
