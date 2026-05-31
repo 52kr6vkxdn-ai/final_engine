@@ -1183,16 +1183,19 @@ function _buildSandbox(obj, instRef) {
         get rotation()   { return -(obj.rotation * 180 / Math.PI); },
         set rotation(v)  {
             obj.rotation = -(v * Math.PI / 180);
+            if (obj.spriteGraphic) obj.spriteGraphic.rotation = obj.rotation;
         },
         get scaleX()     { return obj.scale?.x ?? 1; },
         set scaleX(v)    {
             if (!obj.scale) obj.scale = { x: 1, y: 1 };
             obj.scale.x = +v;
+            if (obj.spriteGraphic) obj.spriteGraphic.scale.x = +v;
         },
         get scaleY()     { return obj.scale?.y ?? 1; },
         set scaleY(v)    {
             if (!obj.scale) obj.scale = { x: 1, y: 1 };
             obj.scale.y = +v;
+            if (obj.spriteGraphic) obj.spriteGraphic.scale.y = +v;
         },
         /** Width in world units */
         get width()      { return (obj.spriteGraphic?.width  ?? 100) / 100; },
@@ -1201,9 +1204,9 @@ function _buildSandbox(obj, instRef) {
 
         // ── DISPLAY ───────────────────────────────────────────
         get visible()    { return obj.visible; },
-        set visible(v)   { obj.visible = !!v; },
+        set visible(v)   { obj.visible = !!v; if (obj.spriteGraphic) obj.spriteGraphic.visible = !!v; },
         get alpha()      { return obj.alpha; },
-        set alpha(v)     { obj.alpha = Math.max(0, Math.min(1, v)); },
+        set alpha(v)     { obj.alpha = Math.max(0, Math.min(1, v)); if (obj.spriteGraphic) obj.spriteGraphic.alpha = obj.alpha; },
 
         // ── MOVEMENT HELPERS ─────────────────────────────────
         /** Move by (dx, dy) world units this frame.
@@ -1254,10 +1257,12 @@ function _buildSandbox(obj, instRef) {
         flipX() {
             if (!obj.scale) obj.scale = { x: 1, y: 1 };
             obj.scale.x *= -1;
+            if (obj.spriteGraphic) obj.spriteGraphic.scale.x = obj.scale.x;
         },
         flipY() {
             if (!obj.scale) obj.scale = { x: 1, y: 1 };
             obj.scale.y *= -1;
+            if (obj.spriteGraphic) obj.spriteGraphic.scale.y = obj.scale.y;
         },
 
         // ── PHYSICS BODY ─────────────────────────────────────
@@ -1957,10 +1962,8 @@ function _buildSandbox(obj, instRef) {
 
             const dp = _makeDeferredProxy(wx, wy);
             import('./engine.objects.js').then(({ createImageObject }) => {
-                if (!state.isPlaying) return;  // play stopped while import was pending
                 const newObj = createImageObject(asset, wx * 100, -wy * 100, { silent: true });
                 if (!newObj) return;
-                newObj._runtimeSpawned = true;
                 if (newObj._gizmoContainer) newObj._gizmoContainer.visible = false;
 
                 // Deep-copy all properties from template or prefab if found
@@ -2055,10 +2058,8 @@ function _buildSandbox(obj, instRef) {
             }
             const dp = _makeDeferredProxy(wx, wy);
             import('./engine.objects.js').then(({ createImageObject }) => {
-                if (!state.isPlaying) return;  // play stopped while import was pending
                 const newObj = createImageObject(asset, wx * 100, -wy * 100, { silent: true });
                 if (!newObj) return;
-                newObj._runtimeSpawned = true;
                 if (newObj._gizmoContainer) newObj._gizmoContainer.visible = false;
                 _deepCopyObjectProps(obj, newObj);
                 // Track which original spawned this clone
@@ -2136,10 +2137,8 @@ function _buildSandbox(obj, instRef) {
 
             const dp = _makeDeferredProxy(wx, wy);
             import('./engine.objects.js').then(({ createImageObject }) => {
-                if (!state.isPlaying) return;  // play stopped while import was pending
                 const newObj = createImageObject(asset, wx * 100, -wy * 100, { silent: true });
                 if (!newObj) return;
-                newObj._runtimeSpawned = true;
                 if (newObj._gizmoContainer) newObj._gizmoContainer.visible = false;
                 _deepCopyObjectProps(templateObj, newObj);
 

@@ -195,8 +195,7 @@ export function playModeGotoScene(index, onReady = null) {
                 obj.physicsShape            = s.physicsShape             ?? 'box';
                 obj.physicsSize             = s.physicsSize     ? JSON.parse(JSON.stringify(s.physicsSize))     : null;
                 obj.physicsPolygon          = s.physicsPolygon  ? JSON.parse(JSON.stringify(s.physicsPolygon))  : null;
-                obj.physicsPolygons         = s.physicsPolygons    ? JSON.parse(JSON.stringify(s.physicsPolygons))    : null;
-                obj.physicsFrameShapes      = s.physicsFrameShapes ? JSON.parse(JSON.stringify(s.physicsFrameShapes)) : null;
+                obj.physicsPolygons         = s.physicsPolygons ? JSON.parse(JSON.stringify(s.physicsPolygons)) : null;
                 obj._polyUnit               = s._polyUnit || null;
                 obj._collisionShapeInit     = !!s._collisionShapeInit;
                 obj.visible  = s.visible !== false;
@@ -318,8 +317,7 @@ function _saveCurrentScene() {
             physicsShape:       obj.physicsShape       ?? 'box',
             physicsSize:        obj.physicsSize     ? JSON.parse(JSON.stringify(obj.physicsSize))     : null,
             physicsPolygon:     obj.physicsPolygon  ? JSON.parse(JSON.stringify(obj.physicsPolygon))  : null,
-            physicsPolygons:    obj.physicsPolygons    ? JSON.parse(JSON.stringify(obj.physicsPolygons))    : null,
-            physicsFrameShapes: obj.physicsFrameShapes ? JSON.parse(JSON.stringify(obj.physicsFrameShapes)) : null,
+            physicsPolygons:    obj.physicsPolygons ? JSON.parse(JSON.stringify(obj.physicsPolygons)) : null,
             _polyUnit:          obj._polyUnit || null,
             _collisionShapeInit: !!obj._collisionShapeInit,
             // ── Visibility / alpha ──────────────────────────────
@@ -453,8 +451,7 @@ function _loadScene(index) {
                 obj.physicsShape             = s.physicsShape            ?? 'box';
                 obj.physicsSize              = s.physicsSize     ? JSON.parse(JSON.stringify(s.physicsSize))     : null;
                 obj.physicsPolygon           = s.physicsPolygon  ? JSON.parse(JSON.stringify(s.physicsPolygon))  : null;
-                obj.physicsPolygons          = s.physicsPolygons    ? JSON.parse(JSON.stringify(s.physicsPolygons))    : null;
-                obj.physicsFrameShapes       = s.physicsFrameShapes ? JSON.parse(JSON.stringify(s.physicsFrameShapes)) : null;
+                obj.physicsPolygons          = s.physicsPolygons ? JSON.parse(JSON.stringify(s.physicsPolygons)) : null;
                 obj._polyUnit                = s._polyUnit || null;
                 obj._collisionShapeInit      = !!s._collisionShapeInit;
                 obj.visible     = s.visible !== false;
