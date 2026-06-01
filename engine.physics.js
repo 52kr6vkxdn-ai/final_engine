@@ -305,11 +305,28 @@ export async function startPhysics() {
             obj._kinematicPrevY        = obj.y;
             _kinematicContacts.set(obj, new Set());
             const kBody = _makeBody(obj, obj.x, obj.y, 'kinematic');
+            const kEntry = { obj, body: kBody || null, type: 'kinematic' };
             if (kBody) {
-                _bodies.push({ obj, body: kBody, type: 'kinematic' });
+                _bodies.push(kEntry);
                 obj._physicsBody = kBody;
             } else {
-                _bodies.push({ obj, body: null, type: 'kinematic' });
+                _bodies.push(kEntry);
+            }
+
+            // Per-frame collision shape swap for kinematic animated sprites
+            const kas    = obj._runtimeSprite;
+            const kanim  = obj.animations?.[obj.activeAnimIndex ?? 0];
+            const kfrArr = kanim?.frames;
+            if (kas && kas.onFrameChange !== undefined && kfrArr?.length > 1) {
+                obj._runtimePhysicsFrameId = kfrArr[kas.currentFrame ?? 0]?.id || kfrArr[0].id;
+                kas.onFrameChange = (idx) => {
+                    const f = kfrArr[idx];
+                    if (!f || obj._runtimePhysicsFrameId === f.id) return;
+                    obj._runtimePhysicsFrameId = f.id;
+                    _rebuildKinematicBodyForFrame(kEntry);
+                };
+            } else if (kfrArr?.[0]?.id) {
+                obj._runtimePhysicsFrameId = kfrArr[0].id;
             }
             continue;
         }
@@ -508,6 +525,7 @@ export function stepPhysics(dt) {
         obj._kinematicVx = 0;
         obj._kinematicVy = 0;
         const pd = obj._pendingKinematicDelta || { x: 0, y: 0 };
+        obj._pendingKinematicDelta = { x: 0, y: 0 };
         obj._pendingKinematicDelta = { x: 0, y: 0 };
 
         // directDx/Y: any teleport/position-write done directly by scripts this frame
@@ -846,6 +864,29 @@ export function rebuildBodyForObject(obj) {
 }
 
 // ── Rebuild body when animation frame changes ─────────────────
+// Rebuild a kinematic body's collision shape for the current animation frame.
+function _rebuildKinematicBodyForFrame(entry) {
+    if (!_world) return;
+    const { obj, body: oldBody } = entry;
+
+    const shape   = obj.physicsShape ?? 'box';
+    const frameId = obj._runtimePhysicsFrameId;
+    const pfPoly  = frameId && obj.physicsPolygons ? obj.physicsPolygons[frameId] : null;
+    const hasPFPolygon = Array.isArray(pfPoly) && pfPoly.length >= 3;
+    if (!hasPFPolygon && shape !== 'polygon' && shape !== 'shared') return;
+
+    const pos = oldBody ? oldBody.getPosition() : P.Vec2(obj.x, obj.y);
+    const ang = oldBody ? oldBody.getAngle() : (obj.rotation || 0);
+
+    const newBody = _makeBody(obj, pos.x, pos.y, 'kinematic');
+    if (!newBody) return;
+    newBody.setTransform(pos, ang);
+
+    if (oldBody) _world.destroyBody(oldBody);
+    entry.body       = newBody;
+    obj._physicsBody = newBody;
+}
+
 function _rebuildBodyForFrame(entry) {
     if (!_world) return;
     const { obj, body: oldBody, type } = entry;

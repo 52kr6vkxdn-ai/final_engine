@@ -380,12 +380,12 @@ function _wire(modal, obj) {
 
         // Load plain images directly
         for (const img of images) {
-            await _loadImageFile(img, anim);
+            await _loadImageFile(img, anim, obj);
         }
 
         // Unzip and load images from each zip
         for (const zip of zips) {
-            await _loadZip(zip, anim);
+            await _loadZip(zip, anim, obj);
         }
 
         _dirty = true;
@@ -961,11 +961,16 @@ function _newFrame(name, dataURL) {
 }
 
 // ── Load a single image File → add to anim ───────────────────
-async function _loadImageFile(file, anim) {
+async function _loadImageFile(file, anim, obj) {
     return new Promise((resolve) => {
         const reader = new FileReader();
         reader.onload = (e) => {
-            anim.frames.push(_newFrame(file.name.replace(/\.[^.]+$/, ''), e.target.result));
+            const frame = _newFrame(file.name.replace(/\.[^.]+$/, ''), e.target.result);
+            anim.frames.push(frame);
+            // Auto-fit collision shape if object has physics enabled
+            if (obj && obj.physicsBody && obj.physicsBody !== 'none') {
+                _autoFitFromDataURL(obj, frame.dataURL, frame.id);
+            }
             resolve();
         };
         reader.readAsDataURL(file);
@@ -973,7 +978,7 @@ async function _loadImageFile(file, anim) {
 }
 
 // ── Load a ZIP file using JSZip (loaded from CDN if needed) ──
-async function _loadZip(file, anim) {
+async function _loadZip(file, anim, obj) {
     // Ensure JSZip is available
     await _ensureJSZip();
     if (typeof JSZip === 'undefined') {
@@ -1001,7 +1006,12 @@ async function _loadZip(file, anim) {
         const blob      = await entry.async('blob');
         const dataURL   = await _blobToDataURL(blob);
         const frameName = path.split('/').pop().replace(/\.[^.]+$/, '');
-        anim.frames.push(_newFrame(frameName, dataURL));
+        const frame     = _newFrame(frameName, dataURL);
+        anim.frames.push(frame);
+        // Auto-fit collision shape if object has physics enabled
+        if (obj && obj.physicsBody && obj.physicsBody !== 'none') {
+            _autoFitFromDataURL(obj, frame.dataURL, frame.id);
+        }
     }
 }
 
