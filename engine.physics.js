@@ -313,7 +313,10 @@ export async function startPhysics() {
                 _bodies.push(kEntry);
             }
 
-            // Per-frame collision shape swap for kinematic animated sprites
+            // Per-frame collision shape swap for kinematic animated sprites.
+            // We DEFER the actual rebuild to the start of the next physics step
+            // (via _kinematicPendingFrameRebuild flag) so the shape never changes
+            // mid-sweep, which would cause the AABB to jump and teleport the body.
             const kas    = obj._runtimeSprite;
             const kanim  = obj.animations?.[obj.activeAnimIndex ?? 0];
             const kfrArr = kanim?.frames;
@@ -323,7 +326,7 @@ export async function startPhysics() {
                     const f = kfrArr[idx];
                     if (!f || obj._runtimePhysicsFrameId === f.id) return;
                     obj._runtimePhysicsFrameId = f.id;
-                    _rebuildKinematicBodyForFrame(kEntry);
+                    obj._kinematicPendingFrameRebuild = true;   // handled at step start
                 };
             } else if (kfrArr?.[0]?.id) {
                 obj._runtimePhysicsFrameId = kfrArr[0].id;
@@ -493,10 +496,70 @@ export function stepPhysics(dt) {
     // Each kinematic object gets its own static grid (excludes itself so it
     // doesn't self-collide) that includes: tile cells, static sprite bodies,
     // other kinematic bodies, and non-sensor dynamic bodies.
-    for (const { obj, body, type } of _bodies) {
+    for (const entry of _bodies) {
+        const { obj, type } = entry;
         if (type !== 'kinematic') continue;
 
+        // ── Deferred per-frame shape rebuild ──────────────────        // onFrameChange sets this flag instead of rebuilding immediately,
+        // so the AABB never changes mid-sweep (which caused teleports).
+        // Here, at the top of the step, we rebuild the Planck body if needed,
+        // then push the object out of any newly-overlapped statics so the
+        // shape change is seamless even when colliding.
+        if (obj._kinematicPendingFrameRebuild) {
+            obj._kinematicPendingFrameRebuild = false;
+
+            // Capture position before rebuild
+            const preX = obj.x;
+            const preY = obj.y;
+
+            // Rebuild the Planck body at the current position
+            _rebuildKinematicBodyForFrame(entry);
+
+            // Depenetrate: if the new (potentially larger) AABB overlaps a static,
+            // nudge the object out using the minimum-translation-vector approach.
+            const newAabb = _getKinematicAABB(obj);
+            const statics = _buildStaticGrid(obj);
+            let nudgeX = 0, nudgeY = 0;
+
+            for (const s of statics) {
+                const ox2 = (newAabb.x + newAabb.w / 2) - (s.x + s.w / 2);
+                const oy2 = (newAabb.y + newAabb.h / 2) - (s.y + s.h / 2);
+                const overlapX = (newAabb.w / 2 + s.w / 2) - Math.abs(ox2);
+                const overlapY = (newAabb.h / 2 + s.h / 2) - Math.abs(oy2);
+                if (overlapX <= 0 || overlapY <= 0) continue;
+
+                // Push along the smallest overlap axis
+                if (overlapX < overlapY) {
+                    nudgeX += ox2 > 0 ? overlapX : -overlapX;
+                } else {
+                    nudgeY += oy2 > 0 ? overlapY : -overlapY;
+                }
+            }
+
+            obj.x = preX + nudgeX;
+            obj.y = preY + nudgeY;
+
+            // Sync _kinematicPrevX/Y to the depenetrated position so the sweep
+            // doesn't see a false directDelta and move the body again
+            obj._kinematicPrevX = obj.x;
+            obj._kinematicPrevY = obj.y;
+
+            // Sync Planck body to new position
+            if (entry.body) {
+                const off  = entry.body._zenOffset || { x: 0, y: 0 };
+                const cosR = Math.cos(obj.rotation || 0);
+                const sinR = Math.sin(obj.rotation || 0);
+                entry.body.setTransform(
+                    P.Vec2(obj.x + off.x * cosR - off.y * sinR,
+                           obj.y + off.x * sinR + off.y * cosR),
+                    obj.rotation || 0
+                );
+            }
+        }
+
         // Immovable kinematic: just keep Planck body in sync and stay put
+        // (re-read body from entry in case it was replaced by frame rebuild above)
+        const body = entry.body;
         if (obj.physicsImmovable) {
             obj._kinematicVx           = 0;
             obj._kinematicVy           = 0;
@@ -779,6 +842,7 @@ export function stopPhysics() {
             delete obj._kinematicPrevX;
             delete obj._kinematicPrevY;
             delete obj._pendingKinematicDelta;
+            delete obj._kinematicPendingFrameRebuild;
             delete obj._isOnGround;
             delete obj._isOnCeiling;
             delete obj._isOnWall;
@@ -819,6 +883,7 @@ export function removePhysicsBody(obj) {
     delete obj._kinematicPrevX;
     delete obj._kinematicPrevY;
     delete obj._pendingKinematicDelta;
+            delete obj._kinematicPendingFrameRebuild;
     delete obj._isOnGround;
     delete obj._isOnCeiling;
     delete obj._isOnWall;
