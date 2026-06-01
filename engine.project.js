@@ -86,7 +86,7 @@ export function newProject() {
     // Clear audio sources
     import('./engine.audio.js').then(m => m.clearAudioSources());
     // Reset scene settings
-    state.sceneSettings = { bgColor: 0x282828, gameWidth: 1280, gameHeight: 720, cameraPreset: 'landscape-desktop', scalingMode: 'fit', gravityX: 0, gravityY: 1, ambientDarkness: 0.94 };
+    state.sceneSettings = { bgColor: 0x282828, gameWidth: 1280, gameHeight: 720, cameraPreset: 'landscape-desktop', scalingMode: 'fit', gravityX: 0, gravityY: 1 };
     if (state.app?.renderer) state.app.renderer.background.color = state.sceneSettings.bgColor;
 
     import('./engine.renderer.js').then(m => m.drawGrid());
@@ -131,7 +131,7 @@ function _applyProject(project) {
         state.sceneSettings = Object.assign({
             bgColor: 0x282828, gameWidth: 1280, gameHeight: 720,
             cameraPreset: 'landscape-desktop', scalingMode: 'fit',
-            gravityX: 0, gravityY: 1, ambientDarkness: 0.94,
+            gravityX: 0, gravityY: 1,
         }, project.sceneSettings);
         if (state.app?.renderer) state.app.renderer.background.color = state.sceneSettings.bgColor;
     }

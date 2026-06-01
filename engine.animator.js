@@ -380,12 +380,12 @@ function _wire(modal, obj) {
 
         // Load plain images directly
         for (const img of images) {
-            await _loadImageFile(img, anim, obj);
+            await _loadImageFile(img, anim);
         }
 
         // Unzip and load images from each zip
         for (const zip of zips) {
-            await _loadZip(zip, anim, obj);
+            await _loadZip(zip, anim);
         }
 
         _dirty = true;
@@ -961,16 +961,11 @@ function _newFrame(name, dataURL) {
 }
 
 // ── Load a single image File → add to anim ───────────────────
-async function _loadImageFile(file, anim, obj) {
+async function _loadImageFile(file, anim) {
     return new Promise((resolve) => {
         const reader = new FileReader();
         reader.onload = (e) => {
-            const frame = _newFrame(file.name.replace(/\.[^.]+$/, ''), e.target.result);
-            anim.frames.push(frame);
-            // Auto-fit collision shape if object has physics enabled
-            if (obj && obj.physicsBody && obj.physicsBody !== 'none') {
-                _autoFitFromDataURL(obj, frame.dataURL, frame.id);
-            }
+            anim.frames.push(_newFrame(file.name.replace(/\.[^.]+$/, ''), e.target.result));
             resolve();
         };
         reader.readAsDataURL(file);
@@ -978,7 +973,7 @@ async function _loadImageFile(file, anim, obj) {
 }
 
 // ── Load a ZIP file using JSZip (loaded from CDN if needed) ──
-async function _loadZip(file, anim, obj) {
+async function _loadZip(file, anim) {
     // Ensure JSZip is available
     await _ensureJSZip();
     if (typeof JSZip === 'undefined') {
@@ -1006,12 +1001,7 @@ async function _loadZip(file, anim, obj) {
         const blob      = await entry.async('blob');
         const dataURL   = await _blobToDataURL(blob);
         const frameName = path.split('/').pop().replace(/\.[^.]+$/, '');
-        const frame     = _newFrame(frameName, dataURL);
-        anim.frames.push(frame);
-        // Auto-fit collision shape if object has physics enabled
-        if (obj && obj.physicsBody && obj.physicsBody !== 'none') {
-            _autoFitFromDataURL(obj, frame.dataURL, frame.id);
-        }
+        anim.frames.push(_newFrame(frameName, dataURL));
     }
 }
 

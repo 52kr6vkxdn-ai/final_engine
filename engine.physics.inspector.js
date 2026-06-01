@@ -180,10 +180,8 @@ export function buildPhysicsInspectorHTML(obj) {
           <input id="phys-gravity-scale" type="number" value="${grav}" min="0" max="20" step="0.1" style="width:60px;${_inp()}">
           <span style="color:#555;font-size:9px;">0=float, 1=normal</span>
         </div>
-        <div class="prop-row">
-          <span class="prop-label">Scale X</span>
-          <input id="phys-gravity-x-scale" type="number" value="${obj.physicsGravityXScale ?? 0}" min="-20" max="20" step="0.1" style="width:60px;${_inp()}">
-          <span style="color:#555;font-size:9px;">sideways gravity</span>
+        <div style="background:#0a0a18;border:1px solid #1a1a30;border-radius:3px;padding:4px 8px;font-size:9px;color:#4a4a6a;">
+          Or in script: <code style="color:#7cb9f0;">velocityY -= 9.8 * dt</code>
         </div>
     ` : '';
 

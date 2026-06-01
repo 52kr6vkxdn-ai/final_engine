@@ -387,34 +387,11 @@ export function refreshSceneSettingsPanel() {
   </div>
   <div class="component-body" style="gap:8px;">
     <div style="background:#0f0a02;border:1px solid #3a2a0a;border-radius:4px;padding:8px 10px;font-size:10px;color:#8a7a4a;line-height:1.7;">
-      <b style="color:#d4a850;">Dynamic bodies</b> — gravity set in the physics inspector per-object.<br>
-      <b style="color:#d4a850;">Kinematic bodies</b> — no gravity; you control all movement in script.<br>
-      <b style="color:#d4a850;">Static bodies</b> — never move.
-    </div>
-  </div>
-</div>
-<div class="component-block" style="border-left:3px solid #4a3a7a; margin:0;">
-  <div class="component-header" style="background:#120f20;">
-    <svg viewBox="0 0 24 24" class="comp-icon" style="color:#9a7acd;">
-      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-    </svg>
-    <span style="color:#b89ad8;font-weight:600;">Lighting</span>
-  </div>
-  <div class="component-body" style="gap:8px;">
-    <div style="font-size:10px;color:#6a6a8a;margin-bottom:2px;">Controls how dark the scene gets when lights are in use.</div>
-    <div class="prop-row">
-      <span class="prop-label" style="min-width:80px;">Darkness</span>
-      <input type="range" id="scene-ambient-darkness" min="0" max="100" step="1"
-        value="${Math.round((1 - ((ss.ambientDarkness ?? 0.94))) * 100)}"
-        style="flex:1;min-width:0;accent-color:#9a7acd;cursor:pointer;">
-      <span id="scene-ambient-darkness-val" style="color:#b89ad8;font-size:10px;min-width:28px;text-align:right;">${Math.round((ss.ambientDarkness ?? 0.94) * 100)}%</span>
-    </div>
-    <div style="display:flex;justify-content:space-between;font-size:9px;color:#4a4a6a;padding:0 2px;">
-      <span>0% — no darkness</span>
-      <span>100% — pitch black</span>
-    </div>
-    <div style="background:#0a0818;border:1px solid #2a1a4a;border-radius:3px;padding:4px 8px;font-size:9px;color:#4a4a6a;">
-      Only affects play mode when at least one light exists. Editor view stays bright.
+      <b style="color:#d4a850;">Gravity is per-object, set in scripts.</b><br>
+      • <b>Dynamic</b> bodies fall with physics gravity (adjust with <code style="color:#facc15;">setGravityScale(n)</code>)<br>
+      • <b>Kinematic</b> bodies have <b>no gravity</b> — you control all movement<br>
+      • <b>Static</b> bodies never move<br>
+      <span style="color:#5a4a2a;font-size:9px;margin-top:4px;display:block;">Tip: use <code style="color:#facc15;">this.velocityY -= 9.8 * dt</code> for manual gravity</span>
     </div>
   </div>
 </div>`;
@@ -464,14 +441,6 @@ export function refreshSceneSettingsPanel() {
     scalingEl?.addEventListener('change', () => {
         state.sceneSettings.scalingMode = scalingEl.value;
         if (scalingInfo) scalingInfo.textContent = _scalingModeInfo(scalingEl.value);
-    });
-
-    const darknessEl  = panel.querySelector('#scene-ambient-darkness');
-    const darknessVal = panel.querySelector('#scene-ambient-darkness-val');
-    darknessEl?.addEventListener('input', () => {
-        const pct = parseInt(darknessEl.value) / 100;   // 0=no dark, 1=pitch black
-        state.sceneSettings.ambientDarkness = pct;
-        if (darknessVal) darknessVal.textContent = Math.round(pct * 100) + '%';
     });
 }
 

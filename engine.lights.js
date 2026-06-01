@@ -535,16 +535,8 @@ function _renderLightingFrame() {
     scratch.removeChildren();
 
     // ── Pass 1: darkness mask (MULTIPLY) ──────────────────
-    // ambientDarkness: 0 = fully lit (no darkness), 1 = pitch black.
-    // We convert it to a grayscale tint: 0xFF = no darkening, 0x00 = black.
-    let ambient;
-    if (state.isPlaying) {
-        const darkness = state.sceneSettings?.ambientDarkness ?? 0.94;
-        const ch = Math.round((1 - darkness) * 255);
-        ambient = (ch << 16) | (ch << 8) | ch;
-    } else {
-        ambient = state.ambientEdit ?? AMBIENT_EDIT;
-    }
+    const ambient = state.isPlaying ? (state.ambientPlay ?? AMBIENT_PLAY)
+                                    : (state.ambientEdit ?? AMBIENT_EDIT);
     const base = new PIXI.Sprite(PIXI.Texture.WHITE);
     base.tint = ambient;
     base.width  = app.screen.width;

@@ -399,45 +399,6 @@ function _wireModal(modal, obj) {
             anim.frames.push(...frames);
         }
 
-        // Auto-fit collision shape for each new frame if object has physics
-        if (obj.physicsBody && obj.physicsBody !== 'none') {
-            for (const frame of frames) {
-                const img2 = new Image();
-                img2.onload = () => {
-                    const c2 = document.createElement('canvas');
-                    c2.width = img2.naturalWidth || tileW;
-                    c2.height = img2.naturalHeight || tileH;
-                    const cx2 = c2.getContext('2d');
-                    cx2.drawImage(img2, 0, 0);
-                    const w2 = c2.width, h2 = c2.height;
-                    let minX=w2,maxX=0,minY=h2,maxY=0,found=false;
-                    try {
-                        const d2 = cx2.getImageData(0,0,w2,h2).data;
-                        for (let y=0;y<h2;y++) for (let x=0;x<w2;x++) {
-                            if (d2[(y*w2+x)*4+3]>20) {
-                                if(x<minX)minX=x;if(x>maxX)maxX=x;
-                                if(y<minY)minY=y;if(y>maxY)maxY=y;
-                                found=true;
-                            }
-                        }
-                    } catch(_) {}
-                    const cxf=w2/2, cyf=h2/2;
-                    const src = obj.spriteGraphic||obj._runtimeSprite;
-                    const ssx = Math.abs(src?.scale?.x??1)||1;
-                    const ssy = Math.abs(src?.scale?.y??1)||1;
-                    const hull = found ? [
-                        {x:(minX-cxf)*ssx,y:(minY-cyf)*ssy},{x:(maxX-cxf)*ssx,y:(minY-cyf)*ssy},
-                        {x:(maxX-cxf)*ssx,y:(maxY-cyf)*ssy},{x:(minX-cxf)*ssx,y:(maxY-cyf)*ssy},
-                    ] : [{x:-cxf*ssx,y:-cyf*ssy},{x:cxf*ssx,y:-cyf*ssy},{x:cxf*ssx,y:cyf*ssy},{x:-cxf*ssx,y:cyf*ssy}];
-                    if (!obj.physicsPolygons) obj.physicsPolygons = {};
-                    obj.physicsPolygons[frame.id] = hull;
-                    obj.physicsShape = 'polygon';
-                    obj._polyUnit = 'container';
-                };
-                img2.src = frame.dataURL;
-            }
-        }
-
         // Also update idle frame if this is the idle anim and obj is image
         if (anim.isIdle && frames.length > 0) {
             // Keep first frame as idle reference
