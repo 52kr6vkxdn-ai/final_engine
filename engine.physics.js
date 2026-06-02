@@ -327,12 +327,25 @@ export async function startPhysics() {
         const frArr = anim?.frames;
         if (type !== 'static' && as && as.onFrameChange !== undefined && frArr?.length > 1) {
             obj._runtimePhysicsFrameId = frArr[as.currentFrame ?? 0]?.id || frArr[0].id;
-            as.onFrameChange = (idx) => {
-                const f = frArr[idx];
-                if (!f || obj._runtimePhysicsFrameId === f.id) return;
-                obj._runtimePhysicsFrameId = f.id;
-                _rebuildBodyForFrame(entry);
-            };
+            if (type === 'kinematic') {
+                // Kinematic uses AABB sweep — no Planck body rebuild needed.
+                // Just track the new frame id; _getKinematicAABB reads it dynamically.
+                // We defer the update to the start of the next physics tick so that
+                // a frame switch mid-sweep never causes a position jump.
+                as.onFrameChange = (idx) => {
+                    const f = frArr[idx];
+                    if (!f || obj._runtimePhysicsFrameId === f.id) return;
+                    // Queue the frame id change; applied safely at top of tick
+                    obj._pendingPhysicsFrameId = f.id;
+                };
+            } else {
+                as.onFrameChange = (idx) => {
+                    const f = frArr[idx];
+                    if (!f || obj._runtimePhysicsFrameId === f.id) return;
+                    obj._runtimePhysicsFrameId = f.id;
+                    _rebuildBodyForFrame(entry);
+                };
+            }
         } else if (type !== 'static') {
             const f0 = frArr?.[0];
             if (f0?.id) obj._runtimePhysicsFrameId = f0.id;
@@ -478,6 +491,13 @@ export function stepPhysics(dt) {
     // other kinematic bodies, and non-sensor dynamic bodies.
     for (const { obj, body, type } of _bodies) {
         if (type !== 'kinematic') continue;
+
+        // Apply deferred frame-id change at tick boundary so a mid-sweep
+        // AABB size change never causes a position teleport.
+        if (obj._pendingPhysicsFrameId !== undefined) {
+            obj._runtimePhysicsFrameId = obj._pendingPhysicsFrameId;
+            delete obj._pendingPhysicsFrameId;
+        }
 
         // Immovable kinematic: just keep Planck body in sync and stay put
         if (obj.physicsImmovable) {

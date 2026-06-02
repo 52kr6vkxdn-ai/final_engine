@@ -390,7 +390,7 @@ function _ensureDebugGfx() {
 }
 
 function _tickDebugLines(dt) {
-    if (_debugLines.length === 0 && !_debugGfx) return;
+    if (_debugLines.length === 0 && !_debugGfx && !window._zeGizmos?.collision) return;
     for (let i = _debugLines.length - 1; i >= 0; i--) {
         _debugLines[i].remaining -= dt;
         if (_debugLines[i].remaining <= 0) _debugLines.splice(i, 1);
@@ -408,6 +408,63 @@ function _tickDebugLines(dt) {
             const r  = l.circle * 100;
             gfx.lineStyle(l.width ?? 2, c, l.alpha ?? 0.85);
             gfx.drawCircle(cx, cy, r);
+        }
+    }
+
+    // ── Gizmos.collision — draw per-object collision shapes in play mode ──
+    if (window._zeGizmos?.collision && state.gameObjects) {
+        const colHex = parseInt((window._zeGizmos.collisionColor ?? '#00ffcc').replace('#', ''), 16);
+        for (const obj of state.gameObjects) {
+            if (!obj || obj.physicsBody === 'none' || !obj.physicsBody) continue;
+            const sx = Math.abs(obj.scale?.x ?? 1) || 1;
+            const sy = Math.abs(obj.scale?.y ?? 1) || 1;
+            const px = obj.x ?? 0;   // PIXI pixel world coords
+            const py = obj.y ?? 0;
+
+            // Determine active polygon for this frame
+            const polyMap = obj.physicsPolygons || {};
+            const frameId = obj._runtimePhysicsFrameId;
+            let poly = null;
+            if (frameId && Array.isArray(polyMap[frameId]) && polyMap[frameId].length >= 3) {
+                poly = polyMap[frameId];
+            } else if (Array.isArray(polyMap.shared) && polyMap.shared.length >= 3) {
+                poly = polyMap.shared;
+            } else if (Array.isArray(obj.physicsPolygon) && obj.physicsPolygon.length >= 3) {
+                poly = obj.physicsPolygon;
+            }
+
+            gfx.lineStyle(1.5, colHex, 0.9);
+
+            if (poly) {
+                // Polygon verts are container-local pixels, rotate + scale into world
+                const rot  = obj.rotation || 0;
+                const cosR = Math.cos(rot);
+                const sinR = Math.sin(rot);
+                const pts = poly.map(p => ({
+                    x: px + (p.x * sx) * cosR - (p.y * sy) * sinR,
+                    y: py + (p.x * sx) * sinR + (p.y * sy) * cosR,
+                }));
+                gfx.moveTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
+                for (const pt of pts) gfx.lineTo(pt.x, pt.y);
+            } else {
+                // Box / circle / capsule fallback — collisionGeom returns pixel values
+                import('./engine.collision-overlay.js').then(m => {
+                    const g     = m.collisionGeom(obj);
+                    const ox    = (g.ox || 0) * sx;
+                    const oy    = (g.oy || 0) * sy;
+                    const w     = (g.w || 32) * sx;
+                    const h     = (g.h || 32) * sy;
+                    const shape = obj.physicsShape ?? 'box';
+                    const cx    = px + ox;
+                    const cy    = py + oy;
+                    gfx.lineStyle(1.5, colHex, 0.9);
+                    if (shape === 'circle') {
+                        gfx.drawCircle(cx, cy, (g.r || Math.min(w, h) / 2) * Math.max(sx, sy));
+                    } else {
+                        gfx.drawRect(cx - w / 2, cy - h / 2, w, h);
+                    }
+                }).catch(() => {});
+            }
         }
     }
 }
@@ -2968,9 +3025,10 @@ function _buildSandbox(obj, instRef) {
 
         // ── VISUAL GIZMOS ─────────────────────────────────────────
         /**
-         * Debug visualization toggles. Enable raycast laser draw:
-         *   Gizmos.raycasts = true
-         *   Gizmos.raycastColor = '#ff4444'
+         * Debug visualization toggles.
+         *   Gizmos.raycasts = true          — show raycast lasers
+         *   Gizmos.collision = true         — show collision shapes in play mode
+         *   Gizmos.collisionColor = '#0f0'  — color for collision outlines
          */
         get Gizmos() {
             return {
@@ -2982,6 +3040,11 @@ function _buildSandbox(obj, instRef) {
                 set raycastWidth(v)    { (window._zeGizmos = window._zeGizmos ?? {}).raycastWidth = v; },
                 get raycastDuration()  { return window._zeGizmos?.raycastDuration ?? 0.12; },
                 set raycastDuration(v) { (window._zeGizmos = window._zeGizmos ?? {}).raycastDuration = v; },
+                // ── Collision shape debug overlay ──────────────────
+                get collision()        { return window._zeGizmos?.collision ?? false; },
+                set collision(v)       { (window._zeGizmos = window._zeGizmos ?? {}).collision = !!v; },
+                get collisionColor()   { return window._zeGizmos?.collisionColor ?? '#00ffcc'; },
+                set collisionColor(v)  { (window._zeGizmos = window._zeGizmos ?? {}).collisionColor = v; },
             };
         },
     };
@@ -5373,6 +5436,8 @@ function getCloneId()    { return obj._cloneId ?? 0; }
  *   Gizmos.raycastColor = '#ff4444' — change laser color
  *   Gizmos.raycastWidth = 3         — thicker laser
  *   Gizmos.raycastDuration = 0.2    — how long each laser stays visible (seconds)
+ *   Gizmos.collision = true         — show collision shapes for all physics objects in play mode
+ *   Gizmos.collisionColor = '#0ff'  — color for collision outlines (default: '#00ffcc')
  */
 var Gizmos = api.Gizmos;
 
@@ -6460,6 +6525,7 @@ export function stopScripts() {
     clearGlobalVars();  // reset between play sessions
     _clearTimers();
     _clearDebugGfx();
+    if (window._zeGizmos) window._zeGizmos.collision = false; // reset collision gizmo between sessions
     _physicsModule = null; // clear cached ref so next play session re-resolves cleanly
     _destroyAllJoysticks();
     _activeDragObj  = null;

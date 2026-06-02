@@ -258,16 +258,9 @@ export function buildPhysicsInspectorHTML(obj) {
             ${typeDescs[type]}
         </div>` : ''}
         <div id="phys-extra" style="display:${hasPhysics?'flex':'none'};flex-direction:column;gap:5px;">
-          <div class="prop-row">
-            <span class="prop-label">Shape</span>
-            <select id="phys-shape" style="${_sel()}">
-              ${SOPT('box','▭ Box')}
-              ${SOPT('circle','◯ Circle')}
-              ${SOPT('capsule','⬩ Capsule')}
-              ${SOPT('polygon','⬡ Polygon')}
-            </select>
+          <div style="background:#0a0a18;border:1px solid #7c3aed33;border-radius:3px;padding:5px 8px;font-size:9px;color:#a78bfa99;line-height:1.5;">
+            🎞 Collision shapes are set per animation frame in the <strong style="color:#a78bfa;">Animation Panel</strong>. Each frame gets its own auto-fitted shape.
           </div>
-          ${sizeEditorsHTML}
           ${materialHTML}
           ${massHTML}
           ${gravityHTML}
@@ -395,102 +388,18 @@ export function bindPhysicsInspector(obj) {
 
     typeEl.addEventListener('change', () => {
         obj.physicsBody = typeEl.value;
-        if (typeEl.value !== 'none' && !obj._collisionShapeInit) {
-            obj.physicsShape = obj.physicsShape || 'box';
-            obj._collisionShapeInit = true;
+        // Always use polygon shape so per-frame collision works
+        if (typeEl.value !== 'none') {
+            obj.physicsShape = 'polygon';
+            obj._polyUnit    = 'container';
         }
         _pushUndo();
         import('./engine.ui.js').then(m => m.syncPixiToInspector());
         import('./engine.collision-overlay.js').then(m => m.refreshCollisionOverlay());
     });
 
-    shapeEl?.addEventListener('change', () => {
-        obj.physicsShape = shapeEl.value;
-        const boxRow     = document.getElementById('phys-box-row');
-        const circleRow  = document.getElementById('phys-circle-row');
-        const capsuleRow = document.getElementById('phys-capsule-row');
-        if (polyRow)     polyRow.style.display    = shapeEl.value === 'polygon' ? 'flex' : 'none';
-        if (boxRow)      boxRow.style.display     = shapeEl.value === 'box'     ? 'flex' : 'none';
-        if (circleRow)   circleRow.style.display  = shapeEl.value === 'circle'  ? 'flex' : 'none';
-        if (capsuleRow)  capsuleRow.style.display = shapeEl.value === 'capsule' ? 'flex' : 'none';
-        _pushUndo();
-        import('./engine.collision-overlay.js').then(m => {
-            if (!state.showCollision) m.setCollisionVisible(true);
-            m.refreshCollisionOverlay();
-        });
-    });
-
-    const capW = document.getElementById('phys-cap-w');
-    const capH = document.getElementById('phys-cap-h');
-    const onCapsuleSizeChange = () => {
-        const w = Math.max(1, parseFloat(capW?.value) || 1);
-        const h = Math.max(1, parseFloat(capH?.value) || 1);
-        obj.physicsSize = { ...(obj.physicsSize || {}), capW: w, capH: h };
-        import('./engine.collision-overlay.js').then(m => { if (!state.showCollision) m.setCollisionVisible(true); m.refreshCollisionOverlay(); });
-    };
-    capW?.addEventListener('input',  onCapsuleSizeChange);
-    capH?.addEventListener('input',  onCapsuleSizeChange);
-    capW?.addEventListener('change', () => _pushUndo());
-    capH?.addEventListener('change', () => _pushUndo());
-    document.getElementById('phys-size-reset-capsule')?.addEventListener('click', () => {
-        if (obj.physicsSize) { delete obj.physicsSize.capW; delete obj.physicsSize.capH; }
-        _pushUndo();
-        import('./engine.ui.js').then(m => m.syncPixiToInspector?.());
-        import('./engine.collision-overlay.js').then(m => m.refreshCollisionOverlay());
-    });
-
-    const boxW = document.getElementById('phys-box-w');
-    const boxH = document.getElementById('phys-box-h');
-    const onBoxSizeChange = () => {
-        const w = Math.max(1, parseFloat(boxW?.value) || 1);
-        const h = Math.max(1, parseFloat(boxH?.value) || 1);
-        obj.physicsSize = { ...(obj.physicsSize || {}), w, h };
-        import('./engine.collision-overlay.js').then(m => { if (!state.showCollision) m.setCollisionVisible(true); m.refreshCollisionOverlay(); });
-    };
-    boxW?.addEventListener('input',  onBoxSizeChange);
-    boxH?.addEventListener('input',  onBoxSizeChange);
-    boxW?.addEventListener('change', () => { onBoxSizeChange(); _pushUndo(); });
-    boxH?.addEventListener('change', () => { onBoxSizeChange(); _pushUndo(); });
-
-    const circleR = document.getElementById('phys-circle-r');
-    const onCircleSizeChange = () => {
-        const r = Math.max(1, parseFloat(circleR?.value) || 1);
-        obj.physicsSize = { ...(obj.physicsSize || {}), r };
-        import('./engine.collision-overlay.js').then(m => { if (!state.showCollision) m.setCollisionVisible(true); m.refreshCollisionOverlay(); });
-    };
-    circleR?.addEventListener('input',  onCircleSizeChange);
-    circleR?.addEventListener('change', () => { onCircleSizeChange(); _pushUndo(); });
-
-    document.getElementById('phys-size-reset-box')?.addEventListener('click', () => {
-        if (obj.physicsSize) { delete obj.physicsSize.w; delete obj.physicsSize.h; }
-        _pushUndo(); import('./engine.ui.js').then(m => m.syncPixiToInspector?.()); import('./engine.collision-overlay.js').then(m => m.refreshCollisionOverlay());
-    });
-    document.getElementById('phys-size-reset-circle')?.addEventListener('click', () => {
-        if (obj.physicsSize) { delete obj.physicsSize.r; }
-        _pushUndo(); import('./engine.ui.js').then(m => m.syncPixiToInspector?.()); import('./engine.collision-overlay.js').then(m => m.refreshCollisionOverlay());
-    });
-
-    editBtn?.addEventListener('click', () => {
-        const firstFrameId = obj.animations?.[obj.activeAnimIndex ?? 0]?.frames?.[0]?.id;
-        openPolygonEditor(obj, firstFrameId || 'shared');
-    });
-
-    document.getElementById('phys-autofit')?.addEventListener('click', () => {
-        _autoFitCollisionShape(obj, () => {
-            _pushUndo();
-            import('./engine.ui.js').then(m => m.syncPixiToInspector?.());
-            import('./engine.collision-overlay.js').then(m => { if (!state.showCollision) m.setCollisionVisible(true); m.refreshCollisionOverlay(); });
-            const toast = document.createElement('div');
-            toast.style.cssText = 'position:fixed;bottom:40px;left:50%;transform:translateX(-50%);background:#0a2a1a;border:1px solid #4ade80;color:#4ade80;border-radius:4px;padding:6px 18px;font-size:11px;z-index:99999;pointer-events:none;';
-            toast.textContent = '🎯 Collision shape auto-fitted';
-            document.body.appendChild(toast);
-            setTimeout(() => toast.remove(), 2000);
-        });
-    });
-
-    document.querySelectorAll('.pe-frame-btn').forEach(btn => {
-        btn.addEventListener('click', () => openPolygonEditor(obj, btn.dataset.frame));
-    });
+    // Shape, size editors and polygon editor are removed from the inspector.
+    // Collision shapes are set per-frame in the Animation Panel.
 
     fricEl?.addEventListener('change', () => { obj.physicsFriction = Math.max(0, Math.min(1, parseFloat(fricEl.value) || 0)); _pushUndo(); });
     bnceEl?.addEventListener('change', () => { obj.physicsRestitution = Math.max(0, Math.min(1, parseFloat(bnceEl.value) || 0)); _pushUndo(); });

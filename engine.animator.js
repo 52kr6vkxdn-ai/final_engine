@@ -374,6 +374,8 @@ function _wire(modal, obj) {
         const anim = _currentAnim(obj);
         if (!anim) return;
 
+        const framesBefore = anim.frames.length;
+
         // Separate ZIPs from images
         const zips   = files.filter(f => f.name.endsWith('.zip'));
         const images = files.filter(f => f.type.startsWith('image/'));
@@ -386,6 +388,17 @@ function _wire(modal, obj) {
         // Unzip and load images from each zip
         for (const zip of zips) {
             await _loadZip(zip, anim);
+        }
+
+        // Auto-fit collision shape for every newly imported frame
+        const newFrames = anim.frames.slice(framesBefore);
+        if (newFrames.length > 0) {
+            if (!obj.physicsPolygons) obj.physicsPolygons = {};
+            obj.physicsShape = 'polygon';
+            obj._polyUnit = 'container';
+            for (const frame of newFrames) {
+                _autoFitFromDataURL(obj, frame.dataURL, frame.id, null);
+            }
         }
 
         _dirty = true;
