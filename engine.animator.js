@@ -714,22 +714,73 @@ function _renderFrameStrip(modal, obj) {
 
     const currentFrame = modal._getCurrentFrame?.() || 0;
 
+    // ── Canvas-size mismatch warning ──────────────────────────
+    // Stamp any frames that don't have sizes yet (e.g. loaded from saved project)
+    let stampPending = 0;
+    for (const f of anim.frames) {
+        if (f.w === null || f.h === null) {
+            stampPending++;
+            _stampFrameSize(f, () => {
+                stampPending--;
+                if (stampPending === 0) _renderFrameStrip(modal, obj); // re-render once all stamped
+            });
+        }
+    }
+
+    // Find all unique sizes among stamped frames
+    const stampedFrames = anim.frames.filter(f => f.w !== null && f.h !== null);
+    const sizeSet = new Set(stampedFrames.map(f => `${f.w}×${f.h}`));
+    const hasMismatch = sizeSet.size > 1;
+
+    // Warning banner
+    let warningEl = modal.querySelector('#anim-size-warning');
+    if (!warningEl) {
+        warningEl = document.createElement('div');
+        warningEl.id = 'anim-size-warning';
+        // Insert above the strip's parent container
+        strip.parentElement.insertBefore(warningEl, strip);
+    }
+    if (hasMismatch) {
+        const sizes = [...sizeSet].join(', ');
+        warningEl.style.cssText = `
+            background:#2a1000; border:1px solid #f97316; border-radius:4px;
+            padding:6px 10px; font-size:10px; color:#fb923c; line-height:1.5;
+            margin-bottom:4px; display:block;
+        `;
+        warningEl.innerHTML = `⚠️ <strong>Frame size mismatch:</strong> ${sizes}<br>
+            <span style="color:#f97316aa;">Frames with different canvas sizes can cause physics jitter when switching animations.
+            Export all frames at the same canvas size (with transparent padding if needed).</span>`;
+    } else {
+        warningEl.style.display = 'none';
+    }
+
     anim.frames.forEach((frame, i) => {
         const cell = document.createElement('div');
         cell.draggable = true;
         cell.dataset.frameIdx = i;
+
+        // Highlight mismatched frames (any that differ from frame 0's size)
+        const refFrame = stampedFrames[0];
+        const isMismatch = hasMismatch && frame.w !== null &&
+            (frame.w !== refFrame?.w || frame.h !== refFrame?.h);
+
         cell.style.cssText = `
-            flex-shrink: 0; width: 76px; height: 84px;
+            flex-shrink: 0; width: 76px; height: 96px;
             background: ${i === currentFrame ? '#2D4A6A' : '#1e1e1e'};
-            border: 2px solid ${i === currentFrame ? '#3A72A5' : '#333'};
+            border: 2px solid ${isMismatch ? '#f97316' : (i === currentFrame ? '#3A72A5' : '#333')};
             border-radius: 4px; display:flex; flex-direction:column;
             align-items:center; cursor:pointer; position:relative;
             transition: border-color 0.1s;
         `;
 
+        const sizeLabel = frame.w !== null
+            ? `<span style="font-size:8px; color:${isMismatch ? '#f97316' : '#555'}; line-height:1;">${frame.w}×${frame.h}</span>`
+            : '';
+
         cell.innerHTML = `
             <img src="${frame.dataURL}" style="width:64px; height:64px; object-fit:contain; margin-top:4px; image-rendering:pixelated;">
             <span style="font-size:9px; color:#888; margin-top:2px; text-overflow:ellipsis; overflow:hidden; white-space:nowrap; width:70px; text-align:center;">${i + 1}. ${frame.name}</span>
+            ${sizeLabel}
             <button class="frame-del-btn" data-idx="${i}" title="Delete frame"
                     style="position:absolute; top:2px; right:2px; background:#3a1a1a; border:1px solid #6a2a2a;
                            color:#f88; border-radius:2px; width:16px; height:16px; cursor:pointer;
@@ -772,7 +823,7 @@ function _renderFrameStrip(modal, obj) {
             cell.style.borderColor = '#FACC15';
         });
         cell.addEventListener('dragleave', () => {
-            cell.style.borderColor = i === currentFrame ? '#3A72A5' : '#333';
+            cell.style.borderColor = isMismatch ? '#f97316' : (i === currentFrame ? '#3A72A5' : '#333');
         });
         cell.addEventListener('drop', (e) => {
             e.preventDefault();
@@ -970,7 +1021,22 @@ function _newFrame(name, dataURL) {
         id:      'frame_' + Date.now() + '_' + Math.random().toString(36).slice(2),
         name:    name,
         dataURL: dataURL,
+        w:       null,   // filled in by _stampFrameSize after image loads
+        h:       null,
     };
+}
+
+// Reads the natural pixel size of a frame's dataURL and stamps w/h onto it.
+// Safe to call multiple times — skips if already stamped.
+function _stampFrameSize(frame, onDone) {
+    if (frame.w !== null && frame.h !== null) { onDone?.(); return; }
+    const img = new Image();
+    img.onload = () => {
+        frame.w = img.naturalWidth;
+        frame.h = img.naturalHeight;
+        onDone?.();
+    };
+    img.src = frame.dataURL;
 }
 
 // ── Load a single image File → add to anim ───────────────────
@@ -978,8 +1044,9 @@ async function _loadImageFile(file, anim) {
     return new Promise((resolve) => {
         const reader = new FileReader();
         reader.onload = (e) => {
-            anim.frames.push(_newFrame(file.name.replace(/\.[^.]+$/, ''), e.target.result));
-            resolve();
+            const frame = _newFrame(file.name.replace(/\.[^.]+$/, ''), e.target.result);
+            anim.frames.push(frame);
+            _stampFrameSize(frame, resolve);
         };
         reader.readAsDataURL(file);
     });
@@ -1014,7 +1081,9 @@ async function _loadZip(file, anim) {
         const blob      = await entry.async('blob');
         const dataURL   = await _blobToDataURL(blob);
         const frameName = path.split('/').pop().replace(/\.[^.]+$/, '');
-        anim.frames.push(_newFrame(frameName, dataURL));
+        const frame = _newFrame(frameName, dataURL);
+        anim.frames.push(frame);
+        await new Promise(res => _stampFrameSize(frame, res));
     }
 }
 

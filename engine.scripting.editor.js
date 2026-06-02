@@ -401,10 +401,12 @@ const COMPLETIONS = [
     { n:'hit.normal',        m:'🔦 raycast',  v:'hit._rayHit.normal.x' },
 
     // ── Gizmos / Debug visualization ───────────────────────
-    { n:'Gizmos.raycasts',      m:'🖊 gizmos', v:'Gizmos.raycasts = ${1:true}' },
-    { n:'Gizmos.raycastColor',  m:'🖊 gizmos', v:"Gizmos.raycastColor = '${1:#00ff44}'" },
-    { n:'Gizmos.raycastWidth',  m:'🖊 gizmos', v:'Gizmos.raycastWidth = ${1:2}' },
-    { n:'Gizmos.raycastDuration',m:'🖊 gizmos',v:'Gizmos.raycastDuration = ${1:0.12}' },
+    { n:'Gizmos.raycasts',       m:'🖊 gizmos', v:'Gizmos.raycasts = ${1:true}' },
+    { n:'Gizmos.raycastColor',   m:'🖊 gizmos', v:"Gizmos.raycastColor = '${1:#00ff44}'" },
+    { n:'Gizmos.raycastWidth',   m:'🖊 gizmos', v:'Gizmos.raycastWidth = ${1:2}' },
+    { n:'Gizmos.raycastDuration',m:'🖊 gizmos', v:'Gizmos.raycastDuration = ${1:0.12}' },
+    { n:'Gizmos.collision',      m:'🖊 gizmos', v:'Gizmos.collision = ${1:true}' },
+    { n:'Gizmos.collisionColor', m:'🖊 gizmos', v:"Gizmos.collisionColor = '${1:#00ffcc}'" },
 
     // ── Proxy (other.*) extended ───────────────────────────
     { n:'other.health',      m:'🔍 proxy',    v:'other.health' },
@@ -1398,6 +1400,9 @@ function _sidebarHTML() {
             'drawDebugCircle(cx, cy, radius)',
             'Gizmos.raycasts = true',
             'Gizmos.raycastColor = "#ff4444"',
+            '// show collision shapes in play mode:',
+            'Gizmos.collision = true',
+            'Gizmos.collisionColor = "#00ffcc"',
         ]],
     ];
 

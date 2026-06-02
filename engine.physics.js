@@ -580,12 +580,6 @@ export function stepPhysics(dt) {
         const subDy = dy / KIN_SUBSTEPS;
         const subDt = dt / KIN_SUBSTEPS;
 
-        const scX = Math.abs(obj.scale?.x ?? 1) || 1;
-        const scY = Math.abs(obj.scale?.y ?? 1) || 1;
-        const g   = collisionGeom(obj);
-        const ox  = (g.ox || 0) * scX;
-        const oy  = (g.oy || 0) * scY;
-
         let nx = 0, ny = 0;
         let hitX = false, hitY = false;
         let hitDown = false, hitUp = false, hitLeft = false, hitRight = false;
@@ -602,9 +596,21 @@ export function stepPhysics(dt) {
             if (res.hitY) { hitY = true; hitDown  = hitDown  || res.hitDown;  hitUp    = hitUp    || res.hitUp; }
             for (const s of res.hitStatics) if (!hitStatics.includes(s)) hitStatics.push(s);
 
-            // Apply sub-resolved position to sprite
-            obj.x = nx + curAabb.w / 2 - ox;
-            obj.y = ny + curAabb.h / 2 - oy;
+            // Derive ox/oy fresh from curAabb so frame changes (different polygon offsets)
+            // never misalign the sprite position — this is what caused the teleport on
+            // animation switch. curAabb.x = obj.x - w/2 + ox → ox = curAabb.x - obj.x + w/2
+            // Simpler: reconstruct from collisionGeom each substep to stay consistent.
+            {
+                const scX2 = Math.abs(obj.scale?.x ?? 1) || 1;
+                const scY2 = Math.abs(obj.scale?.y ?? 1) || 1;
+                const g2   = collisionGeom(obj);
+                const ox   = (g2.ox || 0) * scX2;
+                const oy   = (g2.oy || 0) * scY2;
+
+                // Apply sub-resolved position to sprite
+                obj.x = nx + curAabb.w / 2 - ox;
+                obj.y = ny + curAabb.h / 2 - oy;
+            }
 
             // Teleport Planck body so dynamics are pushed out this substep
             if (body) {
