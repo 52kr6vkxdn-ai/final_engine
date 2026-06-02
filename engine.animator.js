@@ -669,9 +669,32 @@ function _wire(modal, obj) {
 function _renderAnimList(modal, obj) {
     const list = modal.querySelector('#anim-list');
     list.innerHTML = '';
+
+    // Compute dominant canvas size across all animations (from stamped frames)
+    // so we can warn when an animation has frames that differ from the norm.
+    const allStampedFrames = (obj.animations || []).flatMap(a => a.frames || []).filter(f => f.w !== null && f.h !== null);
+    const globalSizeCount = {};
+    for (const f of allStampedFrames) {
+        const k = `${f.w}×${f.h}`;
+        globalSizeCount[k] = (globalSizeCount[k] || 0) + 1;
+    }
+    // The dominant size is the most common one across the whole sprite
+    const dominantSize = Object.entries(globalSizeCount).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+
     obj.animations.forEach((anim, i) => {
         const isActive = i === obj.activeAnimIndex;
         const isIdle   = !!anim.isIdle;
+
+        // Check if this animation has frames that differ from the dominant size
+        const stampedInAnim = (anim.frames || []).filter(f => f.w !== null && f.h !== null);
+        const animSizes = new Set(stampedInAnim.map(f => `${f.w}×${f.h}`));
+        const hasInternalMismatch = animSizes.size > 1;
+        const hasCrossAnimMismatch = dominantSize && [...animSizes].some(s => s !== dominantSize);
+        const hasAnyMismatch = hasInternalMismatch || hasCrossAnimMismatch;
+
+        // Get this animation's size(s) for tooltip
+        const animSizeStr = animSizes.size > 0 ? [...animSizes].join(', ') : '?';
+
         const row = document.createElement('div');
         row.style.cssText = `
             padding: 8px 12px; cursor: pointer; display:flex; align-items:center; gap:6px;
@@ -683,10 +706,23 @@ function _renderAnimList(modal, obj) {
                 ? `<svg viewBox="0 0 24 24" style="width:12px;height:12px;fill:none;stroke:#4ade80;stroke-width:2;flex-shrink:0;"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>`
                 : `<svg viewBox="0 0 24 24" style="width:12px;height:12px;fill:none;stroke:#aaa;stroke-width:2;flex-shrink:0;"><polygon points="5 3 19 12 5 21 5 3"/></svg>`
             }
-            <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:${isActive ? '#fff' : isIdle ? '#8f8' : '#ccc'};">${anim.name}${isIdle ? '' : ''}</span>
+            <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:${isActive ? '#fff' : isIdle ? '#8f8' : '#ccc'};">${anim.name}</span>
             ${isIdle ? '<span style="font-size:8px;color:#4ade80;background:rgba(74,222,128,0.15);border:1px solid rgba(74,222,128,0.3);border-radius:2px;padding:1px 4px;letter-spacing:0.5px;">IDLE</span>' : ''}
             <span style="color:#555; font-size:9px;">${anim.frames.length}f</span>
+            ${stampedInAnim.length > 0
+                ? `<span title="${animSizeStr}" style="font-size:8px;color:${hasAnyMismatch ? '#f97316' : '#556'};background:${hasAnyMismatch ? 'rgba(249,115,22,0.12)' : 'rgba(255,255,255,0.04)'};border:1px solid ${hasAnyMismatch ? '#f9731644' : '#333'};border-radius:2px;padding:1px 4px;letter-spacing:0.3px;white-space:nowrap;">
+                    ${hasAnyMismatch ? '⚠ ' : ''}${animSizeStr}
+                  </span>`
+                : ''}
         `;
+
+        // Show a tooltip on the warning badge
+        if (hasAnyMismatch) {
+            row.title = hasInternalMismatch
+                ? `Frames inside "${anim.name}" have different canvas sizes (${animSizeStr}). This can cause physics jitter.`
+                : `"${anim.name}" uses ${animSizeStr} but other animations use ${dominantSize}. Switching animations may cause physics jitter.`;
+        }
+
         row.addEventListener('click', () => {
             obj.activeAnimIndex = i;
             modal._stopPlay?.();

@@ -328,15 +328,44 @@ export async function startPhysics() {
         if (type !== 'static' && as && as.onFrameChange !== undefined && frArr?.length > 1) {
             obj._runtimePhysicsFrameId = frArr[as.currentFrame ?? 0]?.id || frArr[0].id;
             if (type === 'kinematic') {
-                // Kinematic uses AABB sweep — no Planck body rebuild needed.
-                // Just track the new frame id; _getKinematicAABB reads it dynamically.
-                // We defer the update to the start of the next physics tick so that
-                // a frame switch mid-sweep never causes a position jump.
+                // Kinematic uses AABB sweep, not Planck body rebuild.
+                // The key insight matching dynamic bodies: we must preserve the
+                // COLLISION SHAPE CENTER, not the sprite origin.
+                //
+                // Dynamic achieves this automatically — Planck bodies are positioned
+                // at their center. When _rebuildBodyForFrame runs, it reads
+                // oldBody.getPosition() (the center) and places the new body there.
+                //
+                // Kinematic must do this manually:
+                //   1. Before frame change: compute old collision center = obj.x + old_ox, obj.y + old_oy
+                //   2. Apply new frame id (new ox/oy)
+                //   3. Re-derive obj.x/y so that: obj.x + new_ox == old_center_x
+                //      i.e. obj.x = old_center_x - new_ox
+                //
+                // This keeps the collision shape anchored to where the physics body was.
                 as.onFrameChange = (idx) => {
                     const f = frArr[idx];
                     if (!f || obj._runtimePhysicsFrameId === f.id) return;
-                    // Queue the frame id change; applied safely at top of tick
-                    obj._pendingPhysicsFrameId = f.id;
+
+                    const sx = Math.abs(obj.scale?.x ?? 1) || 1;
+                    const sy = Math.abs(obj.scale?.y ?? 1) || 1;
+
+                    // Step 1: capture the current collision center using OLD frame geometry
+                    const gOld  = collisionGeom(obj);
+                    const oldCx = obj.x + (gOld.ox || 0) * sx;
+                    const oldCy = obj.y + (gOld.oy || 0) * sy;
+
+                    // Step 2: apply new frame id so collisionGeom returns NEW frame's values
+                    obj._runtimePhysicsFrameId = f.id;
+
+                    // Step 3: re-anchor obj.x/y so the collision center doesn't move
+                    const gNew  = collisionGeom(obj);
+                    obj.x = oldCx - (gNew.ox || 0) * sx;
+                    obj.y = oldCy - (gNew.oy || 0) * sy;
+
+                    // Keep prevX/prevY in sync so the sweep doesn't see a teleport delta
+                    obj._kinematicPrevX = obj.x;
+                    obj._kinematicPrevY = obj.y;
                 };
             } else {
                 as.onFrameChange = (idx) => {
@@ -492,13 +521,6 @@ export function stepPhysics(dt) {
     for (const { obj, body, type } of _bodies) {
         if (type !== 'kinematic') continue;
 
-        // Apply deferred frame-id change at tick boundary so a mid-sweep
-        // AABB size change never causes a position teleport.
-        if (obj._pendingPhysicsFrameId !== undefined) {
-            obj._runtimePhysicsFrameId = obj._pendingPhysicsFrameId;
-            delete obj._pendingPhysicsFrameId;
-        }
-
         // Immovable kinematic: just keep Planck body in sync and stay put
         if (obj.physicsImmovable) {
             obj._kinematicVx           = 0;
@@ -580,6 +602,14 @@ export function stepPhysics(dt) {
         const subDy = dy / KIN_SUBSTEPS;
         const subDt = dt / KIN_SUBSTEPS;
 
+        // ox/oy captured once — frame changes now re-anchor obj.x/y in onFrameChange
+        // so these values are always consistent with the current frame before the sweep.
+        const scX = Math.abs(obj.scale?.x ?? 1) || 1;
+        const scY = Math.abs(obj.scale?.y ?? 1) || 1;
+        const g   = collisionGeom(obj);
+        const ox  = (g.ox || 0) * scX;
+        const oy  = (g.oy || 0) * scY;
+
         let nx = 0, ny = 0;
         let hitX = false, hitY = false;
         let hitDown = false, hitUp = false, hitLeft = false, hitRight = false;
@@ -596,21 +626,9 @@ export function stepPhysics(dt) {
             if (res.hitY) { hitY = true; hitDown  = hitDown  || res.hitDown;  hitUp    = hitUp    || res.hitUp; }
             for (const s of res.hitStatics) if (!hitStatics.includes(s)) hitStatics.push(s);
 
-            // Derive ox/oy fresh from curAabb so frame changes (different polygon offsets)
-            // never misalign the sprite position — this is what caused the teleport on
-            // animation switch. curAabb.x = obj.x - w/2 + ox → ox = curAabb.x - obj.x + w/2
-            // Simpler: reconstruct from collisionGeom each substep to stay consistent.
-            {
-                const scX2 = Math.abs(obj.scale?.x ?? 1) || 1;
-                const scY2 = Math.abs(obj.scale?.y ?? 1) || 1;
-                const g2   = collisionGeom(obj);
-                const ox   = (g2.ox || 0) * scX2;
-                const oy   = (g2.oy || 0) * scY2;
-
-                // Apply sub-resolved position to sprite
-                obj.x = nx + curAabb.w / 2 - ox;
-                obj.y = ny + curAabb.h / 2 - oy;
-            }
+            // Apply sub-resolved position to sprite
+            obj.x = nx + curAabb.w / 2 - ox;
+            obj.y = ny + curAabb.h / 2 - oy;
 
             // Teleport Planck body so dynamics are pushed out this substep
             if (body) {
