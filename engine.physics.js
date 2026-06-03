@@ -252,6 +252,30 @@ export async function startPhysics() {
     _tileBodies.length = 0;
     _kinematicContacts.clear();
 
+    // Pre-warm alpha-bounds cache for every animation frame that has a dataURL.
+    // This ensures collisionGeom() never returns ox=0 on the first frame switch
+    // (which would cause a one-frame mis-anchor when switching animation frames).
+    const { alphaBoundsForDataURL } = await import('./engine.collision-overlay.js');
+    const warmPromises = [];
+    for (const obj of state.gameObjects) {
+        if (!obj.animations) continue;
+        for (const anim of obj.animations) {
+            for (const frame of anim.frames || []) {
+                if (!frame.dataURL) continue;
+                const p = new Promise(res => {
+                    const result = alphaBoundsForDataURL(frame.dataURL, res);
+                    if (result !== null) res(); // already cached
+                });
+                warmPromises.push(p);
+            }
+        }
+    }
+    // Wait up to 2 seconds for cache to populate — then proceed regardless
+    await Promise.race([
+        Promise.all(warmPromises),
+        new Promise(res => setTimeout(res, 2000)),
+    ]);
+
     for (const obj of state.gameObjects) {
         // ── Tilemap → one static body per filled cell ────────
         if (obj.isTilemap) {
@@ -305,11 +329,23 @@ export async function startPhysics() {
             obj._kinematicPrevY        = obj.y;
             _kinematicContacts.set(obj, new Set());
             const kBody = _makeBody(obj, obj.x, obj.y, 'kinematic');
-            if (kBody) {
-                _bodies.push({ obj, body: kBody, type: 'kinematic' });
-                obj._physicsBody = kBody;
+            const kEntry = { obj, body: kBody || null, type: 'kinematic' };
+            _bodies.push(kEntry);
+            if (kBody) obj._physicsBody = kBody;
+
+            // Kinematic uses ONE shared collision shape — not per-frame.
+            // The polygon is set in the Animation Panel (auto-fit from any frame).
+            // Movement sweep uses its AABB. Shape never changes mid-animation.
+            // To use the shared polygon we point _runtimePhysicsFrameId at 'shared'
+            // if one exists, otherwise leave it at the first frame so collisionGeom
+            // can find something to work with.
+            const polyMap = obj.physicsPolygons || {};
+            if (Array.isArray(polyMap.shared) && polyMap.shared.length >= 3) {
+                obj._runtimePhysicsFrameId = 'shared';
             } else {
-                _bodies.push({ obj, body: null, type: 'kinematic' });
+                const initAnim  = obj.animations?.[obj.activeAnimIndex ?? 0];
+                const initFrame = initAnim?.frames?.[0];
+                if (initFrame?.id) obj._runtimePhysicsFrameId = initFrame.id;
             }
             continue;
         }
@@ -321,62 +357,24 @@ export async function startPhysics() {
         _bodies.push(entry);
         obj._physicsBody = body;
 
-        // Per-frame collision shape swap for animated sprites
-        const as    = obj._runtimeSprite;
-        const anim  = obj.animations?.[obj.activeAnimIndex ?? 0];
-        const frArr = anim?.frames;
-        if (type !== 'static' && as && as.onFrameChange !== undefined && frArr?.length > 1) {
-            obj._runtimePhysicsFrameId = frArr[as.currentFrame ?? 0]?.id || frArr[0].id;
-            if (type === 'kinematic') {
-                // Kinematic uses AABB sweep, not Planck body rebuild.
-                // The key insight matching dynamic bodies: we must preserve the
-                // COLLISION SHAPE CENTER, not the sprite origin.
-                //
-                // Dynamic achieves this automatically — Planck bodies are positioned
-                // at their center. When _rebuildBodyForFrame runs, it reads
-                // oldBody.getPosition() (the center) and places the new body there.
-                //
-                // Kinematic must do this manually:
-                //   1. Before frame change: compute old collision center = obj.x + old_ox, obj.y + old_oy
-                //   2. Apply new frame id (new ox/oy)
-                //   3. Re-derive obj.x/y so that: obj.x + new_ox == old_center_x
-                //      i.e. obj.x = old_center_x - new_ox
-                //
-                // This keeps the collision shape anchored to where the physics body was.
-                as.onFrameChange = (idx) => {
-                    const f = frArr[idx];
-                    if (!f || obj._runtimePhysicsFrameId === f.id) return;
+        // Per-frame collision shape swap for dynamic bodies
+        // Always reads from the CURRENT active animation so playAnimation() switches
+        // also update the collision shape correctly.
+        const as = obj._runtimeSprite;
+        if (as && as.onFrameChange !== undefined) {
+            const initAnim2  = obj.animations?.[obj.activeAnimIndex ?? 0];
+            const initFrame2 = initAnim2?.frames?.[as.currentFrame ?? 0];
+            if (initFrame2?.id) obj._runtimePhysicsFrameId = initFrame2.id;
 
-                    const sx = Math.abs(obj.scale?.x ?? 1) || 1;
-                    const sy = Math.abs(obj.scale?.y ?? 1) || 1;
-
-                    // Step 1: capture the current collision center using OLD frame geometry
-                    const gOld  = collisionGeom(obj);
-                    const oldCx = obj.x + (gOld.ox || 0) * sx;
-                    const oldCy = obj.y + (gOld.oy || 0) * sy;
-
-                    // Step 2: apply new frame id so collisionGeom returns NEW frame's values
-                    obj._runtimePhysicsFrameId = f.id;
-
-                    // Step 3: re-anchor obj.x/y so the collision center doesn't move
-                    const gNew  = collisionGeom(obj);
-                    obj.x = oldCx - (gNew.ox || 0) * sx;
-                    obj.y = oldCy - (gNew.oy || 0) * sy;
-
-                    // Keep prevX/prevY in sync so the sweep doesn't see a teleport delta
-                    obj._kinematicPrevX = obj.x;
-                    obj._kinematicPrevY = obj.y;
-                };
-            } else {
-                as.onFrameChange = (idx) => {
-                    const f = frArr[idx];
-                    if (!f || obj._runtimePhysicsFrameId === f.id) return;
-                    obj._runtimePhysicsFrameId = f.id;
-                    _rebuildBodyForFrame(entry);
-                };
-            }
-        } else if (type !== 'static') {
-            const f0 = frArr?.[0];
+            as.onFrameChange = (idx) => {
+                const curAnim2   = obj.animations?.[obj.activeAnimIndex ?? 0];
+                const f = curAnim2?.frames?.[idx];
+                if (!f || obj._runtimePhysicsFrameId === f.id) return;
+                obj._runtimePhysicsFrameId = f.id;
+                _rebuildBodyForFrame(entry);
+            };
+        } else {
+            const f0 = obj.animations?.[obj.activeAnimIndex ?? 0]?.frames?.[0];
             if (f0?.id) obj._runtimePhysicsFrameId = f0.id;
         }
     }

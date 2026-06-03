@@ -396,8 +396,14 @@ function _wire(modal, obj) {
             if (!obj.physicsPolygons) obj.physicsPolygons = {};
             obj.physicsShape = 'polygon';
             obj._polyUnit = 'container';
-            for (const frame of newFrames) {
-                _autoFitFromDataURL(obj, frame.dataURL, frame.id, null);
+            if (obj.physicsBody === 'kinematic') {
+                // Kinematic: fit from first new frame only, save as shared shape
+                _autoFitFromDataURL(obj, newFrames[0].dataURL, 'shared', null);
+            } else {
+                // Dynamic: fit each frame independently
+                for (const frame of newFrames) {
+                    _autoFitFromDataURL(obj, frame.dataURL, frame.id, null);
+                }
             }
         }
 
@@ -495,7 +501,35 @@ function _wire(modal, obj) {
     });
 
     // ── Collision section ────────────────────────────────────
+    const isKinematicObj = obj.physicsBody === 'kinematic';
+
+    // Show/hide per-frame vs shared controls based on body type
+    const editFrameBtn  = modal.querySelector('#anim-col-edit-frame');
+    const editSharedBtn = modal.querySelector('#anim-col-edit-shared');
+    const copyAllBtn    = modal.querySelector('#anim-col-copy-all');
+    const colFrameInfo  = modal.querySelector('#anim-col-frame-info');
+
+    if (isKinematicObj) {
+        // Kinematic: only shared shape matters — hide per-frame controls
+        if (editFrameBtn)  editFrameBtn.style.display  = 'none';
+        if (copyAllBtn)    copyAllBtn.style.display    = 'none';
+        if (editSharedBtn) {
+            editSharedBtn.style.background = '#7c3aed22';
+            editSharedBtn.style.border     = '1px solid #7c3aed66';
+            editSharedBtn.style.color      = '#a78bfa';
+            editSharedBtn.textContent      = '✏ Edit Collision Shape';
+        }
+        if (colFrameInfo) {
+            colFrameInfo.style.display = 'block';
+            colFrameInfo.innerHTML = `
+                <span style="color:#facc15;font-weight:bold;">🟡 Kinematic — one shared shape</span><br>
+                <span style="color:#888;">Movement uses this shape's bounding box.<br>Shape does not change per frame.</span>
+            `;
+        }
+    }
+
     const _updateColFrameInfo = () => {
+        if (isKinematicObj) return; // kinematic info is static, already set above
         const anim  = _currentAnim(obj);
         const frame = anim?.frames?.[currentFrame];
         const info  = modal.querySelector('#anim-col-frame-info');
@@ -510,8 +544,8 @@ function _wire(modal, obj) {
         const hasSh   = Array.isArray(polyMap.shared)    && polyMap.shared.length >= 3;
         info.innerHTML = `
             <span style="color:#ccc;">Frame:</span> <span style="color:#a78bfa;">${frame.name}</span><br>
-            <span style="color:#${hasFr ? '4ade80' : '555'};">● Per-frame shape: ${hasFr ? 'defined' : 'none'}</span><br>
-            <span style="color:#${hasSh ? '4ade80' : '555'};">● Shared shape: ${hasSh ? 'defined' : 'none'}</span>
+            <span style="color:#${hasFr ? '4ade80' : '555'};">● Per-frame shape: ${hasFr ? 'defined ✓' : 'none (uses shared or AABB)'}</span><br>
+            <span style="color:#${hasSh ? '4ade80' : '555'};">● Shared shape: ${hasSh ? 'defined ✓' : 'none'}</span>
         `;
     };
 
@@ -558,12 +592,21 @@ function _wire(modal, obj) {
         const anim  = _currentAnim(obj);
         const frame = anim?.frames?.[currentFrame];
         if (!frame) { _showToast(modal, '⚠ Select a frame first'); return; }
-        // Auto-fit from this specific frame's dataURL
-        _autoFitFromDataURL(obj, frame.dataURL, frame.id, () => {
-            _updateColFrameInfo();
-            _showToast(modal, '🎯 Shape auto-fitted from frame');
-            import('./engine.collision-overlay.js').then(m => m.refreshCollisionOverlay());
-        });
+        if (isKinematicObj) {
+            // Kinematic: auto-fit from this frame's image but save as shared shape
+            _autoFitFromDataURL(obj, frame.dataURL, 'shared', () => {
+                _updateColFrameInfo();
+                _showToast(modal, '🎯 Shared shape auto-fitted from frame');
+                import('./engine.collision-overlay.js').then(m => m.refreshCollisionOverlay());
+            });
+        } else {
+            // Dynamic: auto-fit per frame
+            _autoFitFromDataURL(obj, frame.dataURL, frame.id, () => {
+                _updateColFrameInfo();
+                _showToast(modal, '🎯 Shape auto-fitted from frame');
+                import('./engine.collision-overlay.js').then(m => m.refreshCollisionOverlay());
+            });
+        }
         _dirty = true;
     });
 

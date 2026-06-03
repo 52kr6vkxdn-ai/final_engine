@@ -215,10 +215,12 @@ export function buildPhysicsInspectorHTML(obj) {
     ` : '');
 
     const kinematicNote = isKinematic ? `
-        <div style="background:#1a1400;border:1px solid #facc1533;border-radius:3px;padding:5px 8px;font-size:9px;color:#facc1588;margin-top:2px;">
-            🟡 Kinematic bodies have no gravity or forces.<br>
-            Move them via <code style="color:#facc15;">velocityX/Y</code> or <code style="color:#facc15;">move()</code>.<br>
-            They push dynamic bodies but are not pushed back.
+        <div style="background:#1a1400;border:1px solid #facc1533;border-radius:3px;padding:5px 8px;font-size:9px;color:#facc1588;margin-top:2px;line-height:1.6;">
+            🟡 <strong style="color:#facc15;">Kinematic body rules:</strong><br>
+            • Move via <code style="color:#facc15;">velocityX/Y</code> or <code style="color:#facc15;">move()</code><br>
+            • No gravity — fake it with <code style="color:#facc15;">velocityY += gravity * dt</code><br>
+            • Pushes dynamic bodies, not pushed back<br>
+            • <strong style="color:#facc15;">One shared collision shape</strong> — set in the Animation Panel on any frame. Movement uses its bounding box. Shape does <em>not</em> change per frame (use Dynamic for that).
         </div>` : '';
 
     const layersHTML = hasPhysics ? `
@@ -259,7 +261,10 @@ export function buildPhysicsInspectorHTML(obj) {
         </div>` : ''}
         <div id="phys-extra" style="display:${hasPhysics?'flex':'none'};flex-direction:column;gap:5px;">
           <div style="background:#0a0a18;border:1px solid #7c3aed33;border-radius:3px;padding:5px 8px;font-size:9px;color:#a78bfa99;line-height:1.5;">
-            🎞 Collision shapes are set per animation frame in the <strong style="color:#a78bfa;">Animation Panel</strong>. Each frame gets its own auto-fitted shape.
+            ${isKinematic
+                ? `🎞 Set <strong style="color:#a78bfa;">one shared collision shape</strong> in the Animation Panel (auto-fitted from any frame). Kinematic movement uses its bounding box — shape does not change per frame.`
+                : `🎞 Collision shapes are set per animation frame in the <strong style="color:#a78bfa;">Animation Panel</strong>. Each frame gets its own auto-fitted shape.`
+            }
           </div>
           ${materialHTML}
           ${massHTML}
