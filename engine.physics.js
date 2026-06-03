@@ -395,15 +395,39 @@ export async function startPhysics() {
 }
 
 // ── AABB helpers for kinematic sweep ─────────────────────────
+// ── _getKinematicAABB ─────────────────────────────────────────
+// Returns the world-space AABB of the kinematic body's active collision shape.
+// If the object has a polygon, derives AABB from polygon vertices.
 function _getKinematicAABB(obj) {
     const sx = Math.abs(obj.scale?.x ?? 1) || 1;
     const sy = Math.abs(obj.scale?.y ?? 1) || 1;
+
+    // Try polygon first — compute AABB from actual polygon vertices
+    const poly = _getActivePolygon(obj);
+    if (poly && poly.length >= 3) {
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const p of poly) {
+            const wx = p.x * sx;
+            const wy = p.y * sy;
+            if (wx < minX) minX = wx;
+            if (wx > maxX) maxX = wx;
+            if (wy < minY) minY = wy;
+            if (wy > maxY) maxY = wy;
+        }
+        const w  = maxX - minX;
+        const h  = maxY - minY;
+        const ox = minX + w / 2;   // polygon center offset from sprite origin
+        const oy = minY + h / 2;
+        return { x: obj.x + ox - w / 2, y: obj.y + oy - h / 2, w, h, ox, oy, poly, sx, sy };
+    }
+
+    // Fallback — use collisionGeom (alpha-trim bounding box)
     const g  = collisionGeom(obj);
     const w  = (g.w || 32) * sx;
     const h  = (g.h || 32) * sy;
     const ox = (g.ox || 0) * sx;
     const oy = (g.oy || 0) * sy;
-    return { x: obj.x + ox - w / 2, y: obj.y + oy - h / 2, w, h };
+    return { x: obj.x + ox - w / 2, y: obj.y + oy - h / 2, w, h, ox, oy, poly: null, sx, sy };
 }
 
 // Skin tolerance — prevents false-positive when the body is flush against a surface
@@ -411,22 +435,95 @@ const SWEEP_SKIN  = 1;   // px
 // Distance to probe below feet to detect ground while standing still
 const PROBE_DIST  = 4;   // px
 
-// Axis-separated AABB sweep (X then Y) with skin tolerance and direction flags.
+// ── Polygon vs AABB overlap test ──────────────────────────────
+// Tests if a convex polygon (world-space verts) overlaps a static AABB rect.
+// Uses Separating Axis Theorem (SAT) — returns true if overlapping.
+function _polyOverlapsRect(verts, rx, ry, rw, rh) {
+    // Build rect verts
+    const rectVerts = [
+        { x: rx,      y: ry      },
+        { x: rx + rw, y: ry      },
+        { x: rx + rw, y: ry + rh },
+        { x: rx,      y: ry + rh },
+    ];
+
+    // SAT: test axes from polygon edges + rect axes
+    const allVerts = [verts, rectVerts];
+    for (const shape of allVerts) {
+        for (let i = 0; i < shape.length; i++) {
+            const a = shape[i];
+            const b = shape[(i + 1) % shape.length];
+            // Normal axis (perpendicular to edge)
+            const ax = -(b.y - a.y);
+            const ay =   b.x - a.x;
+
+            let minA = Infinity, maxA = -Infinity;
+            let minB = Infinity, maxB = -Infinity;
+
+            for (const p of verts) {
+                const proj = p.x * ax + p.y * ay;
+                if (proj < minA) minA = proj;
+                if (proj > maxA) maxA = proj;
+            }
+            for (const p of rectVerts) {
+                const proj = p.x * ax + p.y * ay;
+                if (proj < minB) minB = proj;
+                if (proj > maxB) maxB = proj;
+            }
+            if (maxA < minB || maxB < minA) return false; // separating axis found
+        }
+    }
+    return true; // no separating axis — overlapping
+}
+
+// Convert kinematic AABB entry's polygon to world-space verts at a given position
+function _polyWorldVerts(aabb, px, py) {
+    if (!aabb.poly) return null;
+    return aabb.poly.map(p => ({
+        x: px + p.x * aabb.sx,
+        y: py + p.y * aabb.sy,
+    }));
+}
+
+// Axis-separated sweep (X then Y) with optional polygon shape.
+// If aabb.poly is set, uses SAT polygon-vs-rect for overlap tests instead of AABB.
 // Returns resolved (x, y) corner plus hit booleans and the list of touched statics.
-function _sweepAABB(ax, ay, aw, ah, dx, dy, statics) {
+function _sweepAABB(ax, ay, aw, ah, dx, dy, statics, aabb) {
     let x = ax, y = ay;
     let hitX = false, hitY = false;
     let hitDown = false, hitUp = false, hitLeft = false, hitRight = false;
     const hitStatics = [];
 
+    // Helper — test if the polygon/AABB at (cx, cy) overlaps a static
+    // cx/cy are the AABB corner (top-left), same as x/y in the sweep
+    const overlaps = (cx, cy, s) => {
+        if (aabb?.poly) {
+            // Polygon center = cx + aw/2 + (ox - aw/2) but easier: derive from corner + half size
+            const pcx = cx + aw / 2;
+            const pcy = cy + ah / 2;
+            // Offset by (ox - aw/2, oy - ah/2) to get sprite origin, then poly verts are relative to sprite origin
+            const spx = cx + aw / 2 - aabb.ox;
+            const spy = cy + ah / 2 - aabb.oy;
+            const verts = aabb.poly.map(p => ({
+                x: spx + p.x * aabb.sx,
+                y: spy + p.y * aabb.sy,
+            }));
+            return _polyOverlapsRect(verts, s.x, s.y, s.w, s.h);
+        }
+        // AABB fallback
+        return (cx + aw - SWEEP_SKIN > s.x + SWEEP_SKIN) &&
+               (cx + SWEEP_SKIN       < s.x + s.w - SWEEP_SKIN) &&
+               (cy + ah - SWEEP_SKIN > s.y + SWEEP_SKIN) &&
+               (cy + SWEEP_SKIN       < s.y + s.h - SWEEP_SKIN);
+    };
+
     // ── X pass ────────────────────────────────────────────────
     x += dx;
     for (const s of statics) {
-        // Require meaningful vertical overlap (inset by SKIN on both sides)
         const overY = (y + ah - SWEEP_SKIN > s.y + SWEEP_SKIN) &&
                       (y + SWEEP_SKIN       < s.y + s.h - SWEEP_SKIN);
         if (!overY) continue;
-        if (x + aw - SWEEP_SKIN > s.x && x + SWEEP_SKIN < s.x + s.w) {
+        if (overlaps(x, y, s)) {
             hitX = true;
             if (dx > 0) { x = s.x - aw;      hitRight = true; }
             else        { x = s.x + s.w;      hitLeft  = true; }
@@ -440,7 +537,7 @@ function _sweepAABB(ax, ay, aw, ah, dx, dy, statics) {
         const overX = (x + aw - SWEEP_SKIN > s.x + SWEEP_SKIN) &&
                       (x + SWEEP_SKIN       < s.x + s.w - SWEEP_SKIN);
         if (!overX) continue;
-        if (y + ah - SWEEP_SKIN > s.y && y + SWEEP_SKIN < s.y + s.h) {
+        if (overlaps(x, y, s)) {
             hitY = true;
             if (dy > 0) { y = s.y - ah;       hitDown = true; }
             else        { y = s.y + s.h;       hitUp   = true; }
@@ -617,7 +714,7 @@ export function stepPhysics(dt) {
         for (let _ks = 0; _ks < KIN_SUBSTEPS; _ks++) {
             // Rebuild static grid each substep — dynamic positions may have shifted
             const subStatics = _buildStaticGrid(obj);
-            const res = _sweepAABB(curAabb.x, curAabb.y, curAabb.w, curAabb.h, subDx, subDy, subStatics);
+            const res = _sweepAABB(curAabb.x, curAabb.y, curAabb.w, curAabb.h, subDx, subDy, subStatics, curAabb);
 
             nx = res.x; ny = res.y;
             if (res.hitX) { hitX = true; hitLeft  = hitLeft  || res.hitLeft;  hitRight = hitRight || res.hitRight; }
