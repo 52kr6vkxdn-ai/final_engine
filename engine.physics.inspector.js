@@ -40,8 +40,8 @@ export function buildPhysicsInspectorHTML(obj) {
     const rest   = obj.physicsRestitution     ?? 0.1;
     const dens   = obj.physicsDensity         ?? 0.001;
     const grav   = obj.physicsGravityScale    ?? 1;
-    const ldamp  = obj.physicsLinearDamping   ?? 0.01;  // FIX 8: consistent default
-    const adamp  = obj.physicsAngularDamping  ?? 0;
+    const ldamp  = obj.physicsLinearDamping   ?? 0.08;
+    const adamp  = obj.physicsAngularDamping  ?? 0.05;
     const fixRot  = !!obj.physicsFixedRotation;
     const sensor  = !!obj.physicsIsSensor;
     const immov   = !!obj.physicsImmovable;
@@ -627,8 +627,17 @@ export function openPolygonEditor(obj, frameId = 'shared', opts = {}) {
     function updateStatus() {
         const el = panel.querySelector('#pe-status');
         if (!el) return;
-        el.textContent = pts.length >= 3 ? `✓ ${pts.length} vertices — valid` : `${pts.length} / 3+ vertices needed`;
-        el.style.color = pts.length >= 3 ? '#4ade80' : '#ef4444';
+        const MAX_POLY_PTS = 16;
+        if (pts.length >= MAX_POLY_PTS) {
+            el.textContent = `⚠ ${pts.length}/${MAX_POLY_PTS} vertices — at limit`;
+            el.style.color = '#fbbf24';
+        } else if (pts.length >= 3) {
+            el.textContent = `✓ ${pts.length}/${MAX_POLY_PTS} vertices — valid`;
+            el.style.color = '#4ade80';
+        } else {
+            el.textContent = `${pts.length} / 3+ vertices needed`;
+            el.style.color = '#ef4444';
+        }
     }
 
     function rebuildList() {
@@ -655,7 +664,22 @@ export function openPolygonEditor(obj, frameId = 'shared', opts = {}) {
         if (e.button === 2) { const i = nearestPt(cx, cy); if (i >= 0) { pts.splice(i, 1); hover = -1; draw(); } return; }
         const i = nearestPt(cx, cy);
         if (i >= 0) { dragging = i; canvas.style.cursor = 'grabbing'; }
-        else { pts.push(toLocal(cx, cy)); draw(); }
+        else {
+            const MAX_POLY_PTS = 16;
+            if (pts.length >= MAX_POLY_PTS) {
+                // Flash the status label red to tell the user they're at the limit
+                const st = panel.querySelector('#pe-status');
+                if (st) {
+                    st.textContent = `⚠ Max ${MAX_POLY_PTS} vertices — remove a point first`;
+                    st.style.color = '#f87171';
+                    clearTimeout(st._warnTimer);
+                    st._warnTimer = setTimeout(() => updateStatus(), 2000);
+                }
+            } else {
+                pts.push(toLocal(cx, cy));
+                draw();
+            }
+        }
     });
     const _onMove = e => {
         const { cx, cy } = evPos(e);
@@ -757,8 +781,8 @@ export function snapshotPhysics(obj) {
         physicsDensity:           obj.physicsDensity           ?? 0.001,
         physicsGravityScale:      obj.physicsGravityScale      ?? 1,
         physicsGravityXScale:     obj.physicsGravityXScale     ?? 0,
-        physicsLinearDamping:     obj.physicsLinearDamping     ?? 0.01,
-        physicsAngularDamping:    obj.physicsAngularDamping    ?? 0,
+        physicsLinearDamping:     obj.physicsLinearDamping     ?? 0.08,
+        physicsAngularDamping:    obj.physicsAngularDamping    ?? 0.05,
         physicsFixedRotation:     !!obj.physicsFixedRotation,
         physicsIsSensor:          !!obj.physicsIsSensor,
         physicsImmovable:         !!obj.physicsImmovable,
@@ -781,8 +805,8 @@ export function restorePhysics(obj, snap) {
     obj.physicsDensity           = snap.physicsDensity           ?? 0.001;
     obj.physicsGravityScale      = snap.physicsGravityScale      ?? 1;
     obj.physicsGravityXScale     = snap.physicsGravityXScale     ?? 0;
-    obj.physicsLinearDamping     = snap.physicsLinearDamping     ?? 0.01;
-    obj.physicsAngularDamping    = snap.physicsAngularDamping    ?? 0;
+    obj.physicsLinearDamping     = snap.physicsLinearDamping     ?? 0.08;
+    obj.physicsAngularDamping    = snap.physicsAngularDamping    ?? 0.05;
     obj.physicsFixedRotation     = !!snap.physicsFixedRotation;
     obj.physicsIsSensor          = !!snap.physicsIsSensor;
     obj.physicsImmovable         = !!snap.physicsImmovable;

@@ -247,7 +247,9 @@ export async function startPhysics() {
     catch (err) { console.error('[Physics]', err); return; }
 
     const P = window.planck;
-    _world = P.World({ gravity: P.Vec2(0, 0) });
+    // Use Planck world gravity so energy dissipation (damping, restitution)
+    // works correctly. Per-body gravity scale is applied via gravityScale below.
+    _world = P.World({ gravity: P.Vec2(0, GRAVITY_PX * 0.001) });
     _bodies           = [];
     _tileBodies.length = 0;
     _kinematicContacts.clear();
@@ -922,16 +924,27 @@ export function stepPhysics(dt) {
         }
     }
 
-    // ── DYNAMIC: apply per-body gravity ───────────────────────
+    // ── DYNAMIC: apply per-body gravity scale ─────────────────
+    // World gravity is set globally (Y only). Per-body scale and
+    // optional X gravity are handled here via gravityScale + applyForce
+    // only for bodies that deviate from scale=1 / gx=0, so the world
+    // gravity can do its job (and Planck's sleep/energy system works).
     for (const { obj, body, type } of _bodies) {
         if (type !== 'dynamic' || !body) continue;
         if (body.isStatic()) continue;
         const gravScale = obj.physicsGravityScale ?? 1;
-        if (gravScale !== 0) {
-            const gy = GRAVITY_PX * 0.001 * gravScale;
-            const gx = (obj.physicsGravityXScale ?? 0) * GRAVITY_PX * 0.001;
+        const gravXScale = obj.physicsGravityXScale ?? 0;
+
+        // Planck applies world gravity * body.gravityScale automatically.
+        // Set the body's built-in gravity scale so Planck handles Y gravity
+        // correctly without us fighting its energy model.
+        body.setGravityScale(gravScale);
+
+        // Extra horizontal gravity (not covered by Planck's built-in world gravity)
+        if (gravXScale !== 0) {
+            const gx = gravXScale * GRAVITY_PX * 0.001;
             body.applyForce(
-                P.Vec2(gx * body.getMass(), gy * body.getMass()),
+                P.Vec2(gx * body.getMass(), 0),
                 body.getWorldCenter(),
                 true
             );
@@ -971,6 +984,55 @@ export function stepPhysics(dt) {
     const subDt    = dt / SUBSTEPS;
     for (let _s = 0; _s < SUBSTEPS; _s++) {
         _world.step(subDt, 8, 4);
+    }
+
+    // ── POST-STEP: realistic energy bleed ───────────────────────
+    // After each full step we enforce two real-world behaviours:
+    //
+    // 1. BOUNCE KILL — if a body just bounced off a surface and its
+    //    post-bounce speed on that axis is below the rest threshold,
+    //    zero that velocity component so the object settles cleanly
+    //    instead of shivering with micro-bounces forever.
+    //
+    // 2. SLEEP — Planck's sleep system already handles this but we
+    //    give it a nudge by zeroing near-zero velocities explicitly,
+    //    which avoids the "infinite tiny bounce" at floating-point
+    //    rounding level.
+    //
+    // These thresholds are in px/s (engine space).
+    const BOUNCE_KILL_V  = 40;   // below this speed on an axis after bounce → zero it
+    const SLEEP_SPEED    = 5;    // below this total speed → fully sleep the body
+    const SLEEP_OMEGA    = 0.05; // below this angular speed → zero rotation
+
+    for (const { obj, body, type } of _bodies) {
+        if (type !== 'dynamic' || !body || body.isStatic()) continue;
+
+        const vel   = body.getLinearVelocity();
+        const omega = body.getAngularVelocity();
+        const speed = Math.hypot(vel.x, vel.y);
+
+        // Full sleep — stop all motion when basically still
+        if (speed < SLEEP_SPEED && Math.abs(omega) < SLEEP_OMEGA) {
+            body.setLinearVelocity(P.Vec2(0, 0));
+            body.setAngularVelocity(0);
+            body.setAwake(false);
+            continue;
+        }
+
+        let vx = vel.x, vy = vel.y;
+
+        // Bounce kill on Y — object bounced up but has almost no energy left
+        if (vy < 0 && Math.abs(vy) < BOUNCE_KILL_V) vy = 0;
+        // Bounce kill on X — object bounced sideways with almost no energy
+        if (Math.abs(vx) < BOUNCE_KILL_V * 0.5) vx = 0;
+
+        // Angular rest — stop spinning when rotation is negligible
+        const newOmega = Math.abs(omega) < SLEEP_OMEGA ? 0 : omega;
+
+        if (vx !== vel.x || vy !== vel.y || newOmega !== omega) {
+            body.setLinearVelocity(P.Vec2(vx, vy));
+            body.setAngularVelocity(newOmega);
+        }
     }
 
     // ── POST-STEP: sync dynamic body position → sprite ────────
