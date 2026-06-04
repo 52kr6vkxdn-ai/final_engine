@@ -396,64 +396,175 @@ export async function startPhysics() {
 
 // ══════════════════════════════════════════════════════════════
 // SAT (Separating Axis Theorem) kinematic sweep system
-// Replaces the old AABB sweep entirely.
 //
-// A "shape" throughout this system is:
-//   { verts: [{x,y},...], cx, cy }
-//   verts  — world-space vertices (convex polygon, CCW or CW)
-//   cx/cy  — world-space centroid (== obj.x + scaled polygon centroid)
+// Handles:
+//   • Convex AND concave polygons (decomposed into convex triangles)
+//   • Circle / capsule shape types (approximated as polygon)
+//   • Box fallback for objects with no drawn polygon
+//   • Correct hit-direction flags without fragile axis-angle thresholds
+//   • Runtime scale changes (verts rebuilt from obj.scale each frame)
 //
-// For objects without a polygon the shape is a box (4 verts).
+// A "compound shape" is an array of convex polygon vert-lists.
+// Simple box/polygon objects have one entry; concave polygons have many.
 // ══════════════════════════════════════════════════════════════
 
-// Skin tolerance — how many px to keep between shapes when resolving
-const SWEEP_SKIN = 1;
-// Probe distance below the shape to detect ground while standing still
-const PROBE_DIST = 4;
+const SWEEP_SKIN = 1;   // px — gap kept between shapes after resolution
+const PROBE_DIST = 4;   // px — ground-probe lookahead below the shape
 
-// ── Build world-space shape for an object ────────────────────
+// ── Ear-clip triangulation (handles concave polygons) ─────────
+// Returns an array of triangles [ [{x,y},{x,y},{x,y}], ... ]
+function _triangulate(pts) {
+    if (pts.length < 3) return [];
+    if (pts.length === 3) return [pts.slice()];
+
+    // Determine winding; flip to CCW if CW
+    let area = 0;
+    for (let i = 0; i < pts.length; i++) {
+        const a = pts[i], b = pts[(i + 1) % pts.length];
+        area += (b.x - a.x) * (b.y + a.y);
+    }
+    const poly = area > 0 ? pts.slice().reverse() : pts.slice();
+
+    const tris = [];
+    const idx  = Array.from({ length: poly.length }, (_, i) => i);
+
+    function isEar(i) {
+        const n = idx.length;
+        const a = poly[idx[(i - 1 + n) % n]];
+        const b = poly[idx[i]];
+        const c = poly[idx[(i + 1) % n]];
+        // Must be convex (CCW turn)
+        if ((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x) < 0) return false;
+        // No other vertex inside the triangle
+        for (let j = 0; j < n; j++) {
+            if (j === (i - 1 + n) % n || j === i || j === (i + 1) % n) continue;
+            const p = poly[idx[j]];
+            if (_ptInTri(p, a, b, c)) return false;
+        }
+        return true;
+    }
+
+    let safety = idx.length * idx.length + 10;
+    while (idx.length > 3 && safety-- > 0) {
+        let clipped = false;
+        for (let i = 0; i < idx.length; i++) {
+            if (isEar(i)) {
+                const n = idx.length;
+                tris.push([
+                    poly[idx[(i - 1 + n) % n]],
+                    poly[idx[i]],
+                    poly[idx[(i + 1) % n]],
+                ]);
+                idx.splice(i, 1);
+                clipped = true;
+                break;
+            }
+        }
+        if (!clipped) break; // degenerate polygon — stop to avoid infinite loop
+    }
+    if (idx.length === 3) tris.push([poly[idx[0]], poly[idx[1]], poly[idx[2]]]);
+    return tris;
+}
+
+function _ptInTri(p, a, b, c) {
+    const d1 = (p.x-b.x)*(a.y-b.y) - (a.x-b.x)*(p.y-b.y);
+    const d2 = (p.x-c.x)*(b.y-c.y) - (b.x-c.x)*(p.y-c.y);
+    const d3 = (p.x-a.x)*(c.y-a.y) - (c.x-a.x)*(p.y-a.y);
+    const hasNeg = (d1<0)||(d2<0)||(d3<0);
+    const hasPos = (d1>0)||(d2>0)||(d3>0);
+    return !(hasNeg && hasPos);
+}
+
+// ── Circle approximation polygon (n verts) ────────────────────
+function _circleVerts(cx, cy, r, n = 16) {
+    return Array.from({ length: n }, (_, i) => ({
+        x: cx + Math.cos((i / n) * Math.PI * 2) * r,
+        y: cy + Math.sin((i / n) * Math.PI * 2) * r,
+    }));
+}
+
+// ── Build a world-space compound shape for an object ──────────
+// Returns { parts: [ [{x,y},...], ... ], allVerts: [{x,y},...] }
+// parts   — array of convex polygons (triangles for concave input)
+// allVerts — flat list of all verts (for AABB / centroid maths)
 function _getKinematicShape(obj) {
     const sx = Math.abs(obj.scale?.x ?? 1) || 1;
     const sy = Math.abs(obj.scale?.y ?? 1) || 1;
+    const shape = obj.physicsShape ?? 'box';
 
-    const poly = _getActivePolygon(obj);
-    if (Array.isArray(poly) && poly.length >= 3 &&
-        (obj.physicsShape === 'polygon' || obj.physicsShape === 'shared')) {
-        const verts = poly.map(p => ({ x: obj.x + p.x * sx, y: obj.y + p.y * sy }));
-        let cx = 0, cy = 0;
-        for (const v of verts) { cx += v.x; cy += v.y; }
-        cx /= verts.length; cy /= verts.length;
-        return { verts, cx, cy };
+    // ── Circle ───────────────────────────────────────────────
+    if (shape === 'circle') {
+        const g  = collisionGeom(obj);
+        const r  = g.r * Math.min(sx, sy);
+        const cx = obj.x + (g.ox || 0) * sx;
+        const cy = obj.y + (g.oy || 0) * sy;
+        const verts = _circleVerts(cx, cy, r, 16);
+        return { parts: [verts], allVerts: verts };
     }
 
-    // Fallback: axis-aligned box from collisionGeom
+    // ── Capsule ──────────────────────────────────────────────
+    if (shape === 'capsule') {
+        const g    = collisionGeom(obj);
+        const capW = (obj.physicsSize?.capW ?? g.w) * sx;
+        const capH = (obj.physicsSize?.capH ?? g.h) * sy;
+        const capR = Math.min(capW, capH) / 2;
+        const cx   = obj.x + (g.ox || 0) * sx;
+        const cy   = obj.y + (g.oy || 0) * sy;
+        const N    = 8; // verts per hemisphere
+        const verts = [];
+        if (capW >= capH) {
+            const len = capW / 2 - capR;
+            for (let i = 0; i <= N; i++) { const a = Math.PI/2 + (i/N)*Math.PI; verts.push({ x: cx - len + Math.cos(a)*capR, y: cy + Math.sin(a)*capR }); }
+            for (let i = 0; i <= N; i++) { const a = -Math.PI/2 + (i/N)*Math.PI; verts.push({ x: cx + len + Math.cos(a)*capR, y: cy + Math.sin(a)*capR }); }
+        } else {
+            const len = capH / 2 - capR;
+            for (let i = 0; i <= N; i++) { const a = Math.PI + (i/N)*Math.PI; verts.push({ x: cx + Math.cos(a)*capR, y: cy - len + Math.sin(a)*capR }); }
+            for (let i = 0; i <= N; i++) { const a = (i/N)*Math.PI; verts.push({ x: cx + Math.cos(a)*capR, y: cy + len + Math.sin(a)*capR }); }
+        }
+        // Capsule hull is convex — one part
+        return { parts: [verts], allVerts: verts };
+    }
+
+    // ── Drawn polygon ────────────────────────────────────────
+    const poly = _getActivePolygon(obj);
+    if (Array.isArray(poly) && poly.length >= 3 &&
+        (shape === 'polygon' || shape === 'shared')) {
+        const worldVerts = poly.map(p => ({ x: obj.x + p.x * sx, y: obj.y + p.y * sy }));
+        // Decompose into convex triangles (handles concave shapes transparently)
+        const tris = _triangulate(worldVerts);
+        const parts = tris.length > 0 ? tris : [worldVerts];
+        return { parts, allVerts: worldVerts };
+    }
+
+    // ── Box fallback ─────────────────────────────────────────
     const g  = collisionGeom(obj);
     const w  = (g.w || 32) * sx;
     const h  = (g.h || 32) * sy;
-    const ox = (g.ox || 0) * sx;
-    const oy = (g.oy || 0) * sy;
-    const cx = obj.x + ox;
-    const cy = obj.y + oy;
-    return {
-        verts: [
-            { x: cx - w / 2, y: cy - h / 2 },
-            { x: cx + w / 2, y: cy - h / 2 },
-            { x: cx + w / 2, y: cy + h / 2 },
-            { x: cx - w / 2, y: cy + h / 2 },
-        ],
-        cx, cy,
-    };
+    const cx = obj.x + (g.ox || 0) * sx;
+    const cy = obj.y + (g.oy || 0) * sy;
+    const verts = [
+        { x: cx - w/2, y: cy - h/2 }, { x: cx + w/2, y: cy - h/2 },
+        { x: cx + w/2, y: cy + h/2 }, { x: cx - w/2, y: cy + h/2 },
+    ];
+    return { parts: [verts], allVerts: verts };
 }
 
-// Legacy AABB getter — used only for the dynamic-body velocity push broadphase.
+// ── AABB of a compound shape (for broadphase and Planck sync) ─
 function _getKinematicAABB(obj) {
-    const sh = _getKinematicShape(obj);
+    const { allVerts } = _getKinematicShape(obj);
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const v of sh.verts) {
+    for (const v of allVerts) {
         if (v.x < minX) minX = v.x; if (v.x > maxX) maxX = v.x;
         if (v.y < minY) minY = v.y; if (v.y > maxY) maxY = v.y;
     }
     return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
+// ── Centroid of allVerts ──────────────────────────────────────
+function _shapeCentroid(allVerts) {
+    let cx = 0, cy = 0;
+    for (const v of allVerts) { cx += v.x; cy += v.y; }
+    return { cx: cx / allVerts.length, cy: cy / allVerts.length };
 }
 
 // ── SAT helpers ───────────────────────────────────────────────
@@ -468,7 +579,7 @@ function _project(verts, nx, ny) {
     return { min, max };
 }
 
-function _normals(verts) {
+function _edgeNormals(verts) {
     const axes = [];
     for (let i = 0; i < verts.length; i++) {
         const a = verts[i], b = verts[(i + 1) % verts.length];
@@ -480,9 +591,10 @@ function _normals(verts) {
     return axes;
 }
 
-// Returns null (no overlap) or MTV { nx, ny, depth } pushing A out of B.
-function _satOverlap(vertsA, vertsB) {
-    const axes = [..._normals(vertsA), ..._normals(vertsB)];
+// SAT test between two CONVEX polygons.
+// Returns null (no overlap) or MTV { nx, ny, depth } pushing vertsA out of vertsB.
+function _satConvex(vertsA, vertsB) {
+    const axes = [..._edgeNormals(vertsA), ..._edgeNormals(vertsB)];
     let minDepth = Infinity, minNx = 0, minNy = 0;
 
     for (const ax of axes) {
@@ -493,7 +605,7 @@ function _satOverlap(vertsA, vertsB) {
         if (overlap < minDepth) { minDepth = overlap; minNx = ax.x; minNy = ax.y; }
     }
 
-    // Ensure MTV points from B toward A
+    // Ensure MTV pushes A away from B
     let cAx = 0, cAy = 0, cBx = 0, cBy = 0;
     for (const v of vertsA) { cAx += v.x; cAy += v.y; }
     for (const v of vertsB) { cBx += v.x; cBy += v.y; }
@@ -504,8 +616,26 @@ function _satOverlap(vertsA, vertsB) {
     return { nx: minNx, ny: minNy, depth: minDepth };
 }
 
+// SAT test between a COMPOUND shape (array of convex parts) and a static (convex).
+// Returns the deepest penetration MTV across all parts, or null if no overlap.
+function _satCompound(parts, staticVerts) {
+    let best = null;
+    for (const part of parts) {
+        const mtv = _satConvex(part, staticVerts);
+        if (mtv && (!best || mtv.depth > best.depth)) best = mtv;
+    }
+    return best;
+}
+
 function _translateVerts(verts, dx, dy) {
     return verts.map(v => ({ x: v.x + dx, y: v.y + dy }));
+}
+
+function _translateShape(shape, dx, dy) {
+    return {
+        parts:    shape.parts.map(p => _translateVerts(p, dx, dy)),
+        allVerts: _translateVerts(shape.allVerts, dx, dy),
+    };
 }
 
 function _boxVerts(b) {
@@ -516,55 +646,61 @@ function _boxVerts(b) {
 }
 
 // ── SAT sweep (axis-separated X then Y) ──────────────────────
-// Returns { verts, cx, cy, hitX, hitY, hitDown, hitUp, hitLeft, hitRight, hitStatics }
+// shape    — compound shape { parts, allVerts }
+// dx, dy   — desired displacement this substep
+// statics  — array of { verts, ownerLabel }
+// Returns { shape, dx (actual), dy (actual), hitX/Y/Down/Up/Left/Right, hitStatics }
 function _sweepSAT(shape, dx, dy, statics) {
-    let { verts, cx, cy } = shape;
     let hitX = false, hitY = false;
     let hitDown = false, hitUp = false, hitLeft = false, hitRight = false;
     const hitStatics = [];
 
     // ── X pass ───────────────────────────────────────────────
-    verts = _translateVerts(verts, dx, 0);
-    cx   += dx;
+    shape = _translateShape(shape, dx, 0);
     for (const s of statics) {
-        const mtv = _satOverlap(verts, s.verts);
-        if (!mtv || Math.abs(mtv.nx) < 0.1) continue;
+        const mtv = _satCompound(shape.parts, s.verts);
+        if (!mtv) continue;
+        // Only respond to X-axis separations (nx dominant over ny)
+        if (Math.abs(mtv.nx) <= Math.abs(mtv.ny)) continue;
         const push = Math.max(0, mtv.depth - SWEEP_SKIN);
-        verts = _translateVerts(verts, mtv.nx * push, 0);
-        cx   += mtv.nx * push;
+        shape = _translateShape(shape, mtv.nx * push, 0);
         hitX  = true;
-        if (mtv.nx < 0) hitRight = true; else hitLeft = true;
+        // mtv.nx points A away from B: if nx > 0 we were pushed right → came from left → hit left wall
+        if (mtv.nx > 0) hitLeft = true; else hitRight = true;
         if (!hitStatics.includes(s)) hitStatics.push(s);
     }
 
     // ── Y pass ───────────────────────────────────────────────
-    verts = _translateVerts(verts, 0, dy);
-    cy   += dy;
+    shape = _translateShape(shape, 0, dy);
     for (const s of statics) {
-        const mtv = _satOverlap(verts, s.verts);
-        if (!mtv || Math.abs(mtv.ny) < 0.1) continue;
+        const mtv = _satCompound(shape.parts, s.verts);
+        if (!mtv) continue;
+        // Only respond to Y-axis separations (ny dominant over nx)
+        if (Math.abs(mtv.ny) <= Math.abs(mtv.nx)) continue;
         const push = Math.max(0, mtv.depth - SWEEP_SKIN);
-        verts = _translateVerts(verts, 0, mtv.ny * push);
-        cy   += mtv.ny * push;
+        shape = _translateShape(shape, 0, mtv.ny * push);
         hitY  = true;
-        if (mtv.ny < 0) hitDown = true; else hitUp = true;
+        // mtv.ny > 0 → pushed down → was above the surface → hit floor
+        if (mtv.ny > 0) hitDown = true; else hitUp = true;
         if (!hitStatics.includes(s)) hitStatics.push(s);
     }
 
-    return { verts, cx, cy, hitX, hitY, hitDown, hitUp, hitLeft, hitRight, hitStatics };
+    return { shape, hitX, hitY, hitDown, hitUp, hitLeft, hitRight, hitStatics };
 }
 
 // ── Ground probe (SAT) ────────────────────────────────────────
 function _probeGround(shape, statics) {
-    const probeVerts = _translateVerts(shape.verts, 0, PROBE_DIST);
+    const probed = _translateShape(shape, 0, PROBE_DIST);
     for (const s of statics) {
-        if (_satOverlap(probeVerts, s.verts)) return true;
+        if (_satCompound(probed.parts, s.verts)) return true;
     }
     return false;
 }
 
 // ── Build static grid for the SAT sweep ──────────────────────
-// Each entry carries { verts, ownerLabel }.
+// Each static entry carries { verts: [convex polygon], ownerLabel }.
+// Static/kinematic sprites with drawn polygons expose their actual shape.
+// Tile cells and dynamic bodies use box verts.
 function _buildStaticGrid(excludeObj = null) {
     const statics = [];
 
@@ -574,12 +710,16 @@ function _buildStaticGrid(excludeObj = null) {
         statics.push({ verts: _boxVerts(b), ownerLabel: t.ownerLabel });
     }
 
-    // 2. All non-sensor sprite bodies except the object being swept
+    // 2. All non-sensor sprite bodies except the swept object
     for (const { obj: o, body, type } of _bodies) {
         if (o === excludeObj || !body || o.physicsIsSensor) continue;
         if (type === 'static' || type === 'kinematic') {
+            // Use the full compound shape; push each convex part as a separate static entry
+            // so the swept kinematic collides correctly against all parts of a concave static.
             const sh = _getKinematicShape(o);
-            statics.push({ verts: sh.verts, ownerLabel: o.label });
+            for (const part of sh.parts) {
+                statics.push({ verts: part, ownerLabel: o.label });
+            }
         } else if (type === 'dynamic') {
             const b = _getPlanckBodyBounds(body);
             statics.push({ verts: _boxVerts(b), ownerLabel: o.label });
@@ -648,7 +788,7 @@ export function stepPhysics(dt) {
         const statics = _buildStaticGrid(obj);
 
         if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) {
-            // Not moving this frame — only run the ground probe for isOnGround
+            // Not moving — only probe for ground flag
             const idleShape = _getKinematicShape(obj);
             obj._isOnGround  = _probeGround(idleShape, statics);
             obj._isOnCeiling = false;
@@ -674,9 +814,7 @@ export function stepPhysics(dt) {
         obj.x = prevX;
         obj.y = prevY;
 
-        // 4–7. Substep the sweep so fast-moving kinematics never tunnel through
-        //      dynamic objects. Each substep: sweep a fraction of dx/dy, teleport
-        //      the Planck body, run a mini world.step so dynamics get pushed out.
+        // 4–7. Substep sweep — prevents tunnelling through fast-moving objects
         const KIN_SUBSTEPS = 3;
         const subDx = dx / KIN_SUBSTEPS;
         const subDy = dy / KIN_SUBSTEPS;
@@ -685,29 +823,27 @@ export function stepPhysics(dt) {
         let hitX = false, hitY = false;
         let hitDown = false, hitUp = false, hitLeft = false, hitRight = false;
         const hitStatics = [];
-        // curShape carries world-space polygon verts + centroid
-        let curShape = _getKinematicShape(obj);
 
         for (let _ks = 0; _ks < KIN_SUBSTEPS; _ks++) {
-            // Rebuild static grid each substep — dynamic positions may have shifted
             const subStatics = _buildStaticGrid(obj);
+
+            // Build shape from current obj.x/y (updated each substep)
+            const curShape = _getKinematicShape(obj);
+            // Snapshot centroid BEFORE sweep so we can compute the delta
+            const { cx: preCx, cy: preCy } = _shapeCentroid(curShape.allVerts);
+
             const res = _sweepSAT(curShape, subDx, subDy, subStatics);
 
             if (res.hitX) { hitX = true; hitLeft  = hitLeft  || res.hitLeft;  hitRight = hitRight || res.hitRight; }
             if (res.hitY) { hitY = true; hitDown  = hitDown  || res.hitDown;  hitUp    = hitUp    || res.hitUp; }
             for (const s of res.hitStatics) if (!hitStatics.includes(s)) hitStatics.push(s);
 
-            // The SAT centroid IS obj.x/y (for polygon shapes) or obj.x+ox/obj.y+oy (box).
-            // Derive new obj.x/y from the resolved centroid.
-            // For polygon: centroid offset from obj origin is baked into verts, so cx == obj.x + localCentroidOffset.
-            // We compute the delta the centroid moved and apply same delta to obj position.
-            const dcx = res.cx - curShape.cx;
-            const dcy = res.cy - curShape.cy;
-            obj.x += dcx;
-            obj.y += dcy;
-            curShape = res; // carry resolved verts forward
+            // Derive obj.x/y from how much the shape centroid moved after resolution
+            const { cx: postCx, cy: postCy } = _shapeCentroid(res.shape.allVerts);
+            obj.x += postCx - preCx;
+            obj.y += postCy - preCy;
 
-            // Teleport Planck body so dynamics are pushed out this substep
+            // Teleport Planck body so dynamics get pushed out this substep
             if (body) {
                 const off  = body._zenOffset || { x: 0, y: 0 };
                 const cosR = Math.cos(obj.rotation || 0);
@@ -719,10 +855,10 @@ export function stepPhysics(dt) {
                 );
             }
 
-            // Mini world step — pushes dynamics out of the kinematic body
+            // Mini world step — ejects dynamic bodies from the kinematic
             _world.step(subDt, 8, 3);
 
-            // Apply kinematic velocity to touching dynamic bodies (broadphase AABB check).
+            // Apply kinematic velocity to overlapping dynamic bodies (AABB broadphase)
             if (Math.abs(subDx) > 0.001 || Math.abs(subDy) > 0.001) {
                 const kinAabb = _getKinematicAABB(obj);
                 const kvx = subDx / Math.max(subDt, 0.001);
@@ -738,8 +874,6 @@ export function stepPhysics(dt) {
                 }
             }
 
-            // Refresh shape from new obj position for next substep
-            curShape = _getKinematicShape(obj);
             if (res.hitX && res.hitY) break;
         }
 
