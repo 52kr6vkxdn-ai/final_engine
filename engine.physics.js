@@ -247,9 +247,7 @@ export async function startPhysics() {
     catch (err) { console.error('[Physics]', err); return; }
 
     const P = window.planck;
-    // Use Planck world gravity so energy dissipation (damping, restitution)
-    // works correctly. Per-body gravity scale is applied via gravityScale below.
-    _world = P.World({ gravity: P.Vec2(0, GRAVITY_PX * 0.001) });
+    _world = P.World({ gravity: P.Vec2(0, 0) });
     _bodies           = [];
     _tileBodies.length = 0;
     _kinematicContacts.clear();
@@ -924,27 +922,19 @@ export function stepPhysics(dt) {
         }
     }
 
-    // ── DYNAMIC: apply per-body gravity scale ─────────────────
-    // World gravity is set globally (Y only). Per-body scale and
-    // optional X gravity are handled here via gravityScale + applyForce
-    // only for bodies that deviate from scale=1 / gx=0, so the world
-    // gravity can do its job (and Planck's sleep/energy system works).
+    // ── DYNAMIC: apply per-body gravity via applyForce ────────
+    // Planck v1.0.0 has no setGravityScale — we apply gravity
+    // manually each frame. This is correct: F = m*g*scale.
     for (const { obj, body, type } of _bodies) {
         if (type !== 'dynamic' || !body) continue;
         if (body.isStatic()) continue;
-        const gravScale = obj.physicsGravityScale ?? 1;
+        const gravScale  = obj.physicsGravityScale  ?? 1;
         const gravXScale = obj.physicsGravityXScale ?? 0;
-
-        // Planck applies world gravity * body.gravityScale automatically.
-        // Set the body's built-in gravity scale so Planck handles Y gravity
-        // correctly without us fighting its energy model.
-        body.setGravityScale(gravScale);
-
-        // Extra horizontal gravity (not covered by Planck's built-in world gravity)
-        if (gravXScale !== 0) {
-            const gx = gravXScale * GRAVITY_PX * 0.001;
+        if (gravScale !== 0 || gravXScale !== 0) {
+            const gy = GRAVITY_PX * 0.001 * gravScale;
+            const gx = GRAVITY_PX * 0.001 * gravXScale;
             body.applyForce(
-                P.Vec2(gx * body.getMass(), 0),
+                P.Vec2(gx * body.getMass(), gy * body.getMass()),
                 body.getWorldCenter(),
                 true
             );
