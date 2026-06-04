@@ -700,6 +700,7 @@ export function openPolygonEditor(obj, frameId = 'shared', opts = {}) {
         }
         import('./engine.ui.js').then(m => m.syncPixiToInspector?.());
         import('./engine.collision-overlay.js').then(m => m.refreshCollisionOverlay());
+        import('./engine.physics.js').then(m => m.rebuildBodyForObject(obj));
         _pushUndo();
         panel.remove();
         try { opts?.onSave?.(frameId); } catch (_) {}

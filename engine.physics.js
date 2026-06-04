@@ -394,111 +394,195 @@ export async function startPhysics() {
     _rafId = 1;
 }
 
-// ── AABB helpers for kinematic sweep ─────────────────────────
-function _getKinematicAABB(obj) {
+// ══════════════════════════════════════════════════════════════
+// SAT (Separating Axis Theorem) kinematic sweep system
+// Replaces the old AABB sweep entirely.
+//
+// A "shape" throughout this system is:
+//   { verts: [{x,y},...], cx, cy }
+//   verts  — world-space vertices (convex polygon, CCW or CW)
+//   cx/cy  — world-space centroid (== obj.x + scaled polygon centroid)
+//
+// For objects without a polygon the shape is a box (4 verts).
+// ══════════════════════════════════════════════════════════════
+
+// Skin tolerance — how many px to keep between shapes when resolving
+const SWEEP_SKIN = 1;
+// Probe distance below the shape to detect ground while standing still
+const PROBE_DIST = 4;
+
+// ── Build world-space shape for an object ────────────────────
+function _getKinematicShape(obj) {
     const sx = Math.abs(obj.scale?.x ?? 1) || 1;
     const sy = Math.abs(obj.scale?.y ?? 1) || 1;
+
+    const poly = _getActivePolygon(obj);
+    if (Array.isArray(poly) && poly.length >= 3 &&
+        (obj.physicsShape === 'polygon' || obj.physicsShape === 'shared')) {
+        const verts = poly.map(p => ({ x: obj.x + p.x * sx, y: obj.y + p.y * sy }));
+        let cx = 0, cy = 0;
+        for (const v of verts) { cx += v.x; cy += v.y; }
+        cx /= verts.length; cy /= verts.length;
+        return { verts, cx, cy };
+    }
+
+    // Fallback: axis-aligned box from collisionGeom
     const g  = collisionGeom(obj);
     const w  = (g.w || 32) * sx;
     const h  = (g.h || 32) * sy;
     const ox = (g.ox || 0) * sx;
     const oy = (g.oy || 0) * sy;
-    return { x: obj.x + ox - w / 2, y: obj.y + oy - h / 2, w, h };
+    const cx = obj.x + ox;
+    const cy = obj.y + oy;
+    return {
+        verts: [
+            { x: cx - w / 2, y: cy - h / 2 },
+            { x: cx + w / 2, y: cy - h / 2 },
+            { x: cx + w / 2, y: cy + h / 2 },
+            { x: cx - w / 2, y: cy + h / 2 },
+        ],
+        cx, cy,
+    };
 }
 
-// Skin tolerance — prevents false-positive when the body is flush against a surface
-const SWEEP_SKIN  = 1;   // px
-// Distance to probe below feet to detect ground while standing still
-const PROBE_DIST  = 4;   // px
+// Legacy AABB getter — used only for the dynamic-body velocity push broadphase.
+function _getKinematicAABB(obj) {
+    const sh = _getKinematicShape(obj);
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const v of sh.verts) {
+        if (v.x < minX) minX = v.x; if (v.x > maxX) maxX = v.x;
+        if (v.y < minY) minY = v.y; if (v.y > maxY) maxY = v.y;
+    }
+    return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
 
-// Axis-separated AABB sweep (X then Y) with skin tolerance and direction flags.
-// Returns resolved (x, y) corner plus hit booleans and the list of touched statics.
-function _sweepAABB(ax, ay, aw, ah, dx, dy, statics) {
-    let x = ax, y = ay;
+// ── SAT helpers ───────────────────────────────────────────────
+
+function _project(verts, nx, ny) {
+    let min = Infinity, max = -Infinity;
+    for (const v of verts) {
+        const d = v.x * nx + v.y * ny;
+        if (d < min) min = d;
+        if (d > max) max = d;
+    }
+    return { min, max };
+}
+
+function _normals(verts) {
+    const axes = [];
+    for (let i = 0; i < verts.length; i++) {
+        const a = verts[i], b = verts[(i + 1) % verts.length];
+        const ex = b.x - a.x, ey = b.y - a.y;
+        const len = Math.hypot(ex, ey);
+        if (len < 0.0001) continue;
+        axes.push({ x: -ey / len, y: ex / len });
+    }
+    return axes;
+}
+
+// Returns null (no overlap) or MTV { nx, ny, depth } pushing A out of B.
+function _satOverlap(vertsA, vertsB) {
+    const axes = [..._normals(vertsA), ..._normals(vertsB)];
+    let minDepth = Infinity, minNx = 0, minNy = 0;
+
+    for (const ax of axes) {
+        const pA = _project(vertsA, ax.x, ax.y);
+        const pB = _project(vertsB, ax.x, ax.y);
+        const overlap = Math.min(pA.max, pB.max) - Math.max(pA.min, pB.min);
+        if (overlap <= 0) return null;
+        if (overlap < minDepth) { minDepth = overlap; minNx = ax.x; minNy = ax.y; }
+    }
+
+    // Ensure MTV points from B toward A
+    let cAx = 0, cAy = 0, cBx = 0, cBy = 0;
+    for (const v of vertsA) { cAx += v.x; cAy += v.y; }
+    for (const v of vertsB) { cBx += v.x; cBy += v.y; }
+    cAx /= vertsA.length; cAy /= vertsA.length;
+    cBx /= vertsB.length; cBy /= vertsB.length;
+    if ((cAx - cBx) * minNx + (cAy - cBy) * minNy < 0) { minNx = -minNx; minNy = -minNy; }
+
+    return { nx: minNx, ny: minNy, depth: minDepth };
+}
+
+function _translateVerts(verts, dx, dy) {
+    return verts.map(v => ({ x: v.x + dx, y: v.y + dy }));
+}
+
+function _boxVerts(b) {
+    return [
+        { x: b.min.x, y: b.min.y }, { x: b.max.x, y: b.min.y },
+        { x: b.max.x, y: b.max.y }, { x: b.min.x, y: b.max.y },
+    ];
+}
+
+// ── SAT sweep (axis-separated X then Y) ──────────────────────
+// Returns { verts, cx, cy, hitX, hitY, hitDown, hitUp, hitLeft, hitRight, hitStatics }
+function _sweepSAT(shape, dx, dy, statics) {
+    let { verts, cx, cy } = shape;
     let hitX = false, hitY = false;
     let hitDown = false, hitUp = false, hitLeft = false, hitRight = false;
     const hitStatics = [];
 
-    // ── X pass ────────────────────────────────────────────────
-    x += dx;
+    // ── X pass ───────────────────────────────────────────────
+    verts = _translateVerts(verts, dx, 0);
+    cx   += dx;
     for (const s of statics) {
-        // Require meaningful vertical overlap (inset by SKIN on both sides)
-        const overY = (y + ah - SWEEP_SKIN > s.y + SWEEP_SKIN) &&
-                      (y + SWEEP_SKIN       < s.y + s.h - SWEEP_SKIN);
-        if (!overY) continue;
-        if (x + aw - SWEEP_SKIN > s.x && x + SWEEP_SKIN < s.x + s.w) {
-            hitX = true;
-            if (dx > 0) { x = s.x - aw;      hitRight = true; }
-            else        { x = s.x + s.w;      hitLeft  = true; }
-            if (!hitStatics.includes(s)) hitStatics.push(s);
-        }
+        const mtv = _satOverlap(verts, s.verts);
+        if (!mtv || Math.abs(mtv.nx) < 0.1) continue;
+        const push = Math.max(0, mtv.depth - SWEEP_SKIN);
+        verts = _translateVerts(verts, mtv.nx * push, 0);
+        cx   += mtv.nx * push;
+        hitX  = true;
+        if (mtv.nx < 0) hitRight = true; else hitLeft = true;
+        if (!hitStatics.includes(s)) hitStatics.push(s);
     }
 
-    // ── Y pass ────────────────────────────────────────────────
-    y += dy;
+    // ── Y pass ───────────────────────────────────────────────
+    verts = _translateVerts(verts, 0, dy);
+    cy   += dy;
     for (const s of statics) {
-        const overX = (x + aw - SWEEP_SKIN > s.x + SWEEP_SKIN) &&
-                      (x + SWEEP_SKIN       < s.x + s.w - SWEEP_SKIN);
-        if (!overX) continue;
-        if (y + ah - SWEEP_SKIN > s.y && y + SWEEP_SKIN < s.y + s.h) {
-            hitY = true;
-            if (dy > 0) { y = s.y - ah;       hitDown = true; }
-            else        { y = s.y + s.h;       hitUp   = true; }
-            if (!hitStatics.includes(s)) hitStatics.push(s);
-        }
+        const mtv = _satOverlap(verts, s.verts);
+        if (!mtv || Math.abs(mtv.ny) < 0.1) continue;
+        const push = Math.max(0, mtv.depth - SWEEP_SKIN);
+        verts = _translateVerts(verts, 0, mtv.ny * push);
+        cy   += mtv.ny * push;
+        hitY  = true;
+        if (mtv.ny < 0) hitDown = true; else hitUp = true;
+        if (!hitStatics.includes(s)) hitStatics.push(s);
     }
 
-    return { x, y, hitX, hitY, hitDown, hitUp, hitLeft, hitRight, hitStatics };
+    return { verts, cx, cy, hitX, hitY, hitDown, hitUp, hitLeft, hitRight, hitStatics };
 }
 
-// Check if there is a solid surface within PROBE_DIST px below the AABB.
-// Used to detect ground while standing still (no downward movement this frame).
-function _probeGround(aabb, statics) {
-    const { x: ax, y: ay, w: aw, h: ah } = aabb;
+// ── Ground probe (SAT) ────────────────────────────────────────
+function _probeGround(shape, statics) {
+    const probeVerts = _translateVerts(shape.verts, 0, PROBE_DIST);
     for (const s of statics) {
-        const overX = (ax + aw - SWEEP_SKIN > s.x + SWEEP_SKIN) &&
-                      (ax + SWEEP_SKIN       < s.x + s.w - SWEEP_SKIN);
-        if (!overX) continue;
-        const gap = s.y - (ay + ah);
-        if (gap >= -SWEEP_SKIN && gap <= PROBE_DIST) return true;
+        if (_satOverlap(probeVerts, s.verts)) return true;
     }
     return false;
 }
 
-// Static grid for the kinematic AABB sweep.
-// excludeObj — the kinematic object currently being swept (excluded to avoid self-collision).
-// Includes: tile cells, static-type bodies, other kinematic bodies, non-sensor dynamic bodies.
+// ── Build static grid for the SAT sweep ──────────────────────
+// Each entry carries { verts, ownerLabel }.
 function _buildStaticGrid(excludeObj = null) {
     const statics = [];
 
-    // 1. Tilemap / auto-tilemap cells (always static)
+    // 1. Tilemap / auto-tilemap cells (always static boxes)
     for (const t of _tileBodies) {
         const b = _getPlanckBodyBounds(t.body);
-        statics.push({
-            x: b.min.x, y: b.min.y,
-            w: b.max.x - b.min.x,
-            h: b.max.y - b.min.y,
-            ownerLabel: t.ownerLabel,
-        });
+        statics.push({ verts: _boxVerts(b), ownerLabel: t.ownerLabel });
     }
 
     // 2. All non-sensor sprite bodies except the object being swept
     for (const { obj: o, body, type } of _bodies) {
         if (o === excludeObj || !body || o.physicsIsSensor) continue;
-
         if (type === 'static' || type === 'kinematic') {
-            // Use the object's live position — it may have just been updated this frame
-            const aabb = _getKinematicAABB(o);
-            statics.push({ x: aabb.x, y: aabb.y, w: aabb.w, h: aabb.h, ownerLabel: o.label });
+            const sh = _getKinematicShape(o);
+            statics.push({ verts: sh.verts, ownerLabel: o.label });
         } else if (type === 'dynamic') {
-            // Use Planck body bounds (position from the last physics step)
             const b = _getPlanckBodyBounds(body);
-            statics.push({
-                x: b.min.x, y: b.min.y,
-                w: b.max.x - b.min.x,
-                h: b.max.y - b.min.y,
-                ownerLabel: o.label,
-            });
+            statics.push({ verts: _boxVerts(b), ownerLabel: o.label });
         }
     }
 
@@ -565,8 +649,8 @@ export function stepPhysics(dt) {
 
         if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) {
             // Not moving this frame — only run the ground probe for isOnGround
-            const aabb = _getKinematicAABB(obj);
-            obj._isOnGround  = _probeGround(aabb, statics);
+            const idleShape = _getKinematicShape(obj);
+            obj._isOnGround  = _probeGround(idleShape, statics);
             obj._isOnCeiling = false;
             obj._isOnWall    = false;
             obj._kinematicActualVx = 0;
@@ -587,46 +671,41 @@ export function stepPhysics(dt) {
         }
 
         // 3. Reset to last confirmed-safe position before sweeping
-        //    (scripts may have written to obj.x/y; directDx captured the delta)
         obj.x = prevX;
         obj.y = prevY;
 
         // 4–7. Substep the sweep so fast-moving kinematics never tunnel through
         //      dynamic objects. Each substep: sweep a fraction of dx/dy, teleport
-        //      the Planck body, run a mini world.step so dynamics get pushed out
-        //      incrementally — same SUBSTEPS count used by the main Planck loop.
+        //      the Planck body, run a mini world.step so dynamics get pushed out.
         const KIN_SUBSTEPS = 3;
         const subDx = dx / KIN_SUBSTEPS;
         const subDy = dy / KIN_SUBSTEPS;
         const subDt = dt / KIN_SUBSTEPS;
 
-        // ox/oy captured once — frame changes now re-anchor obj.x/y in onFrameChange
-        // so these values are always consistent with the current frame before the sweep.
-        const scX = Math.abs(obj.scale?.x ?? 1) || 1;
-        const scY = Math.abs(obj.scale?.y ?? 1) || 1;
-        const g   = collisionGeom(obj);
-        const ox  = (g.ox || 0) * scX;
-        const oy  = (g.oy || 0) * scY;
-
-        let nx = 0, ny = 0;
         let hitX = false, hitY = false;
         let hitDown = false, hitUp = false, hitLeft = false, hitRight = false;
         const hitStatics = [];
-        let curAabb = _getKinematicAABB(obj);
+        // curShape carries world-space polygon verts + centroid
+        let curShape = _getKinematicShape(obj);
 
         for (let _ks = 0; _ks < KIN_SUBSTEPS; _ks++) {
             // Rebuild static grid each substep — dynamic positions may have shifted
             const subStatics = _buildStaticGrid(obj);
-            const res = _sweepAABB(curAabb.x, curAabb.y, curAabb.w, curAabb.h, subDx, subDy, subStatics);
+            const res = _sweepSAT(curShape, subDx, subDy, subStatics);
 
-            nx = res.x; ny = res.y;
             if (res.hitX) { hitX = true; hitLeft  = hitLeft  || res.hitLeft;  hitRight = hitRight || res.hitRight; }
             if (res.hitY) { hitY = true; hitDown  = hitDown  || res.hitDown;  hitUp    = hitUp    || res.hitUp; }
             for (const s of res.hitStatics) if (!hitStatics.includes(s)) hitStatics.push(s);
 
-            // Apply sub-resolved position to sprite
-            obj.x = nx + curAabb.w / 2 - ox;
-            obj.y = ny + curAabb.h / 2 - oy;
+            // The SAT centroid IS obj.x/y (for polygon shapes) or obj.x+ox/obj.y+oy (box).
+            // Derive new obj.x/y from the resolved centroid.
+            // For polygon: centroid offset from obj origin is baked into verts, so cx == obj.x + localCentroidOffset.
+            // We compute the delta the centroid moved and apply same delta to obj position.
+            const dcx = res.cx - curShape.cx;
+            const dcy = res.cy - curShape.cy;
+            obj.x += dcx;
+            obj.y += dcy;
+            curShape = res; // carry resolved verts forward
 
             // Teleport Planck body so dynamics are pushed out this substep
             if (body) {
@@ -643,43 +722,32 @@ export function stepPhysics(dt) {
             // Mini world step — pushes dynamics out of the kinematic body
             _world.step(subDt, 8, 3);
 
-            // After Planck depenetrates, apply velocity to touched dynamic bodies.
-            // Planck only corrects position (ejects the body) but gives it no velocity,
-            // so without this the dynamic gets pushed out but immediately stops.
-            // We add the kinematic's sub-velocity to any dynamic whose AABB overlaps ours.
+            // Apply kinematic velocity to touching dynamic bodies (broadphase AABB check).
             if (Math.abs(subDx) > 0.001 || Math.abs(subDy) > 0.001) {
                 const kinAabb = _getKinematicAABB(obj);
-                // kinematic velocity in Planck units (px → planck: /100? No — engine uses px directly)
-                // subDx/subDy are in px, subDt in seconds → velocity in px/s
                 const kvx = subDx / Math.max(subDt, 0.001);
                 const kvy = subDy / Math.max(subDt, 0.001);
                 for (const { body: dynBody, type: dynType, obj: dynObj } of _bodies) {
                     if (dynType !== 'dynamic' || !dynBody || dynObj.physicsIsSensor) continue;
                     const db = _getPlanckBodyBounds(dynBody);
-                    // AABB overlap test
                     if (db.max.x < kinAabb.x || db.min.x > kinAabb.x + kinAabb.w) continue;
                     if (db.max.y < kinAabb.y || db.min.y > kinAabb.y + kinAabb.h) continue;
-                    // Overlapping — add kinematic velocity to this dynamic body.
-                    // Use setLinearVelocity blended with existing velocity so we don't
-                    // cancel motion the dynamic already had from gravity/other forces.
                     const cur = dynBody.getLinearVelocity();
-                    // subDx/subDy are screen-space pixels (+Y=down), matching Planck's world
-                    const newVx = (kvx !== 0) ? kvx : cur.x;
-                    const newVy = (kvy !== 0) ?  kvy : cur.y; // no flip needed
-                    dynBody.setLinearVelocity(P.Vec2(newVx, newVy));
+                    dynBody.setLinearVelocity(P.Vec2(kvx !== 0 ? kvx : cur.x, kvy !== 0 ? kvy : cur.y));
                     dynBody.setAwake(true);
                 }
             }
 
-            curAabb = _getKinematicAABB(obj);
-            if (res.hitX && res.hitY) break; // fully blocked, no need for more substeps
+            // Refresh shape from new obj position for next substep
+            curShape = _getKinematicShape(obj);
+            if (res.hitX && res.hitY) break;
         }
 
         obj._kinematicPrevX = obj.x;
         obj._kinematicPrevY = obj.y;
 
         // 6. Ground / wall / ceiling flags
-        obj._isOnGround  = hitDown || _probeGround({ x: nx, y: ny, w: curAabb.w, h: curAabb.h }, _buildStaticGrid(obj));
+        obj._isOnGround  = hitDown || _probeGround(_getKinematicShape(obj), _buildStaticGrid(obj));
         obj._isOnCeiling = hitUp;
         obj._isOnWall    = hitLeft || hitRight;
 
@@ -871,6 +939,17 @@ export function rebuildBodyForObject(obj) {
         obj._kinematicPrevX        = obj.x;
         obj._kinematicPrevY        = obj.y;
         _kinematicContacts.set(obj, new Set());
+
+        // Re-resolve active frame id so _makeBody/_getActivePolygon finds the polygon
+        const polyMap2 = obj.physicsPolygons || {};
+        if (Array.isArray(polyMap2.shared) && polyMap2.shared.length >= 3) {
+            obj._runtimePhysicsFrameId = 'shared';
+        } else {
+            const ra = obj.animations?.[obj.activeAnimIndex ?? 0];
+            const rf = ra?.frames?.[0];
+            if (rf?.id) obj._runtimePhysicsFrameId = rf.id;
+        }
+
         const kBody = _makeBody(obj, obj.x, obj.y, 'kinematic');
         if (kBody) {
             _bodies.push({ obj, body: kBody, type: 'kinematic' });
