@@ -1193,21 +1193,41 @@ function _buildSandbox(obj, instRef) {
         },
 
         // ── VELOCITY ─────────────────────────────────────────
+        // For dynamic bodies, the getter reads the ACTUAL physics body velocity
+        // (converted back to world units/sec, +Y=up) so that console.log(velocityY)
+        // and `if (isOnGround()) velocityY = 0` always see the real value.
+        // The setter still writes into _vel so the physics step picks it up.
         /** Horizontal velocity in world units/second (auto-applied each frame) */
-        get velocityX()  { return _vel.x; },
-        set velocityX(v) { _vel.x = v; },
-        /** Vertical velocity in world units/second (auto-applied each frame) */
-        get velocityY()  { return _vel.y; },
-        set velocityY(v) { _vel.y = v; },
+        get velocityX() {
+            if (obj.physicsBody === 'dynamic' && obj._physicsBody)
+                return  (obj._physicsBody.getLinearVelocity()?.x ?? 0) / 100;
+            return _vel.x;
+        },
+        set velocityX(v) { _vel.x = v; obj._velDirty = true; obj._velSetX = true; },
+        /** Vertical velocity in world units/second (auto-applied each frame, +Y=up) */
+        get velocityY() {
+            if (obj.physicsBody === 'dynamic' && obj._physicsBody)
+                return -(obj._physicsBody.getLinearVelocity()?.y ?? 0) / 100;
+            return _vel.y;
+        },
+        set velocityY(v) { _vel.y = v; obj._velDirty = true; obj._velSetY = true; },
         /** Short alias for velocityX */
-        get vx()  { return _vel.x; },
-        set vx(v) { _vel.x = v; },
+        get vx() {
+            if (obj.physicsBody === 'dynamic' && obj._physicsBody)
+                return  (obj._physicsBody.getLinearVelocity()?.x ?? 0) / 100;
+            return _vel.x;
+        },
+        set vx(v) { _vel.x = v; obj._velDirty = true; obj._velSetX = true; },
         /** Short alias for velocityY */
-        get vy()  { return _vel.y; },
-        set vy(v) { _vel.y = v; },
+        get vy() {
+            if (obj.physicsBody === 'dynamic' && obj._physicsBody)
+                return -(obj._physicsBody.getLinearVelocity()?.y ?? 0) / 100;
+            return _vel.y;
+        },
+        set vy(v) { _vel.y = v; obj._velDirty = true; obj._velSetY = true; },
 
         /** Set both velocity components at once */
-        setVelocity(vx, vy) { _vel.x = vx; _vel.y = vy; },
+        setVelocity(vx, vy) { _vel.x = vx; _vel.y = vy; obj._velDirty = true; obj._velSetX = true; obj._velSetY = true; },
         /** Stop all movement */
         stopMovement() { _vel.x = 0; _vel.y = 0; },
         /** Bounce velocityX (e.g. hit a wall) */
@@ -5730,16 +5750,23 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
                 obj._kinematicVy = -vel.y * 100;
             }
         } else if (hasDynamicBody) {
-            // ── Dynamic: velocityX/Y override the physics body velocity directly.
-            // This is the most intuitive behaviour — setting velocityX = 5 means
-            // the body moves at exactly 5 world units/sec on that axis, regardless
-            // of what forces or gravity are doing.  Physics forces (gravity, impulses)
-            // are still applied on top AFTER this each step by stepPhysics.
-            // Only override if the script actually set a velocity this frame.
-            if (vel.x !== 0 || vel.y !== 0) {
-                // Convert world units/sec → px/sec (Planck uses px)
-                // Y is flipped: script +Y = up = Planck -Y
-                obj._physicsBody.setLinearVelocity(window.planck.Vec2(vel.x * 100, -vel.y * 100));
+            // ── Dynamic: apply script velocity to physics body.
+            // IMPORTANT: we apply whenever the script has set ANY velocity this frame
+            // (tracked by _velDirty), including setting to 0. This is the only way
+            // `velocityY = 0` actually stops the body — without the dirty flag, the
+            // `vel.y === 0` case would be silently skipped and the body would keep
+            // its momentum from gravity/previous frames.
+            if (obj._velDirty) {
+                obj._velDirty = false;
+                // Only override components the script explicitly touched, blending
+                // with the current physics velocity for components left untouched.
+                const cur = obj._physicsBody.getLinearVelocity();
+                const nx  = obj._velSetX ? vel.x * 100 : cur.x;
+                const ny  = obj._velSetY ? -vel.y * 100 : cur.y;
+                obj._physicsBody.setLinearVelocity(window.planck.Vec2(nx, ny));
+                obj._physicsBody.setAwake(true);
+                obj._velSetX = false;
+                obj._velSetY = false;
             }
         } else {
             // ── No physics body — pure scripting movement ──────────────

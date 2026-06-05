@@ -130,8 +130,8 @@ function _getActivePolygon(obj) {
 function _bodyOpts(obj) {
     return {
         isSensor:           !!obj.physicsIsSensor,
-        friction:           obj.physicsFriction    ?? 0.3,
-        restitution:        obj.physicsRestitution ?? 0.1,
+        friction:           obj.physicsFriction    ?? 0.5,
+        restitution:        obj.physicsRestitution ?? 0.05,
         density:            obj.physicsDensity     ?? 0.001,
         filterCategoryBits: (obj.physicsCollisionCategory ?? 0x0001) & 0xFFFF,
         filterMaskBits:     (obj.physicsCollisionMask ?? -1) >>> 0 & 0xFFFF,
@@ -186,8 +186,8 @@ function _makeBody(obj, cx, cy, bodyType) {
         type:           isStatic ? 'static' : 'dynamic',
         position:       P.Vec2(bcx, bcy),
         angle:          bodyType !== 'static' ? rot : 0,
-        linearDamping:  obj.physicsLinearDamping  ?? 0.01,
-        angularDamping: obj.physicsAngularDamping ?? 0,
+        linearDamping:  obj.physicsLinearDamping  ?? 0.5,
+        angularDamping: obj.physicsAngularDamping ?? 0.5,
         fixedRotation:  bodyType === 'dynamic' && !!obj.physicsFixedRotation,
         userData:       { label: obj.label },
     });
@@ -288,7 +288,7 @@ export async function startPhysics() {
                     const cx = obj.x + col * td.tileW + td.tileW / 2 + ab.ox;
                     const cy = obj.y + row * td.tileH + td.tileH / 2 + ab.oy;
                     const tb = _world.createBody({ type: 'static', position: P.Vec2(cx, cy) });
-                    tb.createFixture({ shape: P.Box(Math.max(ab.w / 2, 1), Math.max(ab.h / 2, 1)), friction: 0.3, restitution: 0.1 });
+                    tb.createFixture({ shape: P.Box(Math.max(ab.w / 2, 1), Math.max(ab.h / 2, 1)), friction: 0.5, restitution: 0.05 });
                     tb.setUserData({ label: `tm_${obj.label}_${row}_${col}` });
                     tb._zenOffset = { x: 0, y: 0 };
                     _tileBodies.push({ body: tb, ownerLabel: obj.label });
@@ -308,7 +308,7 @@ export async function startPhysics() {
                     const cx = obj.x + col * d.tileW + d.tileW / 2 + ab.ox;
                     const cy = obj.y + row * d.tileH + d.tileH / 2 + ab.oy;
                     const tb = _world.createBody({ type: 'static', position: P.Vec2(cx, cy) });
-                    tb.createFixture({ shape: P.Box(Math.max(ab.w / 2, 1), Math.max(ab.h / 2, 1)), friction: 0.3, restitution: 0.1 });
+                    tb.createFixture({ shape: P.Box(Math.max(ab.w / 2, 1), Math.max(ab.h / 2, 1)), friction: 0.5, restitution: 0.05 });
                     tb.setUserData({ label: `at_${obj.label}_${row}_${col}` });
                     tb._zenOffset = { x: 0, y: 0 };
                     _tileBodies.push({ body: tb, ownerLabel: obj.label });
@@ -650,6 +650,24 @@ function _boxVerts(b) {
 // dx, dy   — desired displacement this substep
 // statics  — array of { verts, ownerLabel }
 // Returns { shape, dx (actual), dy (actual), hitX/Y/Down/Up/Left/Right, hitStatics }
+//
+// Corner-sticking fix:
+//   Old code used strict axis-dominance (|nx| > |ny|) which silently dropped
+//   near-45° MTVs at tile corners, leaving the body embedded and causing the
+//   next pass to push it in the wrong direction (false floor or ceiling hit).
+//
+//   Fix 1: Use a bias ratio (CORNER_BIAS) so an axis only wins if it is
+//           meaningfully more dominant — near-diagonal MTVs fall through to a
+//           post-pass depenetration step instead of being silently discarded.
+//
+//   Fix 2: After the two axis passes, run a "corner depenetration" pass that
+//           resolves any remaining overlaps with a minimal-axis push (picks
+//           whichever axis needs the smaller correction), clamped so it can
+//           never push opposite to the surface gravity direction.  This is
+//           what lets bodies slide cleanly off corners instead of sticking.
+//
+const CORNER_BIAS = 1.25; // an axis must be this much larger than the other to "win"
+
 function _sweepSAT(shape, dx, dy, statics) {
     let hitX = false, hitY = false;
     let hitDown = false, hitUp = false, hitLeft = false, hitRight = false;
@@ -660,12 +678,11 @@ function _sweepSAT(shape, dx, dy, statics) {
     for (const s of statics) {
         const mtv = _satCompound(shape.parts, s.verts);
         if (!mtv) continue;
-        // Only respond to X-axis separations (nx dominant over ny)
-        if (Math.abs(mtv.nx) <= Math.abs(mtv.ny)) continue;
+        // Only respond when X is clearly dominant (not near-corner)
+        if (Math.abs(mtv.nx) <= Math.abs(mtv.ny) * CORNER_BIAS) continue;
         const push = Math.max(0, mtv.depth - SWEEP_SKIN);
         shape = _translateShape(shape, mtv.nx * push, 0);
         hitX  = true;
-        // mtv.nx points A away from B: if nx > 0 we were pushed right → came from left → hit left wall
         if (mtv.nx > 0) hitLeft = true; else hitRight = true;
         if (!hitStatics.includes(s)) hitStatics.push(s);
     }
@@ -675,14 +692,54 @@ function _sweepSAT(shape, dx, dy, statics) {
     for (const s of statics) {
         const mtv = _satCompound(shape.parts, s.verts);
         if (!mtv) continue;
-        // Only respond to Y-axis separations (ny dominant over nx)
-        if (Math.abs(mtv.ny) <= Math.abs(mtv.nx)) continue;
+        // Only respond when Y is clearly dominant (not near-corner)
+        if (Math.abs(mtv.ny) <= Math.abs(mtv.nx) * CORNER_BIAS) continue;
         const push = Math.max(0, mtv.depth - SWEEP_SKIN);
         shape = _translateShape(shape, 0, mtv.ny * push);
         hitY  = true;
-        // mtv.ny > 0 → pushed down → was above the surface → hit floor
         if (mtv.ny > 0) hitDown = true; else hitUp = true;
         if (!hitStatics.includes(s)) hitStatics.push(s);
+    }
+
+    // ── Corner depenetration pass ─────────────────────────────
+    // Resolves any leftover overlaps from near-diagonal MTVs that were skipped
+    // above.  For each remaining overlap we pick the axis with the smaller
+    // correction needed (minimal-push resolution) so the body slides off the
+    // corner rather than sticking to it.  We deliberately do NOT set hitX/hitY
+    // for these corrections — they are geometry clean-up, not real surface hits.
+    for (const s of statics) {
+        const mtv = _satCompound(shape.parts, s.verts);
+        if (!mtv) continue;
+        if (mtv.depth <= SWEEP_SKIN) continue; // already resolved or inside skin
+
+        // Decompose overlap into the two axis corrections
+        const xCorrect = Math.abs(mtv.nx) * (mtv.depth - SWEEP_SKIN);
+        const yCorrect = Math.abs(mtv.ny) * (mtv.depth - SWEEP_SKIN);
+
+        if (xCorrect <= yCorrect) {
+            // X is cheaper — slide along X
+            const push = Math.max(0, mtv.depth - SWEEP_SKIN);
+            shape = _translateShape(shape, mtv.nx * push, 0);
+            // Only flag a real X hit if the correction is non-trivial
+            if (xCorrect > SWEEP_SKIN * 0.5) {
+                hitX = true;
+                if (mtv.nx > 0) hitLeft = true; else hitRight = true;
+                if (!hitStatics.includes(s)) hitStatics.push(s);
+            }
+        } else {
+            // Y is cheaper — slide along Y
+            const push = Math.max(0, mtv.depth - SWEEP_SKIN);
+            // Guard: never push UP during a downward move (prevents false ceiling
+            // detection when grazing the top corner of a tile while falling).
+            // ny < 0 would push upward; only allow that if we were actually moving up.
+            if (mtv.ny < 0 && dy >= 0) continue;
+            shape = _translateShape(shape, 0, mtv.ny * push);
+            if (yCorrect > SWEEP_SKIN * 0.5) {
+                hitY = true;
+                if (mtv.ny > 0) hitDown = true; else hitUp = true;
+                if (!hitStatics.includes(s)) hitStatics.push(s);
+            }
+        }
     }
 
     return { shape, hitX, hitY, hitDown, hitUp, hitLeft, hitRight, hitStatics };
@@ -874,7 +931,8 @@ export function stepPhysics(dt) {
                 }
             }
 
-            if (res.hitX && res.hitY) break;
+            // Note: do NOT break on hitX && hitY — corner resolution needs all substeps
+            // to fully clear the shape from diagonal contacts before stopping.
         }
 
         obj._kinematicPrevX = obj.x;
@@ -976,23 +1034,18 @@ export function stepPhysics(dt) {
         _world.step(subDt, 8, 4);
     }
 
-    // ── POST-STEP: realistic energy bleed ───────────────────────
-    // After each full step we enforce two real-world behaviours:
+    // ── POST-STEP: realistic energy bleed + ground detection ────
+    // 1. GROUND FLAG  — detect when a dynamic body is resting on a surface
+    //    so scripts can read isOnGround and zero their velocityY correctly.
+    // 2. BOUNCE KILL  — zero any post-bounce velocity below threshold so
+    //    objects settle cleanly instead of micro-bouncing forever.
+    // 3. SLEEP        — explicitly zero and sleep bodies that are basically still.
     //
-    // 1. BOUNCE KILL — if a body just bounced off a surface and its
-    //    post-bounce speed on that axis is below the rest threshold,
-    //    zero that velocity component so the object settles cleanly
-    //    instead of shivering with micro-bounces forever.
-    //
-    // 2. SLEEP — Planck's sleep system already handles this but we
-    //    give it a nudge by zeroing near-zero velocities explicitly,
-    //    which avoids the "infinite tiny bounce" at floating-point
-    //    rounding level.
-    //
-    // These thresholds are in px/s (engine space).
-    const BOUNCE_KILL_V  = 40;   // below this speed on an axis after bounce → zero it
-    const SLEEP_SPEED    = 5;    // below this total speed → fully sleep the body
-    const SLEEP_OMEGA    = 0.05; // below this angular speed → zero rotation
+    // Thresholds are in px/s (engine space, 1 world-unit = 100 px).
+    const BOUNCE_KILL_Y  = 80;   // vy below this after upward bounce → clamp to 0
+    const BOUNCE_KILL_X  = 30;   // vx below this → clamp to 0
+    const SLEEP_SPEED    = 8;    // total speed below this → full sleep
+    const SLEEP_OMEGA    = 0.05; // angular speed below this → zero rotation
 
     for (const { obj, body, type } of _bodies) {
         if (type !== 'dynamic' || !body || body.isStatic()) continue;
@@ -1001,7 +1054,26 @@ export function stepPhysics(dt) {
         const omega = body.getAngularVelocity();
         const speed = Math.hypot(vel.x, vel.y);
 
-        // Full sleep — stop all motion when basically still
+        // ── Ground detection for dynamic bodies ─────────────────
+        // Walk Planck's contact list. A normal pointing upward in screen-space
+        // (ny < -0.5 in Planck's +Y-down world) means this body sits on top
+        // of another body → it is on the ground.
+        let onGround = false;
+        for (let ce = body.getContactList(); ce; ce = ce.next) {
+            const contact = ce.contact;
+            if (!contact || !contact.isTouching()) continue;
+            const manifold = contact.getWorldManifold();
+            if (!manifold || !manifold.normal) continue;
+            // manifold.normal points from body B toward body A.
+            // When this body is ON TOP, the normal from the floor points UP → ny < 0.
+            if (manifold.normal.y < -0.5) { onGround = true; break; }
+        }
+        obj._isOnGround  = onGround;
+        // (ceiling/wall flags for dynamic are not yet computed; leave false)
+        obj._isOnCeiling = false;
+        obj._isOnWall    = false;
+
+        // ── Full sleep ───────────────────────────────────────────
         if (speed < SLEEP_SPEED && Math.abs(omega) < SLEEP_OMEGA) {
             body.setLinearVelocity(P.Vec2(0, 0));
             body.setAngularVelocity(0);
@@ -1011,12 +1083,17 @@ export function stepPhysics(dt) {
 
         let vx = vel.x, vy = vel.y;
 
-        // Bounce kill on Y — object bounced up but has almost no energy left
-        if (vy < 0 && Math.abs(vy) < BOUNCE_KILL_V) vy = 0;
-        // Bounce kill on X — object bounced sideways with almost no energy
-        if (Math.abs(vx) < BOUNCE_KILL_V * 0.5) vx = 0;
+        // ── Bounce-kill on Y ─────────────────────────────────────
+        // After hitting a floor the body bounces up (vy < 0 in Planck +Y-down).
+        // If the upward speed is below threshold, kill it — no more micro-bounces.
+        if (vy < 0 && Math.abs(vy) < BOUNCE_KILL_Y) vy = 0;
+        // After a ceiling hit the body bounces down — same kill logic.
+        if (vy > 0 && onGround && Math.abs(vy) < BOUNCE_KILL_Y) vy = 0;
 
-        // Angular rest — stop spinning when rotation is negligible
+        // ── Bounce-kill on X ─────────────────────────────────────
+        if (Math.abs(vx) < BOUNCE_KILL_X) vx = 0;
+
+        // ── Angular rest ─────────────────────────────────────────
         const newOmega = Math.abs(omega) < SLEEP_OMEGA ? 0 : omega;
 
         if (vx !== vel.x || vy !== vel.y || newOmega !== omega) {

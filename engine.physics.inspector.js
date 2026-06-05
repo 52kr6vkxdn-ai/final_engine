@@ -409,8 +409,17 @@ export function bindPhysicsInspector(obj) {
     fricEl?.addEventListener('change', () => { obj.physicsFriction = Math.max(0, Math.min(1, parseFloat(fricEl.value) || 0)); _pushUndo(); });
     bnceEl?.addEventListener('change', () => { obj.physicsRestitution = Math.max(0, Math.min(1, parseFloat(bnceEl.value) || 0)); _pushUndo(); });
     document.getElementById('phys-density')?.addEventListener('change', (e) => { obj.physicsDensity = Math.max(0.0001, parseFloat(e.target.value) || 0.001); _pushUndo(); });
-    document.getElementById('phys-gravity-scale')?.addEventListener('change', (e) => { obj.physicsGravityScale = parseFloat(e.target.value) ?? 1; _pushUndo(); });
-    document.getElementById('phys-gravity-x-scale')?.addEventListener('change', (e) => { obj.physicsGravityXScale = parseFloat(e.target.value) ?? 0; _pushUndo(); });
+    document.getElementById('phys-gravity-scale')?.addEventListener('change', (e) => {
+        obj.physicsGravityScale = parseFloat(e.target.value) ?? 1;
+        // Wake the body immediately so new gravity takes effect without needing a script
+        if (obj._physicsBody) { try { obj._physicsBody.setAwake(true); } catch(_) {} }
+        _pushUndo();
+    });
+    document.getElementById('phys-gravity-x-scale')?.addEventListener('change', (e) => {
+        obj.physicsGravityXScale = parseFloat(e.target.value) ?? 0;
+        if (obj._physicsBody) { try { obj._physicsBody.setAwake(true); } catch(_) {} }
+        _pushUndo();
+    });
     document.getElementById('phys-linear-damp')?.addEventListener('change', (e) => { obj.physicsLinearDamping = Math.max(0, parseFloat(e.target.value) || 0); _pushUndo(); });
     document.getElementById('phys-angular-damp')?.addEventListener('change', (e) => { obj.physicsAngularDamping = Math.max(0, parseFloat(e.target.value) || 0); _pushUndo(); });
     document.getElementById('phys-immovable')?.addEventListener('change', (e) => {
