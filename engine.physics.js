@@ -19,6 +19,8 @@ const GRAVITY_PX = 980;
 let _world  = null;
 let _rafId  = null;
 let _bodies     = [];   // { obj, body: planck.Body, type }[]
+let _staticGridCache = null; // cached _buildStaticGrid(null) — rebuilt only when dirty
+let _staticGridDirty = true; // set true when bodies are added/removed/destroyed
 let _tileBodies = [];   // { body: planck.Body, ownerLabel }[]
 const _pendingCollisions  = [];
 const _kinematicContacts  = new Map();
@@ -248,7 +250,7 @@ export async function startPhysics() {
 
     const P = window.planck;
     _world = P.World({ gravity: P.Vec2(0, 0) });
-    _bodies           = [];
+    _bodies           = []; _staticGridDirty = true; _staticGridCache = null;
     _tileBodies.length = 0;
     _kinematicContacts.clear();
 
@@ -569,38 +571,60 @@ function _shapeCentroid(allVerts) {
 
 // ── SAT helpers ───────────────────────────────────────────────
 
-function _project(verts, nx, ny) {
+// ── SAT scratch allocations (reused every frame — no GC) ─────
+let _projMin = 0, _projMax = 0; // output of _projectInto
+const _satAxesBuf = []; // reused by _satConvex to avoid axes array alloc
+const _satMtvScratch = { nx: 0, ny: 0, depth: 0 }; // reused MTV result
+
+function _projectMinMax(verts, nx, ny) {
     let min = Infinity, max = -Infinity;
     for (const v of verts) {
         const d = v.x * nx + v.y * ny;
         if (d < min) min = d;
         if (d > max) max = d;
     }
-    return { min, max };
+    _projMin = min; _projMax = max;
 }
 
-function _edgeNormals(verts) {
-    const axes = [];
+// Legacy callers that need a standalone object
+function _project(verts, nx, ny) {
+    _projectMinMax(verts, nx, ny);
+    return { min: _projMin, max: _projMax };
+}
+
+function _fillEdgeNormals(verts, buf) {
+    buf.length = 0;
     for (let i = 0; i < verts.length; i++) {
         const a = verts[i], b = verts[(i + 1) % verts.length];
         const ex = b.x - a.x, ey = b.y - a.y;
         const len = Math.hypot(ex, ey);
         if (len < 0.0001) continue;
-        axes.push({ x: -ey / len, y: ex / len });
+        buf.push({ x: -ey / len, y: ex / len });
     }
+}
+
+function _edgeNormals(verts) {
+    const axes = [];
+    _fillEdgeNormals(verts, axes);
     return axes;
 }
 
 // SAT test between two CONVEX polygons.
 // Returns null (no overlap) or MTV { nx, ny, depth } pushing vertsA out of vertsB.
+// Uses module-level scratch buffers — zero allocations on the hot path.
 function _satConvex(vertsA, vertsB) {
-    const axes = [..._edgeNormals(vertsA), ..._edgeNormals(vertsB)];
     let minDepth = Infinity, minNx = 0, minNy = 0;
 
-    for (const ax of axes) {
-        const pA = _project(vertsA, ax.x, ax.y);
-        const pB = _project(vertsB, ax.x, ax.y);
-        const overlap = Math.min(pA.max, pB.max) - Math.max(pA.min, pB.min);
+    // Test axes from A then from B — avoids the spread [...a,...b] allocation
+    _satAxesBuf.length = 0;
+    _fillEdgeNormals(vertsA, _satAxesBuf);
+    _fillEdgeNormals(vertsB, _satAxesBuf);
+
+    for (const ax of _satAxesBuf) {
+        _projectMinMax(vertsA, ax.x, ax.y);
+        const aMin = _projMin, aMax = _projMax;
+        _projectMinMax(vertsB, ax.x, ax.y);
+        const overlap = Math.min(aMax, _projMax) - Math.max(aMin, _projMin);
         if (overlap <= 0) return null;
         if (overlap < minDepth) { minDepth = overlap; minNx = ax.x; minNy = ax.y; }
     }
@@ -613,29 +637,46 @@ function _satConvex(vertsA, vertsB) {
     cBx /= vertsB.length; cBy /= vertsB.length;
     if ((cAx - cBx) * minNx + (cAy - cBy) * minNy < 0) { minNx = -minNx; minNy = -minNy; }
 
-    return { nx: minNx, ny: minNy, depth: minDepth };
+    _satMtvScratch.nx = minNx; _satMtvScratch.ny = minNy; _satMtvScratch.depth = minDepth;
+    return _satMtvScratch;
 }
 
 // SAT test between a COMPOUND shape (array of convex parts) and a static (convex).
 // Returns the deepest penetration MTV across all parts, or null if no overlap.
+// _satCompound — copy out of the shared scratch so successive calls don't clobber each other
+const _satBestScratch = { nx: 0, ny: 0, depth: -Infinity };
+let _satBestValid = false;
+
 function _satCompound(parts, staticVerts) {
-    let best = null;
+    _satBestValid = false;
     for (const part of parts) {
         const mtv = _satConvex(part, staticVerts);
-        if (mtv && (!best || mtv.depth > best.depth)) best = mtv;
+        if (!mtv) continue;
+        if (!_satBestValid || mtv.depth > _satBestScratch.depth) {
+            _satBestScratch.nx = mtv.nx;
+            _satBestScratch.ny = mtv.ny;
+            _satBestScratch.depth = mtv.depth;
+            _satBestValid = true;
+        }
     }
-    return best;
+    return _satBestValid ? _satBestScratch : null;
 }
 
 function _translateVerts(verts, dx, dy) {
-    return verts.map(v => ({ x: v.x + dx, y: v.y + dy }));
+    // Mutate in-place — shapes are rebuilt fresh each substep so this is safe.
+    for (let i = 0; i < verts.length; i++) {
+        verts[i].x += dx;
+        verts[i].y += dy;
+    }
+    return verts;
 }
 
 function _translateShape(shape, dx, dy) {
-    return {
-        parts:    shape.parts.map(p => _translateVerts(p, dx, dy)),
-        allVerts: _translateVerts(shape.allVerts, dx, dy),
-    };
+    // Mutate parts and allVerts in-place (allVerts is the same vert objects as parts)
+    for (const p of shape.parts) _translateVerts(p, dx, dy);
+    // allVerts shares vert objects with parts — if they are the same array, skip
+    if (shape.allVerts !== shape.parts[0]) _translateVerts(shape.allVerts, dx, dy);
+    return shape;
 }
 
 function _boxVerts(b) {
@@ -672,6 +713,7 @@ function _sweepSAT(shape, dx, dy, statics) {
     let hitX = false, hitY = false;
     let hitDown = false, hitUp = false, hitLeft = false, hitRight = false;
     const hitStatics = [];
+    const hitStaticsSet = new Set(); // O(1) dedup instead of includes()
 
     // ── X pass ───────────────────────────────────────────────
     shape = _translateShape(shape, dx, 0);
@@ -684,7 +726,7 @@ function _sweepSAT(shape, dx, dy, statics) {
         shape = _translateShape(shape, mtv.nx * push, 0);
         hitX  = true;
         if (mtv.nx > 0) hitLeft = true; else hitRight = true;
-        if (!hitStatics.includes(s)) hitStatics.push(s);
+        if (!hitStaticsSet.has(s)) { hitStaticsSet.add(s); hitStatics.push(s); }
     }
 
     // ── Y pass ───────────────────────────────────────────────
@@ -698,7 +740,7 @@ function _sweepSAT(shape, dx, dy, statics) {
         shape = _translateShape(shape, 0, mtv.ny * push);
         hitY  = true;
         if (mtv.ny > 0) hitDown = true; else hitUp = true;
-        if (!hitStatics.includes(s)) hitStatics.push(s);
+        if (!hitStaticsSet.has(s)) { hitStaticsSet.add(s); hitStatics.push(s); }
     }
 
     // ── Corner depenetration pass ─────────────────────────────
@@ -724,7 +766,7 @@ function _sweepSAT(shape, dx, dy, statics) {
             if (xCorrect > SWEEP_SKIN * 0.5) {
                 hitX = true;
                 if (mtv.nx > 0) hitLeft = true; else hitRight = true;
-                if (!hitStatics.includes(s)) hitStatics.push(s);
+                if (!hitStaticsSet.has(s)) { hitStaticsSet.add(s); hitStatics.push(s); }
             }
         } else {
             // Y is cheaper — slide along Y
@@ -737,7 +779,7 @@ function _sweepSAT(shape, dx, dy, statics) {
             if (yCorrect > SWEEP_SKIN * 0.5) {
                 hitY = true;
                 if (mtv.ny > 0) hitDown = true; else hitUp = true;
-                if (!hitStatics.includes(s)) hitStatics.push(s);
+                if (!hitStaticsSet.has(s)) { hitStaticsSet.add(s); hitStatics.push(s); }
             }
         }
     }
@@ -756,34 +798,40 @@ function _probeGround(shape, statics) {
 
 // ── Build static grid for the SAT sweep ──────────────────────
 // Each static entry carries { verts: [convex polygon], ownerLabel }.
-// Static/kinematic sprites with drawn polygons expose their actual shape.
-// Tile cells and dynamic bodies use box verts.
+// The full grid (no exclude) is cached between frames — only rebuilt when
+// bodies are added, removed, or the world is reset (_staticGridDirty = true).
+// The per-object variant (excludeObj != null) filters the cache in O(n) — still
+// cheaper than rebuilding from scratch each substep.
 function _buildStaticGrid(excludeObj = null) {
-    const statics = [];
-
-    // 1. Tilemap / auto-tilemap cells (always static boxes)
-    for (const t of _tileBodies) {
-        const b = _getPlanckBodyBounds(t.body);
-        statics.push({ verts: _boxVerts(b), ownerLabel: t.ownerLabel });
-    }
-
-    // 2. All non-sensor sprite bodies except the swept object
-    for (const { obj: o, body, type } of _bodies) {
-        if (o === excludeObj || !body || o.physicsIsSensor) continue;
-        if (type === 'static' || type === 'kinematic') {
-            // Use the full compound shape; push each convex part as a separate static entry
-            // so the swept kinematic collides correctly against all parts of a concave static.
-            const sh = _getKinematicShape(o);
-            for (const part of sh.parts) {
-                statics.push({ verts: part, ownerLabel: o.label });
-            }
-        } else if (type === 'dynamic') {
-            const b = _getPlanckBodyBounds(body);
-            statics.push({ verts: _boxVerts(b), ownerLabel: o.label });
+    // Rebuild the full cache if stale
+    if (_staticGridDirty || !_staticGridCache) {
+        _staticGridCache = [];
+        // 1. Tilemap / auto-tilemap cells (always static boxes)
+        for (const t of _tileBodies) {
+            const b = _getPlanckBodyBounds(t.body);
+            _staticGridCache.push({ verts: _boxVerts(b), ownerLabel: t.ownerLabel });
         }
+        // 2. All non-sensor sprite bodies
+        for (const { obj: o, body, type } of _bodies) {
+            if (!body || o.physicsIsSensor) continue;
+            if (type === 'static' || type === 'kinematic') {
+                const sh = _getKinematicShape(o);
+                for (const part of sh.parts) {
+                    _staticGridCache.push({ verts: part, ownerLabel: o.label });
+                }
+            } else if (type === 'dynamic') {
+                const b = _getPlanckBodyBounds(body);
+                _staticGridCache.push({ verts: _boxVerts(b), ownerLabel: o.label });
+            }
+        }
+        _staticGridDirty = false;
     }
 
-    return statics;
+    // If no exclusion needed, return the cache directly (zero allocation)
+    if (!excludeObj) return _staticGridCache;
+
+    // Filter out the excluded object's entries — O(n) but no new vert objects
+    return _staticGridCache.filter(s => s.ownerLabel !== excludeObj.label);
 }
 
 // ── stepPhysics(dt) ───────────────────────────────────────────
@@ -841,7 +889,7 @@ export function stepPhysics(dt) {
         const dx = vx * dt + pd.x + directDx;
         const dy = vy * dt + pd.y + directDy;
 
-        // 2. Build static grid excluding this object
+        // 2. Build static grid excluding this object (once — used by both stationary and moving paths)
         const statics = _buildStaticGrid(obj);
 
         if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) {
@@ -892,8 +940,8 @@ export function stepPhysics(dt) {
         let hitDown = false, hitUp = false, hitLeft = false, hitRight = false;
         const hitStatics = [];
 
-        // Build the static grid once for all substeps — statics don't move mid-frame.
-        const subStatics = _buildStaticGrid(obj);
+        // Reuse statics built above — grid doesn't change between stationary and moving paths.
+        const subStatics = statics;
 
         for (let _ks = 0; _ks < KIN_SUBSTEPS; _ks++) {
 
@@ -906,7 +954,7 @@ export function stepPhysics(dt) {
 
             if (res.hitX) { hitX = true; hitLeft  = hitLeft  || res.hitLeft;  hitRight = hitRight || res.hitRight; }
             if (res.hitY) { hitY = true; hitDown  = hitDown  || res.hitDown;  hitUp    = hitUp    || res.hitUp; }
-            for (const s of res.hitStatics) if (!hitStatics.includes(s)) hitStatics.push(s);
+            for (const s of res.hitStatics) if (!hitStaticsSet.has(s)) { hitStaticsSet.add(s); hitStatics.push(s); }
 
             // Derive obj.x/y from how much the shape centroid moved after resolution
             const { cx: postCx, cy: postCy } = _shapeCentroid(res.shape.allVerts);
@@ -1193,7 +1241,7 @@ export function removePhysicsBody(obj) {
     delete obj._isOnGround;
     delete obj._isOnCeiling;
     delete obj._isOnWall;
-    _bodies.splice(idx, 1);
+    _staticGridDirty = true; _bodies.splice(idx, 1);
     _kinematicContacts.delete(obj);
 }
 
@@ -1204,7 +1252,7 @@ export function rebuildBodyForObject(obj) {
         const { body } = _bodies[idx];
         if (body) { try { _world.destroyBody(body); } catch (_) {} }
         delete obj._physicsBody;
-        _bodies.splice(idx, 1);
+        _staticGridDirty = true; _bodies.splice(idx, 1);
     }
     _kinematicContacts.delete(obj);
 
@@ -1241,7 +1289,7 @@ export function rebuildBodyForObject(obj) {
 
     const body = _makeBody(obj, obj.x, obj.y, type);
     if (!body) return;
-    _bodies.push({ obj, body, type });
+    _bodies.push({ obj, body, type }); _staticGridDirty = true;
     obj._physicsBody = body;
 }
 

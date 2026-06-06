@@ -55,36 +55,39 @@ export function stopPlayMode() {
     state.isPaused  = false;
     _stopFPSCounter();
     _removePlayOverlay();
-    // Stop all runtime animations before restoring scene
     stopRuntimeAnimations();
-    // Stop physics
     import('./engine.physics.js').then(m => m.stopPhysics());
-    // Stop 3D positional audio
     import('./engine.audio.js').then(m => { m.stopPlayAudio(); m._stopAllScriptSounds(); });
-    // Destroy runtime-spawned objects immediately (before scene restore)
-    // This prevents them flashing in the editor for one frame and cleans up the hierarchy
-    const runtimeObjs = state.gameObjects.filter(o => o._runtimeSpawned);
-    for (const obj of runtimeObjs) {
-        state.sceneContainer?.removeChild(obj);
-        try { obj.destroy({ children: true }); } catch(_) {}
-    }
-    state.gameObjects = state.gameObjects.filter(o => !o._runtimeSpawned);
-    // Stop user scripts + clean up transitions/debug graphics
-    import('./engine.scripting.js').then(m => m.stopScripts());
-    import('./engine.transitions.js').then(m => m.cleanupTransitions());
-    _blockEditorInput(false);    // restore input
-    _showEditorUI();
-    // Restore audio source visuals (hidden during play mode)
-    for (const src of state.audioSources) {
-        if (src._container) src._container.visible = true;
-    }
-    // Store snapshot ref now — _restoreScene will clear state._playSnapshot
-    const snap = state._playSnapshot;
-    state._playSnapshot = null;
-    _restoreCanvas(snap);
-    _updatePlayButtons();
-    if (snap) _restoreScene(snap);
-    _logConsole('■ Stopped — scene restored', '#f87171');
+
+    // ── Stop scripts first so no onDestroy/forever callbacks fire after restore ──
+    import('./engine.scripting.js').then(m => {
+        m.stopScripts();
+
+        // Restore renderable flag on any objects that were culled off-screen
+        import('./engine.renderer.js').then(r => r.resetCulling?.());
+
+        // Destroy all runtime-spawned objects (clones, spawnObject, drawText).
+        // Done AFTER stopScripts so any onDestroy callbacks finish first.
+        const runtimeObjs = state.gameObjects.filter(o => o._runtimeSpawned);
+        for (const obj of runtimeObjs) {
+            state.sceneContainer?.removeChild(obj);
+            try { obj.destroy({ children: true }); } catch(_) {}
+        }
+        state.gameObjects = state.gameObjects.filter(o => !o._runtimeSpawned);
+
+        import('./engine.transitions.js').then(m2 => m2.cleanupTransitions());
+        _blockEditorInput(false);
+        _showEditorUI();
+        for (const src of state.audioSources) {
+            if (src._container) src._container.visible = true;
+        }
+        const snap = state._playSnapshot;
+        state._playSnapshot = null;
+        _restoreCanvas(snap);
+        _updatePlayButtons();
+        if (snap) _restoreScene(snap);
+        _logConsole('■ Stopped — scene restored', '#f87171');
+    });
 }
 
 /* ── Camera Bounds Overlay (editor only) ── */

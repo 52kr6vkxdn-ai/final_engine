@@ -50,7 +50,16 @@ export function startEngine(opts = {}) {
         autoDensity:     true,
         preference:      'webgl',
         antialias:       true,
+        // powerPreference hint: let the browser/GPU driver pick the discrete GPU
+        powerPreference: 'high-performance',
     });
+    // Maximise sprite batch size — PIXI flushes a draw call every MAX_TEXTURES sprites.
+    // Raising this reduces GPU round-trips when many sprites share different textures.
+    if (state.app.renderer?.plugins?.batch) {
+        state.app.renderer.plugins.batch.MAX_TEXTURES =
+            Math.min(state.app.renderer.context?.gl?.getParameter(
+                state.app.renderer.context?.gl?.MAX_TEXTURE_IMAGE_UNITS) ?? 8, 16);
+    }
     container.appendChild(state.app.view);
 
     // ResizeObserver ensures the canvas fills correctly whenever panels are shown/hidden or resized
