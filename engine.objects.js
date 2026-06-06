@@ -28,9 +28,7 @@ async function _getUndo() {
 }
 
 // ── Unique Name Generator ────────────────────────────────────
-// Considers ALL current objects (editor + runtime) so names are always unique.
-// Runtime clones use this too, so their labels never collide with editor objects.
-export function _uniqueName(base) {
+function _uniqueName(base) {
     const existing = new Set(state.gameObjects.map(o => o.label));
     if (!existing.has(base)) return base;
     let i = 2;

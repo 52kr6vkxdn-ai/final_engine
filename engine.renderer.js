@@ -9,20 +9,28 @@ export function initScene() {
     const { app } = state;
 
     // ── GPU / Quality settings ────────────────────────────
-    PIXI.settings.SCALE_MODE          = PIXI.SCALE_MODES.LINEAR;
-    PIXI.settings.RESOLUTION          = window.devicePixelRatio || 1;
+    // Use LINEAR filtering for smooth edges (no pixelation)
+    PIXI.settings.SCALE_MODE      = PIXI.SCALE_MODES.LINEAR;
+    // Preserve full resolution — no forced downscale
+    PIXI.settings.RESOLUTION      = window.devicePixelRatio || 1;
+    // Max texture size guard (GPU limit)
     PIXI.settings.SPRITE_MAX_TEXTURES = 32;
-    // Mipmaps so distant/small sprites are GPU-filtered not CPU-sampled
-    PIXI.settings.MIPMAP_TEXTURES     = PIXI.MIPMAP_MODES.ON;
 
     // ── Scene hierarchy ───────────────────────────────────
+    // Layer order (back → front):
+    //   [0] gridLayer    — editor grid (always behind game objects)
+    //   [1] sceneContainer — all game objects live here
+    //   [2] cameraBounds   — editor overlay (always on top in editor)
+    //
+    // Grid and cameraBounds are siblings of sceneContainer on the stage,
+    // so no game object can ever be sorted below the grid.
+
     state.gridLayer = new PIXI.Graphics();
     state.gridLayer.name = '__grid__';
     app.stage.addChild(state.gridLayer);
 
     state.sceneContainer = new PIXI.Container();
-    // sortableChildren lets PIXI batch children by z-order on the GPU
-    state.sceneContainer.sortableChildren = true;
+    state.sceneContainer.sortableChildren = false;
     app.stage.addChild(state.sceneContainer);
     state.sceneContainer.position.set(
         app.screen.width  / 2,
@@ -32,51 +40,11 @@ export function initScene() {
     state.cameraBounds = new PIXI.Graphics();
     app.stage.addChild(state.cameraBounds);
 
+    // Mirror sceneContainer position/scale onto grid every frame
+    // so the grid scrolls/zooms with the camera
     app.ticker.add(_syncGridTransform);
-    // Frustum culling: mark off-screen objects as non-renderable each frame
-    // so the GPU never processes their draw calls.
-    app.ticker.add(_cullOffscreenObjects);
 
     drawGrid();
-}
-
-// ── Per-frame frustum culling ─────────────────────────────────
-// Objects fully outside the visible viewport are set renderable=false.
-// PIXI skips non-renderable objects entirely — zero GPU cost for off-screen objects.
-function _cullOffscreenObjects() {
-    const sc = state.sceneContainer;
-    // Only cull during active play — editor needs all objects visible at all times
-    if (!sc || !state.isPlaying) return;
-    const sw = state.app.screen.width;
-    const sh = state.app.screen.height;
-    const MARGIN = 160; // px — buffer prevents visible pop-in at screen edge
-    const scaleX = Math.abs(sc.scale.x);
-    const scaleY = Math.abs(sc.scale.y);
-    for (const obj of state.gameObjects) {
-        if (!obj.isImage && !obj.isText) continue;
-        // Objects with active physics bodies must always be rendered=true so their
-        // gizmos and debug overlays work correctly; the GPU skips invisible sprites anyway.
-        if (obj.physicsBody && obj.physicsBody !== 'none') {
-            obj.renderable = obj.visible !== false;
-            continue;
-        }
-        const pos = obj.position ?? { x: obj.x ?? 0, y: obj.y ?? 0 };
-        const gp  = sc.toGlobal(pos);
-        const hw  = ((obj.width  ?? 64) * scaleX) * 0.5 + MARGIN;
-        const hh  = ((obj.height ?? 64) * scaleY) * 0.5 + MARGIN;
-        obj.renderable = (
-            obj.visible !== false &&
-            gp.x + hw >= 0 && gp.x - hw <= sw &&
-            gp.y + hh >= 0 && gp.y - hh <= sh
-        );
-    }
-}
-
-/** Re-enable renderable on all objects when leaving play mode. */
-export function resetCulling() {
-    for (const obj of state.gameObjects) {
-        if (obj.renderable === false) obj.renderable = true;
-    }
 }
 
 function _syncGridTransform() {

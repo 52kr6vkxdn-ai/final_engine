@@ -284,23 +284,7 @@ function _broadcastToGroup(grp, msg, data)  { const s = _groupRegistry.get(grp);
 function _broadcastGlobal(msg, data)        { for (const i of _instances) _deliverMsg(i, msg, data); }
 
 // ── Overlap (AABB) detection for non-physics objects ──────────
-// Scratch objects — reused every frame to avoid GC pressure from _getAABB
-const _aabbScratchA = { left:0, right:0, top:0, bottom:0 };
-const _aabbScratchB = { left:0, right:0, top:0, bottom:0 };
-
-function _fillAABB(obj, out) {
-    const hw = (obj.spriteGraphic?.width  ?? obj._bounds?.width  ?? 100) / 2;
-    const hh = (obj.spriteGraphic?.height ?? obj._bounds?.height ?? 100) / 2;
-    const sx  = Math.abs(obj.scale?.x ?? 1);
-    const sy  = Math.abs(obj.scale?.y ?? 1);
-    out.left   = obj.x - hw * sx;
-    out.right  = obj.x + hw * sx;
-    out.top    = obj.y - hh * sy;
-    out.bottom = obj.y + hh * sy;
-}
-
 function _getAABB(obj) {
-    // Legacy callers that need a standalone object — allocates, but called rarely
     const hw = (obj.spriteGraphic?.width  ?? obj._bounds?.width  ?? 100) / 2;
     const hh = (obj.spriteGraphic?.height ?? obj._bounds?.height ?? 100) / 2;
     const sx  = Math.abs(obj.scale?.x ?? 1);
@@ -314,12 +298,10 @@ function _getAABB(obj) {
 }
 
 function _aabbOverlap(a, b) {
-    _fillAABB(a, _aabbScratchA);
-    _fillAABB(b, _aabbScratchB);
-    return _aabbScratchA.right  > _aabbScratchB.left  &&
-           _aabbScratchA.left   < _aabbScratchB.right &&
-           _aabbScratchA.bottom > _aabbScratchB.top   &&
-           _aabbScratchA.top    < _aabbScratchB.bottom;
+    const ba = _getAABB(a);
+    const bb = _getAABB(b);
+    return ba.right > bb.left && ba.left < bb.right &&
+           ba.bottom > bb.top && ba.top  < bb.bottom;
 }
 
 function _isOverlapping(objA, objB) {
@@ -1874,28 +1856,20 @@ function _buildSandbox(obj, instRef) {
          * tint(null) or tint("#ffffff") to remove tint.
          */
         get tint() {
-            const t = obj.spriteGraphic?.tint ?? obj._pixiText?.tint;
-            return t !== undefined ? '#' + (t >>> 0).toString(16).padStart(6, '0') : '#ffffff';
+            const t = obj.spriteGraphic?.tint;
+            return t !== undefined ? '#' + t.toString(16).padStart(6, '0') : '#ffffff';
         },
         set tint(v) {
-            let hex;
-            if (v == null) {
-                hex = 0xffffff;
-            } else if (typeof v === 'string') {
-                hex = parseInt(v.replace(/^#/, ''), 16);
-                if (isNaN(hex)) hex = 0xffffff;
-            } else {
-                hex = (v >>> 0);
-            }
+            const hex = typeof v === 'string'
+                ? parseInt(v.replace('#',''), 16)
+                : (v ?? 0xffffff);
             obj._scriptTint = hex;
             if (obj.spriteGraphic) obj.spriteGraphic.tint = hex;
-            if (obj._pixiText)     obj._pixiText.tint     = hex;
         },
         /** Remove tint (reset to white / no colour effect). */
         clearTint() {
             obj._scriptTint = 0xffffff;
             if (obj.spriteGraphic) obj.spriteGraphic.tint = 0xffffff;
-            if (obj._pixiText)     obj._pixiText.tint     = 0xffffff;
         },
 
         // ── DISTANCE ─────────────────────────────────────────
@@ -6014,8 +5988,7 @@ function _destroyObject(obj) {
 }
 
 // ── Runtime state ─────────────────────────────────────────────
-const _instances     = [];
-const _liveObjsCache = new Set(); // reused each frame — avoids per-frame GC
+const _instances = [];
 let   _ticker    = null;
 let   _hammerInst = null; // Hammer.js Manager instance for the play canvas
 
@@ -6454,15 +6427,11 @@ let _muTouchPos = null;
 
 // ── Overlap check pass (runs every frame) ─────────────────────
 function _runOverlapChecks() {
-    // Avoid .filter() allocation every frame — iterate directly
-    let hasTracked = false;
-    for (const inst of _instances) {
-        if (inst._onOverlapEnter || inst._onOverlapExit) { hasTracked = true; break; }
-    }
-    if (!hasTracked) return;
+    // Only check instances that have overlap handlers
+    const tracked = _instances.filter(i => i._onOverlapEnter || i._onOverlapExit);
+    if (tracked.length === 0) return;
 
-    for (const inst of _instances) {
-        if (!inst._onOverlapEnter && !inst._onOverlapExit) continue;
+    for (const inst of tracked) {
         for (const other of _instances) {
             if (other === inst) continue;
             const wasOverlapping = inst._activeOverlaps.has(other.obj);
@@ -6550,16 +6519,15 @@ export function startScripts() {
         navSnapshotPositions();
 
         // 2. Run all scripts — they write desired velocity into obj._kinematicVx/Vy
-        // Purge dead instances — reuse persistent Set, clear+refill each frame (no GC)
-        _liveObjsCache.clear();
-        for (const o of state.gameObjects) _liveObjsCache.add(o);
+        // Purge dead instances (destroyed objects) — prevents _instances from growing forever
         for (let i = _instances.length - 1; i >= 0; i--) {
-            if (!_liveObjsCache.has(_instances[i].obj)) _instances.splice(i, 1);
+            if (!state.gameObjects.includes(_instances[i].obj)) {
+                _instances.splice(i, 1);
+            }
         }
-        // Iterate a length-snapshot (not a copy) — safe because update() never adds new instances mid-loop
-        const _snapLen = _instances.length;
-        for (let _si = 0; _si < _snapLen; _si++) {
-            _instances[_si]?.update(dt);
+        const snap = [..._instances];
+        for (const i of snap) {
+            i.update(dt);
         }
 
         // 2. Step physics — reads _kinematicVx/Vy, runs Planck, writes corrected
