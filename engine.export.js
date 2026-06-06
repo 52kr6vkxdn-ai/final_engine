@@ -30,6 +30,8 @@ export async function exportGame() {
             'engine.transitions.js','engine.console.js','engine.spritesheet.js',
             'engine.collision-overlay.js','engine.defaultscripts.js','engine.history.js',
             'engine.ui.js','engine.project.js','engine.export.js',
+            'engine.scripting.chat.js','engine.scripting.editor.js',
+            'engine.physics.inspector.js','pathfindlogic.js',
         ];
 
         const fileFetches = await Promise.all(

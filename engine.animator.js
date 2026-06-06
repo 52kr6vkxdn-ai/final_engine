@@ -494,12 +494,6 @@ function _wire(modal, obj) {
         _showToast(modal, 'Animation applied ✔');
     });
 
-    modal.querySelector('#anim-apply-btn').addEventListener('click', () => {
-        _applyAnimToObject(obj);
-        _dirty = true;
-        _showToast(modal, 'Animation applied ✔');
-    });
-
     // ── Collision section ────────────────────────────────────
     const isKinematicObj = obj.physicsBody === 'kinematic';
 
@@ -549,14 +543,7 @@ function _wire(modal, obj) {
         `;
     };
 
-    // Override _selectFrame to also update collision info
-    const _origSelectFrame = modal._selectFrame;
-    modal._selectFrame = (idx) => {
-        _origSelectFrame?.(idx);
-        currentFrame = idx;
-        _updateColFrameInfo();
-    };
-
+    // _updateColFrameInfo is called directly from the real _selectFrame definition below.
     _updateColFrameInfo();
 
     modal.querySelector('#anim-col-toggle-vis')?.addEventListener('click', () => {
@@ -704,6 +691,8 @@ function _wire(modal, obj) {
         _stopPlay();
         currentFrame = idx;
         _showFrame(modal, obj, currentFrame);
+        // Update collision frame info panel if it exists (set up by the collision section above)
+        if (typeof _updateColFrameInfo === 'function') _updateColFrameInfo();
     };
     modal._getCurrentFrame = () => currentFrame;
 }

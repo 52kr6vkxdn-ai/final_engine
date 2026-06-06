@@ -1480,7 +1480,7 @@ function _buildSandbox(obj, instRef) {
                 reapplyAnimationToObject(obj);
                 const s = obj._animSprite;
                 if (s?.play) s.gotoAndPlay(0);
-            });
+            }).catch(() => { obj._animSwitchPending = false; });
         },
         stopAnimation() {
             const s = obj._animSprite ?? obj.spriteGraphic;
@@ -5776,7 +5776,7 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
 
         // ── 5. onLand detection (kinematic only) ───────────────────
         if (this._onLand && obj.physicsBody === 'kinematic') {
-            const grounded = this.api.isOnGround?.() ?? false;
+            const grounded = this.api.isOnGround ?? false;
             const wasAirborne = this._wasAirborne ?? false;
             if (wasAirborne && grounded) {
                 try { this._onLand(); } catch(e) {}
@@ -6595,6 +6595,14 @@ export function triggerCollisionEnd(objA, objB) {
     for (const i of _instances) {
         if (i.obj === objA) i.handleCollisionExit(objB);
         if (i.obj === objB) i.handleCollisionExit(objA);
+    }
+}
+
+// ── Collision stay bridge (called from engine.physics.js) ─────
+export function triggerCollisionStay(objA, objB) {
+    for (const i of _instances) {
+        if (i.obj === objA) i.handleCollisionStay?.(objB);
+        if (i.obj === objB) i.handleCollisionStay?.(objA);
     }
 }
 

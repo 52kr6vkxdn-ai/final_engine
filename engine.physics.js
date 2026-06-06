@@ -864,6 +864,17 @@ export function stepPhysics(dt) {
                     obj.rotation || 0
                 );
             }
+            // Still fire onCollisionStay / onCollisionExit for objects we were
+            // already touching — a stationary body can remain in contact indefinitely.
+            const prevContacts = _kinematicContacts.get(obj);
+            if (prevContacts && prevContacts.size > 0) {
+                import('./engine.scripting.js').then(m => {
+                    for (const label of prevContacts) {
+                        const other = state.gameObjects.find(o => o.label === label);
+                        if (other) m.triggerCollisionStay?.(obj, other);
+                    }
+                });
+            }
             continue;
         }
 
@@ -881,8 +892,10 @@ export function stepPhysics(dt) {
         let hitDown = false, hitUp = false, hitLeft = false, hitRight = false;
         const hitStatics = [];
 
+        // Build the static grid once for all substeps — statics don't move mid-frame.
+        const subStatics = _buildStaticGrid(obj);
+
         for (let _ks = 0; _ks < KIN_SUBSTEPS; _ks++) {
-            const subStatics = _buildStaticGrid(obj);
 
             // Build shape from current obj.x/y (updated each substep)
             const curShape = _getKinematicShape(obj);
@@ -939,7 +952,7 @@ export function stepPhysics(dt) {
         obj._kinematicPrevY = obj.y;
 
         // 6. Ground / wall / ceiling flags
-        obj._isOnGround  = hitDown || _probeGround(_getKinematicShape(obj), _buildStaticGrid(obj));
+        obj._isOnGround  = hitDown || _probeGround(_getKinematicShape(obj), subStatics);
         obj._isOnCeiling = hitUp;
         obj._isOnWall    = hitLeft || hitRight;
 
@@ -1064,9 +1077,12 @@ export function stepPhysics(dt) {
             if (!contact || !contact.isTouching()) continue;
             const manifold = contact.getWorldManifold();
             if (!manifold || !manifold.normal) continue;
-            // manifold.normal points from body B toward body A.
-            // When this body is ON TOP, the normal from the floor points UP → ny < 0.
-            if (manifold.normal.y < -0.5) { onGround = true; break; }
+            // getWorldManifold normal always points from fixture B toward fixture A.
+            // We must check whether THIS body is fixture A or B, then flip accordingly,
+            // so that ny < -0.5 always means "floor is below us" regardless of creation order.
+            const isBodyA = contact.getFixtureA().getBody() === body;
+            const ny = isBodyA ? manifold.normal.y : -manifold.normal.y;
+            if (ny < -0.5) { onGround = true; break; }
         }
         obj._isOnGround  = onGround;
         // (ceiling/wall flags for dynamic are not yet computed; leave false)
