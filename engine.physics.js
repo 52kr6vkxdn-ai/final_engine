@@ -18,8 +18,10 @@ const GRAVITY_PX = 980;
 // ── Module state ───────────────────────────────────────────────
 let _world  = null;
 let _rafId  = null;
-let _bodies     = [];   // { obj, body: planck.Body, type }[]
-let _tileBodies = [];   // { body: planck.Body, ownerLabel }[]
+let _bodies          = [];       // { obj, body: planck.Body, type }[]
+let _tileBodies      = [];       // { body: planck.Body, ownerLabel }[]
+const _bodyByPlanckBody = new Map(); // planck.Body → entry  (O(1) collision dispatch)
+const _tileByPlanckBody = new Map(); // planck.Body → tileEntry
 const _pendingCollisions  = [];
 const _kinematicContacts  = new Map();
 
@@ -29,8 +31,8 @@ function _fireCollisionEvents() {
     const batch = _pendingCollisions.splice(0);
     import('./engine.scripting.js').then(m => {
         for (const { p: pair, type } of batch) {
-            const entA = _bodies.find(e => e.body === pair.bodyA);
-            const entB = _bodies.find(e => e.body === pair.bodyB);
+            const entA = _bodyByPlanckBody.get(pair.bodyA);
+            const entB = _bodyByPlanckBody.get(pair.bodyB);
             if (entA && entB) {
                 if (type === 'start') m.triggerCollision(entA.obj, entB.obj);
                 else                  m.triggerCollisionEnd(entA.obj, entB.obj);
@@ -39,7 +41,7 @@ function _fireCollisionEvents() {
             const spriteEnt = entA || entB;
             if (!spriteEnt) continue;
             const otherBody = spriteEnt === entA ? pair.bodyB : pair.bodyA;
-            const tileEnt   = _tileBodies.find(t => t.body === otherBody);
+            const tileEnt   = _tileByPlanckBody.get(otherBody);
             if (!tileEnt) continue;
             import('./engine.state.js').then(({ state }) => {
                 const tileObj = state.gameObjects.find(o => o.label === tileEnt.ownerLabel);
@@ -250,6 +252,8 @@ export async function startPhysics() {
     _world = P.World({ gravity: P.Vec2(0, 0) });
     _bodies           = [];
     _tileBodies.length = 0;
+    _bodyByPlanckBody.clear();
+    _tileByPlanckBody.clear();
     _kinematicContacts.clear();
 
     // Pre-warm alpha-bounds cache for every animation frame that has a dataURL.
@@ -291,7 +295,9 @@ export async function startPhysics() {
                     tb.createFixture({ shape: P.Box(Math.max(ab.w / 2, 1), Math.max(ab.h / 2, 1)), friction: 0.5, restitution: 0.05 });
                     tb.setUserData({ label: `tm_${obj.label}_${row}_${col}` });
                     tb._zenOffset = { x: 0, y: 0 };
-                    _tileBodies.push({ body: tb, ownerLabel: obj.label });
+                    const tileEnt1 = { body: tb, ownerLabel: obj.label };
+                    _tileBodies.push(tileEnt1);
+                    _tileByPlanckBody.set(tb, tileEnt1);
                 }
             }
             continue;
@@ -311,7 +317,9 @@ export async function startPhysics() {
                     tb.createFixture({ shape: P.Box(Math.max(ab.w / 2, 1), Math.max(ab.h / 2, 1)), friction: 0.5, restitution: 0.05 });
                     tb.setUserData({ label: `at_${obj.label}_${row}_${col}` });
                     tb._zenOffset = { x: 0, y: 0 };
-                    _tileBodies.push({ body: tb, ownerLabel: obj.label });
+                    const tileEnt2 = { body: tb, ownerLabel: obj.label };
+                    _tileBodies.push(tileEnt2);
+                    _tileByPlanckBody.set(tb, tileEnt2);
                 }
             }
             continue;
@@ -331,7 +339,7 @@ export async function startPhysics() {
             const kBody = _makeBody(obj, obj.x, obj.y, 'kinematic');
             const kEntry = { obj, body: kBody || null, type: 'kinematic' };
             _bodies.push(kEntry);
-            if (kBody) obj._physicsBody = kBody;
+            if (kBody) { _bodyByPlanckBody.set(kBody, kEntry); obj._physicsBody = kBody; }
 
             // Kinematic uses ONE shared collision shape — not per-frame.
             // The polygon is set in the Animation Panel (auto-fit from any frame).
@@ -355,6 +363,7 @@ export async function startPhysics() {
 
         const entry = { obj, body, type };
         _bodies.push(entry);
+        _bodyByPlanckBody.set(body, entry);
         obj._physicsBody = body;
 
         // Per-frame collision shape swap for dynamic bodies
@@ -1158,6 +1167,8 @@ export function stopPhysics() {
     _world  = null;
     _bodies = [];
     _tileBodies.length = 0;
+    _bodyByPlanckBody.clear();
+    _tileByPlanckBody.clear();
     _kinematicContacts.clear();
     _pendingCollisions.length = 0;
 }
@@ -1181,7 +1192,10 @@ export function removePhysicsBody(obj) {
     const idx = _bodies.findIndex(e => e.obj === obj);
     if (idx === -1) return;
     const { body } = _bodies[idx];
-    if (body) { try { _world.destroyBody(body); } catch (_) {} }
+    if (body) {
+        _bodyByPlanckBody.delete(body);
+        try { _world.destroyBody(body); } catch (_) {}
+    }
     delete obj._physicsBody;
     delete obj._kinematicVx;
     delete obj._kinematicVy;
@@ -1202,7 +1216,10 @@ export function rebuildBodyForObject(obj) {
     const idx = _bodies.findIndex(e => e.obj === obj);
     if (idx !== -1) {
         const { body } = _bodies[idx];
-        if (body) { try { _world.destroyBody(body); } catch (_) {} }
+        if (body) {
+            _bodyByPlanckBody.delete(body);
+            try { _world.destroyBody(body); } catch (_) {}
+        }
         delete obj._physicsBody;
         _bodies.splice(idx, 1);
     }
@@ -1231,7 +1248,9 @@ export function rebuildBodyForObject(obj) {
 
         const kBody = _makeBody(obj, obj.x, obj.y, 'kinematic');
         if (kBody) {
-            _bodies.push({ obj, body: kBody, type: 'kinematic' });
+            const kEnt = { obj, body: kBody, type: 'kinematic' };
+            _bodies.push(kEnt);
+            _bodyByPlanckBody.set(kBody, kEnt);
             obj._physicsBody = kBody;
         } else {
             _bodies.push({ obj, body: null, type: 'kinematic' });
@@ -1241,7 +1260,9 @@ export function rebuildBodyForObject(obj) {
 
     const body = _makeBody(obj, obj.x, obj.y, type);
     if (!body) return;
-    _bodies.push({ obj, body, type });
+    const newEnt = { obj, body, type };
+    _bodies.push(newEnt);
+    _bodyByPlanckBody.set(body, newEnt);
     obj._physicsBody = body;
 }
 
@@ -1282,9 +1303,11 @@ function _rebuildBodyForFrame(entry) {
         newBody.setAngularVelocity(angVel);
     }
 
+    _bodyByPlanckBody.delete(oldBody);
     _world.destroyBody(oldBody);
     entry.body       = newBody;
     obj._physicsBody = newBody;
+    _bodyByPlanckBody.set(newBody, entry);
 }
 
 

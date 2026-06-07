@@ -1491,15 +1491,11 @@ function _buildSandbox(obj, instRef) {
             try { if (s?.stop) s.stop(); } catch(_) {}
         },
         /** Name of the currently playing animation, or null */
-        currentAnimation() {
-            const a = obj.animations?.[obj.activeAnimIndex ?? 0];
-            return a?.name ?? null;
-        },
+        get currentAnimation() { return obj.animations?.[obj.activeAnimIndex ?? 0]?.name ?? null; },
         /** True if an animation is currently playing */
         get isPlayingAnimation() {
-            return !!(obj._animSprite?.playing);
+            return !!(obj._animSprite?.playing || obj._runtimeSprite?.playing);
         },
-        get currentAnimation() { return obj.animations?.[obj.activeAnimIndex]?.name ?? ''; },
 
         // ── INPUT ────────────────────────────────────────────
         input: {
@@ -1851,12 +1847,14 @@ function _buildSandbox(obj, instRef) {
 
         // ── SPRITE TINT ───────────────────────────────────────
         /**
-         * Set this object's tint colour.
-         * tint("#ff0000") or tint(0xff0000)
-         * tint(null) or tint("#ffffff") to remove tint.
+         * Get or set this object's tint colour (hex string).
+         * this.tint = "#ff0000"  — red tint
+         * this.tint = 0x00ff00   — green tint (hex number)
+         * this.tint = "#ffffff"  — remove tint (white = no effect)
          */
         get tint() {
-            const t = obj.spriteGraphic?.tint;
+            const s = obj._runtimeSprite || obj._animSprite || obj.spriteGraphic;
+            const t = s?.tint;
             return t !== undefined ? '#' + t.toString(16).padStart(6, '0') : '#ffffff';
         },
         set tint(v) {
@@ -1864,12 +1862,31 @@ function _buildSandbox(obj, instRef) {
                 ? parseInt(v.replace('#',''), 16)
                 : (v ?? 0xffffff);
             obj._scriptTint = hex;
-            if (obj.spriteGraphic) obj.spriteGraphic.tint = hex;
+            const active = obj._runtimeSprite || obj._animSprite || obj.spriteGraphic;
+            if (active) active.tint = hex;
+            if (obj.spriteGraphic && obj.spriteGraphic !== active) obj.spriteGraphic.tint = hex;
+        },
+        /** Set tint — same as this.tint = v. setTint("#ff0000") or setTint(0xff0000). */
+        setTint(v) {
+            const hex = typeof v === 'string'
+                ? parseInt(v.replace('#',''), 16)
+                : (v ?? 0xffffff);
+            obj._scriptTint = hex;
+            const active = obj._runtimeSprite || obj._animSprite || obj.spriteGraphic;
+            if (active) active.tint = hex;
+            if (obj.spriteGraphic && obj.spriteGraphic !== active) obj.spriteGraphic.tint = hex;
+        },
+        /** Get tint as hex string. */
+        getTint() {
+            const s = obj._runtimeSprite || obj._animSprite || obj.spriteGraphic;
+            return s ? '#' + (s.tint ?? 0xffffff).toString(16).padStart(6, '0') : '#ffffff';
         },
         /** Remove tint (reset to white / no colour effect). */
         clearTint() {
             obj._scriptTint = 0xffffff;
-            if (obj.spriteGraphic) obj.spriteGraphic.tint = 0xffffff;
+            const active = obj._runtimeSprite || obj._animSprite || obj.spriteGraphic;
+            if (active) active.tint = 0xffffff;
+            if (obj.spriteGraphic && obj.spriteGraphic !== active) obj.spriteGraphic.tint = 0xffffff;
         },
 
         // ── DISTANCE ─────────────────────────────────────────
@@ -2375,6 +2392,15 @@ function _buildSandbox(obj, instRef) {
                 isTile:bestIsTile,
                 tile:bestTileData?{row:bestTileData.tileRow,col:bestTileData.tileCol,index:bestTileData.tileIndex}:null,
             };
+            // Flat shortcuts — hit.point.x, hit.normal.x, hit.distance, hit.isTile
+            result.point    = result._rayHit.point;
+            result.normal   = result._rayHit.normal;
+            result.distance = result._rayHit.distance;
+            result.fraction = result._rayHit.fraction;
+            result.isTile   = result._rayHit.isTile;
+            result.tile     = result._rayHit.tile;
+            // hit.sprite is an alias for the proxy — hit.sprite.takeDamage(10), hit.sprite.name, etc.
+            result.sprite   = result;
             return result;
         },
 
@@ -2405,6 +2431,8 @@ function _buildSandbox(obj, instRef) {
                     for(const h of hs){
                         const r=_makeProxy(o);
                         r._rayHit={point:h.point,normal:h.normal,distance:h.distance,fraction:h.t,isTile:true,tile:{row:h.tileRow,col:h.tileCol,index:h.tileIndex}};
+                        r.point=r._rayHit.point; r.normal=r._rayHit.normal; r.distance=r._rayHit.distance;
+                        r.fraction=r._rayHit.fraction; r.isTile=true; r.tile=r._rayHit.tile; r.sprite=r;
                         hits.push({proxy:r,t:h.t});
                     }
                     continue;
@@ -2423,6 +2451,8 @@ function _buildSandbox(obj, instRef) {
                 const hx=px1+t*rdx,hy=py1+t*rdy;
                 const r=_makeProxy(o);
                 r._rayHit={point:{x:hx/100,y:-hy/100},normal:{x:nx,y:-ny},distance:t*rlen/100,fraction:t,isTile:false,tile:null};
+                r.point=r._rayHit.point; r.normal=r._rayHit.normal; r.distance=r._rayHit.distance;
+                r.fraction=r._rayHit.fraction; r.isTile=false; r.tile=null; r.sprite=r;
                 hits.push({proxy:r,t});
             }
             hits.sort((a,b)=>a.t-b.t);
@@ -3428,22 +3458,32 @@ function _makeProxy(f) {
 
         // ── Tint ──────────────────────────────────────────────────────────────
         get tint() {
-            if (!f.spriteGraphic) return 0xffffff;
-            const t = f.spriteGraphic.tint;
+            const s = f._runtimeSprite || f._animSprite || f.spriteGraphic;
+            if (!s) return 0xffffff;
+            const t = s.tint;
             return (typeof t === 'number') ? t : 0xffffff;
         },
         set tint(v) {
             const hex = (typeof v === 'string') ? parseInt(v.replace('#',''), 16) : +v;
-            if (f.spriteGraphic) f.spriteGraphic.tint = hex;
+            const active = f._runtimeSprite || f._animSprite || f.spriteGraphic;
+            if (active) active.tint = hex;
+            if (f.spriteGraphic && f.spriteGraphic !== active) f.spriteGraphic.tint = hex;
         },
         setTint(v) {
             const hex = (typeof v === 'string') ? parseInt(v.replace('#',''), 16) : +v;
-            if (f.spriteGraphic) f.spriteGraphic.tint = hex;
+            const active = f._runtimeSprite || f._animSprite || f.spriteGraphic;
+            if (active) active.tint = hex;
+            if (f.spriteGraphic && f.spriteGraphic !== active) f.spriteGraphic.tint = hex;
         },
-        clearTint() { if (f.spriteGraphic) f.spriteGraphic.tint = 0xffffff; },
+        clearTint() {
+            const active = f._runtimeSprite || f._animSprite || f.spriteGraphic;
+            if (active) active.tint = 0xffffff;
+            if (f.spriteGraphic && f.spriteGraphic !== active) f.spriteGraphic.tint = 0xffffff;
+        },
         getTint() {
-            if (!f.spriteGraphic) return '#ffffff';
-            return '#' + (f.spriteGraphic.tint ?? 0xffffff).toString(16).padStart(6,'0');
+            const s = f._runtimeSprite || f._animSprite || f.spriteGraphic;
+            if (!s) return '#ffffff';
+            return '#' + (s.tint ?? 0xffffff).toString(16).padStart(6,'0');
         },
 
         // ── Z order ───────────────────────────────────────────────────────────
@@ -4134,6 +4174,7 @@ function inFOV(target, deg, range)    { return api.inFOV(target, deg ?? 90, rang
 
 /** True when the agent hasn't moved enough recently (stuck detection). */
 var isStuck = false; // synced each frame via api.isStuck
+var isPlayingAnimation = false; // synced each frame via api.isPlayingAnimation
 /** Move in the direction this object is currently facing */
 function moveForward(speed) { api.moveForward(speed); }
 /** Rotate this object to face a world position */
@@ -5539,6 +5580,7 @@ __out._stateEnterHandlers= _stateEnterHandlers;
 __out._stateExitHandlers = _stateExitHandlers;
 __out._syncIsWalking     = typeof isWalking !== 'undefined' ? () => { isWalking = api.isWalking; } : null;
 __out._syncIsStuck       = typeof isStuck  !== 'undefined' ? () => { isStuck  = api.isStuck;  } : null;
+__out._syncIsPlayingAnimation = typeof isPlayingAnimation !== 'undefined' ? () => { isPlayingAnimation = api.isPlayingAnimation; } : null;
 __out._initVX            = typeof velocityX !== 'undefined' ? velocityX : 0;
 __out._initVY            = typeof velocityY !== 'undefined' ? velocityY : 0;
 __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelocityToApi : null;
@@ -5734,7 +5776,8 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
         if (obj._nav?.active) _navTick(this, dt);
         // Sync isWalking / isStuck local vars into script scope via the api
         if (this._syncIsWalking) try { this._syncIsWalking(); } catch(_) {}
-        if (this._syncIsStuck)   try { this._syncIsStuck();   } catch(_) {}
+        if (this._syncIsStuck)              try { this._syncIsStuck();              } catch(_) {}
+        if (this._syncIsPlayingAnimation)   try { this._syncIsPlayingAnimation();   } catch(_) {}
 
         // ── 4. Apply velocity to position / physics body ───────────────
         const hasKinematicBody = obj.physicsBody === 'kinematic';
