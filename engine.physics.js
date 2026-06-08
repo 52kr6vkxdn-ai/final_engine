@@ -1080,23 +1080,27 @@ export function stepPhysics(dt) {
         // Walk Planck's contact list. A normal pointing upward in screen-space
         // (ny < -0.5 in Planck's +Y-down world) means this body sits on top
         // of another body → it is on the ground.
-        let onGround = false;
+        let onGround = false, onCeiling = false, onWall = false;
         for (let ce = body.getContactList(); ce; ce = ce.next) {
             const contact = ce.contact;
             if (!contact || !contact.isTouching()) continue;
             const manifold = contact.getWorldManifold();
             if (!manifold || !manifold.normal) continue;
-            // getWorldManifold normal always points from fixture B toward fixture A.
-            // We must check whether THIS body is fixture A or B, then flip accordingly,
-            // so that ny < -0.5 always means "floor is below us" regardless of creation order.
+            // Planck v1 normal points FROM bodyA OUTWARD (away from A, toward B).
+            // Flip so push vector always points FROM the surface TOWARD us.
+            // push.y > 0 → surface pushes us UP   → floor below   → isOnGround
+            // push.y < 0 → surface pushes us DOWN  → ceiling above → isOnCeiling
+            // |push.x| dominates                   → wall beside   → isOnWall
             const isBodyA = contact.getFixtureA().getBody() === body;
-            const ny = isBodyA ? manifold.normal.y : -manifold.normal.y;
-            if (ny < -0.5) { onGround = true; break; }
+            const px = isBodyA ? -manifold.normal.x : manifold.normal.x;
+            const py = isBodyA ? -manifold.normal.y : manifold.normal.y;
+            if      (py >  0.5)              onGround  = true;
+            else if (py < -0.5)              onCeiling = true;
+            else if (Math.abs(px) > 0.5)     onWall    = true;
         }
         obj._isOnGround  = onGround;
-        // (ceiling/wall flags for dynamic are not yet computed; leave false)
-        obj._isOnCeiling = false;
-        obj._isOnWall    = false;
+        obj._isOnCeiling = onCeiling;
+        obj._isOnWall    = onWall;
 
         // ── Full sleep ───────────────────────────────────────────
         if (speed < SLEEP_SPEED && Math.abs(omega) < SLEEP_OMEGA) {
