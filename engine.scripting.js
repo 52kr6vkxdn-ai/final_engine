@@ -1387,13 +1387,13 @@ function _buildSandbox(obj, instRef) {
                 return -(obj._physicsBody?.getLinearVelocity()?.y ?? 0) / 100;
             },
             /**
-             * True when this kinematic body is resting on a floor this frame.
+             * True when this body is resting on a floor this frame. Works for Kinematic and Dynamic.
              * Use this to stop gravity from accumulating: if (isOnGround()) velocityY = 0;
              */
             get isOnGround()  { return !!obj._isOnGround; },
-            /** True when this kinematic body bumped a ceiling this frame. */
+            /** True when this body bumped a ceiling this frame (Kinematic and Dynamic). */
             get isOnCeiling() { return !!obj._isOnCeiling; },
-            /** True when this kinematic body is pressed against a wall this frame. */
+            /** True when this body is pressed against a wall this frame (Kinematic and Dynamic). */
             get isOnWall()    { return !!obj._isOnWall; },
             /** Lock this body completely — nothing can move it, including scripts. */
             setImmovable(val) {
@@ -1413,17 +1413,16 @@ function _buildSandbox(obj, instRef) {
                 }
             },
             /**
-             * Set the angular (spin) velocity of this dynamic body.
-             * Call every frame in onUpdate to maintain a constant spin.
-             * Positive = clockwise, negative = counter-clockwise (radians/sec).
-             * Dynamic only.
-             *   physics.setAngularVelocity(3)   → spin clockwise
-             *   physics.setAngularVelocity(-2)  → spin counter-clockwise
-             *   physics.setAngularVelocity(0)   → stop spinning
+             * Set the angular (spin) velocity of this dynamic body (degrees/sec).
+             * Matches the units of setRotation/getRotation. Dynamic only.
+             * Positive = clockwise, negative = counter-clockwise.
+             *   physics.setAngularVelocity(180)  → spin at 180°/sec clockwise
+             *   physics.setAngularVelocity(-90)  → spin counter-clockwise
+             *   physics.setAngularVelocity(0)    → stop spinning
              */
-            setAngularVelocity(radsPerSec) {
+            setAngularVelocity(degsPerSec) {
                 if (window.planck && obj._physicsBody && obj.physicsBody === 'dynamic')
-                    obj._physicsBody.setAngularVelocity(radsPerSec);
+                    obj._physicsBody.setAngularVelocity(degsPerSec * Math.PI / 180);
             },
             /**
              * Apply a one-time angular (spin) impulse to this dynamic body.
@@ -4028,7 +4027,7 @@ function onHeal(fn)              { _onHeal   = fn; }
 // ── Platformer events ─────────────────────────────────────
 /**
  * Runs the first frame this object lands on the ground after being airborne.
- * Works with kinematic bodies — check isOnGround() yourself for dynamic bodies.
+ * Works for both Kinematic and Dynamic physics bodies.
  *   onLand(() => { soundPlay("land"); })
  */
 function onLand(fn)              { _onLand   = fn; }
@@ -4072,6 +4071,12 @@ function setX(v)       { api.x = v; }
 function getY()        { return api.y; }
 function setY(v)       { api.y = v; }
 /** Move by (dx, dy) world units */
+/**
+ * Move by (dx, dy) world units THIS FRAME ONLY. Frame-rate dependent.
+ * Multiply by dt inside onUpdate to get consistent speed across machines:
+ *   move(speed * dt, 0)   — moves at `speed` world units/sec regardless of frame rate
+ * Without dt: move(0.1) at 30fps moves half as far as at 60fps.
+ */
 function move(dx, dy)  { api.move(dx, dy); }
 /** Warp this object to exact position */
 function moveTo(x, y)  { api.moveTo(x, y); }
@@ -4176,6 +4181,10 @@ function inFOV(target, deg, range)    { return api.inFOV(target, deg ?? 90, rang
 var isStuck = false; // synced each frame via api.isStuck
 var isPlayingAnimation = false; // synced each frame via api.isPlayingAnimation
 /** Move in the direction this object is currently facing */
+/**
+ * Move forward along this object's rotation direction THIS FRAME ONLY. Frame-rate dependent.
+ * Multiply by dt inside onUpdate:  moveForward(speed * dt)
+ */
 function moveForward(speed) { api.moveForward(speed); }
 /** Rotate this object to face a world position */
 function lookAt(tx, ty){ api.lookAt(tx, ty); }
@@ -4278,29 +4287,31 @@ function sendMessage(tagOrProxy, msg, data) {
     }
 }
 /**
- * Same as sendMessage — explicit tag variant for clarity.
- *   sendMessageToTag("enemy", "stunned")
+ * Alias of sendMessage(tag, ...) — use sendMessage() instead.
+ * @deprecated Use sendMessage(tag, msg, data)
  */
 function sendMessageToTag(tag, msg, data) { api.sendMessage(tag, msg, data); }
 /**
- * Broadcast a message to ALL objects in the scene.
+ * Send a message to ALL objects in the scene.
+ * Alias of broadcastAll() — prefer broadcastAll() for clarity.
  *   broadcastMessage("gameOver")
- *   broadcastMessage("levelUp", { newLevel: 2 })
+ * @deprecated Use broadcastAll(msg, data)
  */
 function broadcastMessage(msg, data) { api.broadcastMessage(msg, data); }
 /**
- * Send to ALL objects with this tag.
- * Example: broadcast("Enemy", "freeze")
+ * Alias of sendMessage(tag, ...) — use sendMessage() instead.
+ * @deprecated Use sendMessage(tag, msg, data)
  */
 function broadcast(tag, msg, data)        { api.broadcast(tag, msg, data); }
 /**
- * Send to all objects in a group.
- * Example: broadcastGroup("wave1", "explode")
+ * Send to all objects in a specific group.
+ *   broadcastGroup("wave1", "explode")
  */
 function broadcastGroup(grp, msg, data)   { api.broadcastGroup(grp, msg, data); }
 /**
- * Send to EVERY scripted object in the scene.
- * Example: broadcastAll("gameOver")
+ * Send a message to EVERY scripted object in the scene.
+ *   broadcastAll("gameOver")
+ *   broadcastAll("levelUp", { newLevel: 2 })
  */
 function broadcastAll(msg, data)          { api.broadcastAll(msg, data); }
 
@@ -4332,8 +4343,9 @@ function overlapsAllWithTag(tag)    { return api.overlapsAllWithTag(tag); }
 
 // ── Destroy ───────────────────────────────────────────────────
 /** Remove this object from the scene */
+/** Remove this object from the scene. */
 function destroySelf()              { api.destroySelf(); }
-/** Remove another specific object from the scene. To destroy THIS object use destroy() instead. */
+/** Remove another specific object from the scene. Pass a proxy from find() or a collision callback. */
 function destroyObject(other)       { api.destroy(other); }
 
 // ── Scene management ──────────────────────────────────────────
@@ -4433,18 +4445,20 @@ function getVelX()                  { return physics.velX; }
 function getVelY()                  { return physics.velY; }
 
 /**
- * Is this kinematic body resting on a floor?
- * Use to gate jumps:  if (isOnGround()) { applyImpulse(0, 8); }
+ * Is this body resting on a floor? Works for both Kinematic and Dynamic bodies.
+ * Use to gate jumps:  if (isOnGround()) { velocityY = jumpForce; }
  */
 function isOnGround()               { return physics.isOnGround; }
 
 /**
- * Is this kinematic body touching a ceiling?
+ * Is this body touching a ceiling? Works for both Kinematic and Dynamic bodies.
+ * Use to cancel upward velocity:  if (isOnCeiling()) { velocityY = 0; }
  */
 function isOnCeiling()              { return physics.isOnCeiling; }
 
 /**
- * Is this kinematic body pressing against a wall?
+ * Is this body pressing against a wall? Works for both Kinematic and Dynamic bodies.
+ * Use to cancel horizontal velocity:  if (isOnWall()) { velocityX = 0; }
  */
 function isOnWall()                 { return physics.isOnWall; }
 
@@ -4462,15 +4476,14 @@ function stopPhysics()              { physics.stop(); }
 function setImmovable(val)          { physics.setImmovable(val); }
 
 /**
- * Set the spin speed of this dynamic body (radians/sec).
- * Call every frame in onUpdate to maintain a constant rotation speed.
+ * Set the spin speed of this dynamic body in degrees/sec.
+ * Matches setRotation/getRotation units. Dynamic only.
  * Positive = clockwise, negative = counter-clockwise.
- * Dynamic only.
- *   setAngularVelocity(3)   → spin clockwise at 3 rad/s
- *   setAngularVelocity(-2)  → spin counter-clockwise
- *   setAngularVelocity(0)   → stop spinning
+ *   setAngularVelocity(180)  → spin at 180°/sec clockwise
+ *   setAngularVelocity(-90)  → spin counter-clockwise
+ *   setAngularVelocity(0)    → stop spinning
  */
-function setAngularVelocity(radsPerSec) { physics.setAngularVelocity(radsPerSec); }
+function setAngularVelocity(degsPerSec) { physics.setAngularVelocity(degsPerSec); }
 
 /**
  * Apply a one-time spin kick to this dynamic body.
@@ -5044,7 +5057,7 @@ var PI = Math.PI;
  * Instantly destroy this object and remove it from the scene.
  * Same as api.destroy() but shorter.
  */
-function destroy() { api.destroy(); }
+function destroy() { api.destroySelf(); }
 
 /**
  * Spawn a copy of any object in your scene by its name.
@@ -5817,9 +5830,9 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
             if (vel.y !== 0) obj.y -= vel.y * dt * 100;
         }
 
-        // ── 5. onLand detection (kinematic only) ───────────────────
-        if (this._onLand && obj.physicsBody === 'kinematic') {
-            const grounded = this.api.isOnGround ?? false;
+        // ── 5. onLand detection (kinematic and dynamic) ────────────
+        if (this._onLand && (obj.physicsBody === 'kinematic' || obj.physicsBody === 'dynamic')) {
+            const grounded = !!obj._isOnGround;
             const wasAirborne = this._wasAirborne ?? false;
             if (wasAirborne && grounded) {
                 try { this._onLand(); } catch(e) {}

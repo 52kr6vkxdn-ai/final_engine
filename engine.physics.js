@@ -762,6 +762,22 @@ function _probeGround(shape, statics) {
     }
     return false;
 }
+function _probeCeiling(shape, statics) {
+    const probed = _translateShape(shape, 0, -PROBE_DIST);
+    for (const s of statics) {
+        if (_satCompound(probed.parts, s.verts)) return true;
+    }
+    return false;
+}
+function _probeWall(shape, statics) {
+    const probedL = _translateShape(shape, -PROBE_DIST, 0);
+    const probedR = _translateShape(shape,  PROBE_DIST, 0);
+    for (const s of statics) {
+        if (_satCompound(probedL.parts, s.verts)) return true;
+        if (_satCompound(probedR.parts, s.verts)) return true;
+    }
+    return false;
+}
 
 // ── Build static grid for the SAT sweep ──────────────────────
 // Each static entry carries { verts: [convex polygon], ownerLabel }.
@@ -854,11 +870,11 @@ export function stepPhysics(dt) {
         const statics = _buildStaticGrid(obj);
 
         if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) {
-            // Not moving — only probe for ground flag
+            // Not moving — probe all contact directions so flags stay accurate even at rest
             const idleShape = _getKinematicShape(obj);
             obj._isOnGround  = _probeGround(idleShape, statics);
-            obj._isOnCeiling = false;
-            obj._isOnWall    = false;
+            obj._isOnCeiling = _probeCeiling(idleShape, statics);
+            obj._isOnWall    = _probeWall(idleShape, statics);
             obj._kinematicActualVx = 0;
             obj._kinematicActualVy = 0;
             obj._kinematicPrevX = obj.x;
@@ -961,16 +977,8 @@ export function stepPhysics(dt) {
         obj._kinematicPrevY = obj.y;
 
         // 6. Ground / wall / ceiling flags
-        // Guard: never report isOnGround when pressed against a ceiling (hitUp).
-        // _probeGround probes 4px downward from the current shape, but when the
-        // body is physically squashed against a ceiling tile the tile geometry
-        // can overlap the probe zone and trigger a false floor hit, causing the
-        // sprite to stick to the ceiling instead of falling away.
-        obj._isOnGround  = !hitUp && (hitDown || _probeGround(_getKinematicShape(obj), subStatics));
+        obj._isOnGround  = hitDown || _probeGround(_getKinematicShape(obj), subStatics);
         obj._isOnCeiling = hitUp;
-        // Kill any residual upward velocity on ceiling hit so script velocity
-        // does not re-drive the body into the ceiling next frame.
-        if (hitUp && obj._kinematicVy < 0) obj._kinematicVy = 0;
         obj._isOnWall    = hitLeft || hitRight;
 
         // Track actual velocity (px/s) so physics.velX/velY work for kinematic too
