@@ -738,10 +738,9 @@ function _sweepSAT(shape, dx, dy, statics) {
         } else {
             // Y is cheaper — slide along Y
             const push = Math.max(0, mtv.depth - SWEEP_SKIN);
-            // Guard: never push UP during a downward move (prevents false ceiling
-            // detection when grazing the top corner of a tile while falling).
-            // ny < 0 would push upward; only allow that if we were actually moving up.
-            if (mtv.ny < 0 && dy >= 0) continue;
+            // Guard: never push UP during a downward-or-horizontal move (prevents false ceiling
+            // detection when grazing the top corner of a tile while falling or moving sideways).
+            if (mtv.ny < 0 && dy >= 0) continue;  // would push up, but not moving up
             shape = _translateShape(shape, 0, mtv.ny * push);
             if (yCorrect > SWEEP_SKIN * 0.5) {
                 hitY = true;
@@ -870,11 +869,15 @@ export function stepPhysics(dt) {
         const statics = _buildStaticGrid(obj);
 
         if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) {
-            // Not moving — probe all contact directions so flags stay accurate even at rest
+            // Not moving — probe contact directions.
+            // isOnCeiling is intentionally NOT set here: the lookahead probe fires
+            // even when the body is just near a ceiling (not touching), which causes
+            // scripts that zero velocityY on isOnCeiling() to kill gravity and float.
+            // Ceiling contact is only meaningful when the body actually swept into one.
             const idleShape = _getKinematicShape(obj);
             obj._isOnGround  = _probeGround(idleShape, statics);
-            obj._isOnCeiling = _probeCeiling(idleShape, statics);
-            obj._isOnWall    = _probeWall(idleShape, statics);
+            obj._isOnCeiling = false;
+            obj._isOnWall    = false;
             obj._kinematicActualVx = 0;
             obj._kinematicActualVy = 0;
             obj._kinematicPrevX = obj.x;
@@ -977,8 +980,11 @@ export function stepPhysics(dt) {
         obj._kinematicPrevY = obj.y;
 
         // 6. Ground / wall / ceiling flags
+        // _isOnCeiling is only set when we actually hit a ceiling this frame (hitUp from sweep).
+        // It is NOT set via probe so it cannot persist into idle frames and falsely
+        // cancel gravity when the player is just near (but not touching) a ceiling.
         obj._isOnGround  = hitDown || _probeGround(_getKinematicShape(obj), subStatics);
-        obj._isOnCeiling = hitUp;
+        obj._isOnCeiling = hitUp && (dy < 0); // only a real ceiling hit if we were moving upward
         obj._isOnWall    = hitLeft || hitRight;
 
         // Track actual velocity (px/s) so physics.velX/velY work for kinematic too
