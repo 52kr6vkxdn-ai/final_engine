@@ -4074,7 +4074,7 @@ function setY(v)       { api.y = v; }
 /**
  * Move by (dx, dy) world units THIS FRAME ONLY. Frame-rate dependent.
  * Multiply by dt inside onUpdate to get consistent speed across machines:
- *   move(speed * dt, 0)   — moves at `speed` world units/sec regardless of frame rate
+ *   move(speed * dt, 0)   — moves at \`speed\` world units/sec regardless of frame rate
  * Without dt: move(0.1) at 30fps moves half as far as at 60fps.
  */
 function move(dx, dy)  { api.move(dx, dy); }
