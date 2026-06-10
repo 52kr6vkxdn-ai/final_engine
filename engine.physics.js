@@ -420,6 +420,14 @@ export async function startPhysics() {
 const SWEEP_SKIN = 1;   // px — gap kept between shapes after resolution
 const PROBE_DIST = 4;   // px — ground-probe lookahead below the shape
 
+// ── Surface-angle classification (mirrors Godot / Unity / Unreal) ──────────
+// A contact whose push-normal Y component exceeds this dot-product threshold
+// (in screen space where +Y = down) is a floor or ceiling; otherwise a wall.
+//   FLOOR_DOT = cos(45°) ≈ 0.707  →  surfaces within 45° of horizontal = floor/ceiling
+//   WALL_DOT  = sin(45°) ≈ 0.707  →  surfaces within 45° of vertical   = wall
+// You can widen the floor angle by lowering FLOOR_DOT (e.g. 0.5 = 60° like Unity default).
+const FLOOR_DOT = 0.707;
+
 // ── Ear-clip triangulation (handles concave polygons) ─────────
 // Returns an array of triangles [ [{x,y},{x,y},{x,y}], ... ]
 function _triangulate(pts) {
@@ -658,7 +666,12 @@ function _boxVerts(b) {
 // shape    — compound shape { parts, allVerts }
 // dx, dy   — desired displacement this substep
 // statics  — array of { verts, ownerLabel }
-// Returns { shape, dx (actual), dy (actual), hitX/Y/Down/Up/Left/Right, hitStatics }
+// Returns { shape, dx (actual), dy (actual), hitX/Y/Down/Up/Left/Right, hitStatics, hitNormals }
+//
+// hitNormals — array of {nx,ny} contact normals (each already oriented to push
+//   the swept body AWAY from the surface, in screen space +Y-down).
+//   The kinematic section uses these for angle-based floor/ceiling/wall
+//   classification identical to Godot's move_and_slide / Unity's CharacterController.
 //
 // Corner-sticking fix:
 //   Old code used strict axis-dominance (|nx| > |ny|) which silently dropped
@@ -681,6 +694,7 @@ function _sweepSAT(shape, dx, dy, statics) {
     let hitX = false, hitY = false;
     let hitDown = false, hitUp = false, hitLeft = false, hitRight = false;
     const hitStatics = [];
+    const hitNormals = []; // angle-based surface classification (Godot/Unity/Unreal style)
 
     // ── X pass ───────────────────────────────────────────────
     shape = _translateShape(shape, dx, 0);
@@ -694,6 +708,7 @@ function _sweepSAT(shape, dx, dy, statics) {
         hitX  = true;
         if (mtv.nx > 0) hitLeft = true; else hitRight = true;
         if (!hitStatics.includes(s)) hitStatics.push(s);
+        hitNormals.push({ nx: mtv.nx, ny: mtv.ny });
     }
 
     // ── Y pass ───────────────────────────────────────────────
@@ -708,6 +723,7 @@ function _sweepSAT(shape, dx, dy, statics) {
         hitY  = true;
         if (mtv.ny > 0) hitDown = true; else hitUp = true;
         if (!hitStatics.includes(s)) hitStatics.push(s);
+        hitNormals.push({ nx: mtv.nx, ny: mtv.ny });
     }
 
     // ── Corner depenetration pass ─────────────────────────────
@@ -734,6 +750,7 @@ function _sweepSAT(shape, dx, dy, statics) {
                 hitX = true;
                 if (mtv.nx > 0) hitLeft = true; else hitRight = true;
                 if (!hitStatics.includes(s)) hitStatics.push(s);
+                hitNormals.push({ nx: mtv.nx, ny: mtv.ny });
             }
         } else {
             // Y is cheaper — slide along Y
@@ -746,25 +763,41 @@ function _sweepSAT(shape, dx, dy, statics) {
                 hitY = true;
                 if (mtv.ny > 0) hitDown = true; else hitUp = true;
                 if (!hitStatics.includes(s)) hitStatics.push(s);
+                hitNormals.push({ nx: mtv.nx, ny: mtv.ny });
             }
         }
     }
 
-    return { shape, hitX, hitY, hitDown, hitUp, hitLeft, hitRight, hitStatics };
+    return { shape, hitX, hitY, hitDown, hitUp, hitLeft, hitRight, hitStatics, hitNormals };
 }
 
-// ── Ground probe (SAT) ────────────────────────────────────────
+// ── Angle-aware surface probes ────────────────────────────────
+// Each probe moves the shape a tiny distance in a direction and checks the
+// contact normal of any overlap.  Only contacts whose normal falls within
+// FLOOR_DOT of the expected gravity axis count as ground/ceiling; everything
+// else is a wall — exactly how Godot / Unity / Unreal classify surfaces.
+//
+// Screen-space convention (+Y = down):
+//   Ground:  contact pushes player UP   → mtv.ny < 0,  |mtv.ny| ≥ FLOOR_DOT
+//   Ceiling: contact pushes player DOWN → mtv.ny > 0,  |mtv.ny| ≥ FLOOR_DOT
+//   Wall:    contact pushes player sideways → |mtv.nx| ≥ FLOOR_DOT
 function _probeGround(shape, statics) {
     const probed = _translateShape(shape, 0, PROBE_DIST);
     for (const s of statics) {
-        if (_satCompound(probed.parts, s.verts)) return true;
+        const mtv = _satCompound(probed.parts, s.verts);
+        if (!mtv) continue;
+        // Normal must push player mostly UP (floor-like angle ≤ 45° from horizontal)
+        if (mtv.ny < -FLOOR_DOT) return true;
     }
     return false;
 }
 function _probeCeiling(shape, statics) {
     const probed = _translateShape(shape, 0, -PROBE_DIST);
     for (const s of statics) {
-        if (_satCompound(probed.parts, s.verts)) return true;
+        const mtv = _satCompound(probed.parts, s.verts);
+        if (!mtv) continue;
+        // Normal must push player mostly DOWN (ceiling-like angle ≤ 45° from horizontal)
+        if (mtv.ny > FLOOR_DOT) return true;
     }
     return false;
 }
@@ -772,8 +805,10 @@ function _probeWall(shape, statics) {
     const probedL = _translateShape(shape, -PROBE_DIST, 0);
     const probedR = _translateShape(shape,  PROBE_DIST, 0);
     for (const s of statics) {
-        if (_satCompound(probedL.parts, s.verts)) return true;
-        if (_satCompound(probedR.parts, s.verts)) return true;
+        const mtvL = _satCompound(probedL.parts, s.verts);
+        if (mtvL && Math.abs(mtvL.nx) >= FLOOR_DOT) return true;
+        const mtvR = _satCompound(probedR.parts, s.verts);
+        if (mtvR && Math.abs(mtvR.nx) >= FLOOR_DOT) return true;
     }
     return false;
 }
@@ -919,6 +954,7 @@ export function stepPhysics(dt) {
         let hitX = false, hitY = false;
         let hitDown = false, hitUp = false, hitLeft = false, hitRight = false;
         const hitStatics = [];
+        const allHitNormals = []; // collect across all substeps for angle-based classification
 
         // Build the static grid once for all substeps — statics don't move mid-frame.
         const subStatics = _buildStaticGrid(obj);
@@ -935,6 +971,7 @@ export function stepPhysics(dt) {
             if (res.hitX) { hitX = true; hitLeft  = hitLeft  || res.hitLeft;  hitRight = hitRight || res.hitRight; }
             if (res.hitY) { hitY = true; hitDown  = hitDown  || res.hitDown;  hitUp    = hitUp    || res.hitUp; }
             for (const s of res.hitStatics) if (!hitStatics.includes(s)) hitStatics.push(s);
+            for (const n of res.hitNormals) allHitNormals.push(n);
 
             // Derive obj.x/y from how much the shape centroid moved after resolution
             const { cx: postCx, cy: postCy } = _shapeCentroid(res.shape.allVerts);
@@ -979,13 +1016,26 @@ export function stepPhysics(dt) {
         obj._kinematicPrevX = obj.x;
         obj._kinematicPrevY = obj.y;
 
-        // 6. Ground / wall / ceiling flags
-        // _isOnCeiling is only set when we actually hit a ceiling this frame (hitUp from sweep).
-        // It is NOT set via probe so it cannot persist into idle frames and falsely
-        // cancel gravity when the player is just near (but not touching) a ceiling.
-        obj._isOnGround  = hitDown || _probeGround(_getKinematicShape(obj), subStatics);
-        obj._isOnCeiling = hitUp && (dy < 0); // only a real ceiling hit if we were moving upward
-        obj._isOnWall    = hitLeft || hitRight;
+        // 6. Ground / wall / ceiling flags — angle-based (Godot / Unity / Unreal style)
+        // ─────────────────────────────────────────────────────────────────────────────
+        // Classify each contact normal collected during the sweep substeps:
+        //   • Normal pushes player UP   (ny < -FLOOR_DOT) → floor  → isOnGround
+        //   • Normal pushes player DOWN (ny >  FLOOR_DOT) → ceiling → isOnCeiling
+        //   • Otherwise                                   → wall   → isOnWall
+        // This means a steep wall or angled surface will NEVER set isOnGround just
+        // because the player touched it — only surfaces within 45° of horizontal do.
+        // The idle ground-probe runs after (angle-aware too) so standing still on a
+        // slope still registers correctly.
+        let sweepOnGround = false, sweepOnCeiling = false, sweepOnWall = false;
+        for (const n of allHitNormals) {
+            if      (n.ny < -FLOOR_DOT)              sweepOnGround  = true;
+            else if (n.ny >  FLOOR_DOT)              sweepOnCeiling = true;
+            else if (Math.abs(n.nx) >= FLOOR_DOT)    sweepOnWall    = true;
+        }
+        const finalShape = _getKinematicShape(obj);
+        obj._isOnGround  = sweepOnGround  || _probeGround(finalShape, subStatics);
+        obj._isOnCeiling = sweepOnCeiling;
+        obj._isOnWall    = sweepOnWall    || (!sweepOnGround && !sweepOnCeiling && (hitLeft || hitRight));
 
         // Track actual velocity (px/s) so physics.velX/velY work for kinematic too
         obj._kinematicActualVx =  (obj.x - prevX) / Math.max(dt, 0.001);
@@ -1098,10 +1148,13 @@ export function stepPhysics(dt) {
         const omega = body.getAngularVelocity();
         const speed = Math.hypot(vel.x, vel.y);
 
-        // ── Ground detection for dynamic bodies ─────────────────
-        // Walk Planck's contact list. A normal pointing upward in screen-space
-        // (ny < -0.5 in Planck's +Y-down world) means this body sits on top
-        // of another body → it is on the ground.
+        // ── Ground / ceiling / wall detection — angle-based (Godot / Unity / Unreal) ──
+        // Walk Planck's contact list and classify each contact normal by angle.
+        // push.y > FLOOR_DOT  → surface pushes us UP enough   → floor  → isOnGround
+        // push.y < -FLOOR_DOT → surface pushes us DOWN enough → ceiling → isOnCeiling
+        // |push.x| dominates (wall-like angle)               → wall   → isOnWall
+        // Only surfaces within 45° of horizontal register as floor or ceiling;
+        // steep walls and angled surfaces at >45° from horizontal are walls.
         let onGround = false, onCeiling = false, onWall = false;
         for (let ce = body.getContactList(); ce; ce = ce.next) {
             const contact = ce.contact;
@@ -1110,15 +1163,13 @@ export function stepPhysics(dt) {
             if (!manifold || !manifold.normal) continue;
             // Planck v1 normal points FROM bodyA OUTWARD (away from A, toward B).
             // Flip so push vector always points FROM the surface TOWARD us.
-            // push.y > 0 → surface pushes us UP   → floor below   → isOnGround
-            // push.y < 0 → surface pushes us DOWN  → ceiling above → isOnCeiling
-            // |push.x| dominates                   → wall beside   → isOnWall
+            // Planck uses +Y = up (math convention), so py > 0 = push upward = floor.
             const isBodyA = contact.getFixtureA().getBody() === body;
             const px = isBodyA ? -manifold.normal.x : manifold.normal.x;
             const py = isBodyA ? -manifold.normal.y : manifold.normal.y;
-            if      (py >  0.5)              onGround  = true;
-            else if (py < -0.5)              onCeiling = true;
-            else if (Math.abs(px) > 0.5)     onWall    = true;
+            if      (py >=  FLOOR_DOT)           onGround  = true;
+            else if (py <= -FLOOR_DOT)           onCeiling = true;
+            else if (Math.abs(px) >= FLOOR_DOT)  onWall    = true;
         }
         obj._isOnGround  = onGround;
         obj._isOnCeiling = onCeiling;
