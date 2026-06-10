@@ -1303,7 +1303,31 @@ export function rebuildBodyForObject(obj) {
     _kinematicContacts.delete(obj);
 
     const type = obj.physicsBody;
-    if (!type || type === 'none') return;
+    if (!type || type === 'none') {
+        // Switching to none — clean up all physics runtime state
+        delete obj._kinematicVx;
+        delete obj._kinematicVy;
+        delete obj._kinematicActualVx;
+        delete obj._kinematicActualVy;
+        delete obj._kinematicPrevX;
+        delete obj._kinematicPrevY;
+        delete obj._pendingKinematicDelta;
+        delete obj._isOnGround;
+        delete obj._isOnCeiling;
+        delete obj._isOnWall;
+        return;
+    }
+
+    // Resolve the active polygon frame ID for both kinematic and dynamic
+    // (needed so _makeBody/_getActivePolygon finds the right polygon)
+    const polyMap2 = obj.physicsPolygons || {};
+    if (Array.isArray(polyMap2.shared) && polyMap2.shared.length >= 3) {
+        obj._runtimePhysicsFrameId = 'shared';
+    } else {
+        const ra = obj.animations?.[obj.activeAnimIndex ?? 0];
+        const rf = ra?.frames?.[0];
+        if (rf?.id) obj._runtimePhysicsFrameId = rf.id;
+    }
 
     if (type === 'kinematic') {
         obj._kinematicVx           = 0;
@@ -1312,16 +1336,6 @@ export function rebuildBodyForObject(obj) {
         obj._kinematicPrevX        = obj.x;
         obj._kinematicPrevY        = obj.y;
         _kinematicContacts.set(obj, new Set());
-
-        // Re-resolve active frame id so _makeBody/_getActivePolygon finds the polygon
-        const polyMap2 = obj.physicsPolygons || {};
-        if (Array.isArray(polyMap2.shared) && polyMap2.shared.length >= 3) {
-            obj._runtimePhysicsFrameId = 'shared';
-        } else {
-            const ra = obj.animations?.[obj.activeAnimIndex ?? 0];
-            const rf = ra?.frames?.[0];
-            if (rf?.id) obj._runtimePhysicsFrameId = rf.id;
-        }
 
         const kBody = _makeBody(obj, obj.x, obj.y, 'kinematic');
         if (kBody) {
@@ -1334,6 +1348,15 @@ export function rebuildBodyForObject(obj) {
         }
         return;
     }
+
+    // dynamic or static — clean up any leftover kinematic state
+    delete obj._kinematicVx;
+    delete obj._kinematicVy;
+    delete obj._kinematicActualVx;
+    delete obj._kinematicActualVy;
+    delete obj._kinematicPrevX;
+    delete obj._kinematicPrevY;
+    delete obj._pendingKinematicDelta;
 
     const body = _makeBody(obj, obj.x, obj.y, type);
     if (!body) return;

@@ -2832,9 +2832,118 @@ function _buildSandbox(obj, instRef) {
             }
             _activeDragObj  = null;
             _activeDragOpts = {};
+            _throwVelX = _throwVelY = _throwPrevX = _throwPrevY = 0;
         },
         /** True while a drag is active. */
         get isDragging() { return !!_activeDragObj; },
+
+        // ── ONE-LINE DRAG-AND-THROW ───────────────────────────────
+        /**
+         * Make this object draggable AND throwable in one line.
+         * Works on kinematic and dynamic physics bodies (and plain objects).
+         * When released, the object keeps the velocity it was moving at.
+         *
+         *   makeThrowable()
+         *   makeThrowable({ smooth: 0, speed: 1.4, maxSpeed: 20,
+         *                   clamp: true, scale: 1.1,
+         *                   onThrow: (vx, vy) => { log("thrown!", vx, vy) } })
+         *
+         * Options (all optional):
+         *   smooth   — follow lag 0–30 (default 0 = instant, recommended for throw)
+         *   speed    — velocity multiplier applied at release (default 1)
+         *   maxSpeed — cap on throw speed in world units/sec (default none)
+         *   clamp    — keep inside game canvas while dragging (default false)
+         *   scale    — scale factor while held (default 1.08)
+         *   onThrow(vx, vy) — called on release with the throw velocity
+         */
+        makeThrowable(opts = {}) {
+            const smooth   = opts.smooth  ?? 0;
+            const clamp    = opts.clamp   ?? false;
+            const scaleMul = opts.scale   ?? 1.08;
+            const onThrow  = opts.onThrow ?? null;
+            let   held     = false;
+            let   origSX   = 1, origSY = 1;
+
+            const release = () => {
+                if (!held) return;
+                held = false;
+                obj.scale.x = origSX;
+                obj.scale.y = origSY;
+                if (_activeDragObj === obj) {
+                    const capVx = _throwVelX * (opts.speed ?? 1);
+                    const capVy = _throwVelY * (opts.speed ?? 1);
+                    // Apply velocity, then clear state
+                    try { _applyThrowVelocity(obj); } catch(_) {}
+                    _activeDragObj  = null;
+                    _activeDragOpts = {};
+                    _throwVelX = _throwVelY = _throwPrevX = _throwPrevY = 0;
+                    if (onThrow) {
+                        try { onThrow(capVx, capVy); } catch(_) {}
+                    }
+                }
+            };
+
+            const grab = () => {
+                if (held) return;
+                held   = true;
+                origSX = obj.scale.x;
+                origSY = obj.scale.y;
+                obj.scale.x = origSX * scaleMul;
+                obj.scale.y = origSY * scaleMul;
+                // Reset throw tracking
+                _throwVelX = _throwVelY = 0;
+                _throwPrevX = obj.x / 100;
+                _throwPrevY = -obj.y / 100;
+                _activeDragObj  = obj;
+                _activeDragOpts = {
+                    smooth,
+                    clampToGameBounds: clamp,
+                    throw: true,
+                    speed: opts.speed     ?? 1,
+                    maxSpeed: opts.maxSpeed ?? null,
+                    _throwAlpha: 0.25,
+                    onDrop: () => release(),
+                };
+            };
+
+            const inst = instRef[0];
+            if (inst) {
+                inst._onDragMouseDown = grab;
+                inst._onMouseClick    = null;
+                inst._dragReleaseHook = release;
+            }
+        },
+
+        /**
+         * Low-level: start throw-dragging an object right now.
+         * Like dragObject() but applies physics velocity on release.
+         * Call from onMouseClick or mouseJustDown().
+         *
+         *   throwObject()                        — throw THIS object
+         *   throwObject(find("Ball"))            — throw another object
+         *   throwObject(null, { speed: 1.5, maxSpeed: 30 })
+         *
+         * Options:
+         *   offsetX / offsetY  — world-unit offset from cursor (default 0)
+         *   clampToGameBounds  — keep inside canvas while dragging (default false)
+         *   speed              — velocity multiplier at release (default 1)
+         *   maxSpeed           — cap in world units/sec (default none)
+         *   onDrop(obj)        — called on release
+         */
+        throwObject(target, opts = {}) {
+            const dragObj = (target && target._ref)             ? target._ref
+                          : (target && target.x !== undefined)  ? target
+                          : obj;
+            _throwVelX = _throwVelY = 0;
+            _throwPrevX = dragObj.x / 100;
+            _throwPrevY = -dragObj.y / 100;
+            _activeDragObj  = dragObj;
+            _activeDragOpts = {
+                ...(opts || {}),
+                throw: true,
+                _throwAlpha: 0.25,
+            };
+        },
 
         // ── VIRTUAL JOYSTICK ─────────────────────────────────────
         /**
@@ -3316,6 +3425,8 @@ function _makeDeferredProxy(spawnX = 0, spawnY = 0) {
         stopAnimation()          { _c('stopAnimation',[]); },
         pauseAnimation()         { _c('pauseAnimation',[]); },
         makeDraggable(opts)      { _c('makeDraggable',[opts]); },
+        makeThrowable(opts)      { _c('makeThrowable',[opts]); },
+        throwObject(t,opts)      { _c('throwObject',[t,opts]); },
         walkTo(x,y,opts)         { _c('walkTo',[x,y,opts]); },
         walkToObject(t,opts)     { _c('walkToObject',[t,opts]); },
         stopWalking()            { _c('stopWalking',[]); },
@@ -3625,8 +3736,10 @@ function _makeProxy(f) {
         overlapsTag(tag)         { const i = _inst(); return i ? i.api.overlapsTag(tag) : null; },
         overlapsAllWithTag(tag)  { const i = _inst(); return i ? i.api.overlapsAllWithTag(tag) : []; },
 
-        // ── Draggable ─────────────────────────────────────────────────────────
+        // ── Draggable / Throwable ────────────────────────────────────────────
         makeDraggable(opts) { const i = _inst(); if (i) i.api.makeDraggable(opts); },
+        makeThrowable(opts) { const i = _inst(); if (i) i.api.makeThrowable(opts); },
+        throwObject(t, opts) { const i = _inst(); if (i) i.api.throwObject(t, opts); },
 
         // ── Distance ──────────────────────────────────────────────────────────
         distanceTo(targetOrX, y) {
@@ -4575,6 +4688,29 @@ function dragObject(target, opts)  { api.dragObject(target, opts); }
 function stopDrag()                { api.stopDrag(); }
 /** True while a drag is active. */
 function isDragging()              { return api.isDragging; }
+
+/**
+ * Make this object draggable AND throwable in one line.
+ * Works with kinematic and dynamic physics bodies.
+ * When the user releases, the object flies with the velocity it was being moved at.
+ *
+ *   makeThrowable()
+ *   makeThrowable({ speed: 1.4, maxSpeed: 25 })
+ *   makeThrowable({ smooth: 0, onThrow: (vx, vy) => { log("thrown at", vx, vy) } })
+ *
+ * Options: smooth, speed, maxSpeed, clamp, scale, onThrow(vx, vy)
+ */
+function makeThrowable(opts)       { api.makeThrowable(opts); }
+
+/**
+ * Low-level: start throw-dragging an object right now.
+ * Call from onMouseClick or mouseJustDown(). Applies physics velocity on release.
+ *
+ *   throwObject()                     — throw THIS object
+ *   throwObject(find("Ball"))         — throw another object
+ *   throwObject(null, { speed: 2, maxSpeed: 40 })
+ */
+function throwObject(target, opts) { api.throwObject(target, opts); }
 
 /**
  * Create a virtual on-screen joystick for mobile/touch controls.
@@ -6081,6 +6217,12 @@ function _updateActiveTouches(touchList) {
 let _activeDragObj  = null;
 let _activeDragOpts = {};
 
+// Throw velocity tracking (world units/sec, sampled over recent frames)
+let _throwVelX   = 0;   // current throw velocity X (world units/sec)
+let _throwVelY   = 0;   // current throw velocity Y (world units/sec)
+let _throwPrevX  = 0;   // previous frame world X
+let _throwPrevY  = 0;   // previous frame world Y
+
 function _applyDragThisFrame(dt) {
     if (!_activeDragObj) return;
     const sc = state.sceneContainer;
@@ -6107,18 +6249,100 @@ function _applyDragThisFrame(dt) {
         wx = Math.max(-gw, Math.min(gw, wx));
         wy = Math.max(-gh, Math.min(gh, wy));
     }
+
+    // ── Throw velocity tracking ──────────────────────────────
+    // Sample instantaneous velocity using exponential smoothing so that
+    // a momentarily-still cursor doesn't zero-out the throw.
+    if (_activeDragOpts.throw) {
+        const realDt = (typeof dt === 'number' && dt > 0) ? dt : (1 / 60);
+        const rawVx  = (wx - _throwPrevX) / realDt;   // world units/sec
+        const rawVy  = (wy - _throwPrevY) / realDt;
+        const alpha  = _activeDragOpts._throwAlpha ?? 0.35; // smoothing (0=no smooth,1=all prev)
+        _throwVelX = _throwVelX * alpha + rawVx * (1 - alpha);
+        _throwVelY = _throwVelY * alpha + rawVy * (1 - alpha);
+        _throwPrevX = wx;
+        _throwPrevY = wy;
+    }
+    // ────────────────────────────────────────────────────────
+
     _activeDragObj.x =  wx * 100;
     _activeDragObj.y = -wy * 100;
+
+    // ── Dynamic body fix: Planck overwrites obj.x/y every step from body position.
+    // We must also move the body itself, and zero its velocity so physics doesn't
+    // immediately push it back.
+    const draggedObj = _activeDragObj;
+    if (draggedObj.physicsBody === 'dynamic' && draggedObj._physicsBody && window.planck) {
+        const body = draggedObj._physicsBody;
+        const off  = body._zenOffset || { x: 0, y: 0 };
+        const ang  = body.getAngle();
+        const cosR = Math.cos(ang);
+        const sinR = Math.sin(ang);
+        body.setTransform(
+            window.planck.Vec2(
+                draggedObj.x + off.x * cosR - off.y * sinR,
+                draggedObj.y + off.x * sinR + off.y * cosR
+            ),
+            ang
+        );
+        body.setLinearVelocity(window.planck.Vec2(0, 0));
+        body.setAngularVelocity(0);
+        body.setAwake(true);
+    }
+}
+
+// Apply throw velocity to the released physics body
+function _applyThrowVelocity(obj) {
+    const opts    = _activeDragOpts;
+    const speedMul = opts.speed ?? 1;
+    let vx = _throwVelX * speedMul;
+    let vy = _throwVelY * speedMul;
+
+    // Optional max-speed cap
+    if (opts.maxSpeed != null) {
+        const spd = Math.sqrt(vx * vx + vy * vy);
+        if (spd > opts.maxSpeed) {
+            const s = opts.maxSpeed / spd;
+            vx *= s; vy *= s;
+        }
+    }
+
+    const ptype = obj.physicsBody;
+    if (ptype === 'dynamic' && obj._physicsBody && window.planck) {
+        // Dynamic: set Planck body velocity directly (pixels/sec → planck units)
+        obj._physicsBody.setLinearVelocity(window.planck.Vec2(vx * 100, -vy * 100));
+        obj._physicsBody.setAwake(true);
+    } else if (ptype === 'kinematic') {
+        // Kinematic: write into the engine's kinematic velocity slots
+        obj._kinematicVx =  vx * 100;   // stored in px/sec internally
+        obj._kinematicVy = -vy * 100;
+        obj._velDirty = true;
+    } else {
+        // No physics body — fall back to scripting velocity fields
+        obj._vel = obj._vel ?? { x: 0, y: 0 };
+        obj._vel.x = vx;
+        obj._vel.y = vy;
+        obj._velDirty  = true;
+        obj._velSetX   = true;
+        obj._velSetY   = true;
+    }
 }
 
 // Release drag on mouseup
 function _onDragMouseUp() {
     if (!_activeDragObj) return;
+
+    // Apply throw velocity before clearing state
+    if (_activeDragOpts.throw) {
+        try { _applyThrowVelocity(_activeDragObj); } catch(_) {}
+    }
+
     if (_activeDragOpts?.onDrop) {
         try { _activeDragOpts.onDrop(_activeDragObj); } catch(_) {}
     }
     _activeDragObj  = null;
     _activeDragOpts = {};
+    _throwVelX = _throwVelY = _throwPrevX = _throwPrevY = 0;
 }
 
 // ── Virtual Joystick system ───────────────────────────────────
@@ -6613,6 +6837,7 @@ export function stopScripts() {
     _destroyAllJoysticks();
     _activeDragObj  = null;
     _activeDragOpts = {};
+    _throwVelX = _throwVelY = _throwPrevX = _throwPrevY = 0;
     _activeTouches  = [];
     if (_ticker && state.app) { state.app.ticker.remove(_ticker); _ticker = null; }
     window.removeEventListener('keydown',   _kd);

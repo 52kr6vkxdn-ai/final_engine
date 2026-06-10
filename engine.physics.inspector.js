@@ -399,6 +399,12 @@ export function bindPhysicsInspector(obj) {
             obj._polyUnit    = 'container';
         }
         _pushUndo();
+        // Rebuild the live physics body immediately if we're in play mode
+        import('./engine.physics.js').then(m => {
+            if (state.isPlaying) {
+                m.rebuildBodyForObject(obj);
+            }
+        });
         import('./engine.ui.js').then(m => m.syncPixiToInspector());
         import('./engine.collision-overlay.js').then(m => m.refreshCollisionOverlay());
     });
