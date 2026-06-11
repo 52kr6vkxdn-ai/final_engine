@@ -1097,7 +1097,7 @@ export function stepPhysics(dt) {
     // If a body is moving faster than MAX_SPEED_PX_S it would travel further than
     // a typical object's width in a single frame, guaranteeing a tunnel.  Cap the
     // velocity here — the body still moves fast, it just can't skip over walls.
-    const MAX_SPEED_PX_S = 4000; // 40 world-units/sec — generous but finite
+    const MAX_SPEED_PX_S = 6000; // 60 world-units/sec — allow fast throws
     for (const { body, type } of _bodies) {
         if (type !== 'dynamic' || !body) continue;
         const vel   = body.getLinearVelocity();
@@ -1109,23 +1109,23 @@ export function stepPhysics(dt) {
     }
 
     // Enable bullet (CCD) mode for fast-moving dynamic bodies to prevent tunneling.
-    // A body moving faster than ~4 world-units/frame risks skipping through thin objects;
-    // bullet mode forces continuous collision detection on those bodies only.
+    // Threshold lowered to 300 px/s (~3 world-units/s) — catches thrown objects much
+    // earlier. The grabbed body always has bullet on (set in _applyDragThisFrame).
+    // Disable when slow to avoid the CPU cost on idle bodies.
     for (const { obj, body, type } of _bodies) {
         if (type !== 'dynamic' || !body) continue;
         const vel   = body.getLinearVelocity();
         const speed = Math.sqrt(vel.x * vel.x + vel.y * vel.y);
-        // Enable CCD above ~500 px/s (5 world-units/s).  Disable when slow again to
-        // avoid the small CPU cost on every static body.
-        body.setBullet(speed > 500);
+        body.setBullet(speed > 300);
     }
 
     // Run Planck in substeps to prevent tunnelling.
-    // 6 substeps (up from 3) gives much better collision fidelity at high speeds.
-    const SUBSTEPS = 6;
+    // 8 substeps with tighter solver iterations gives the best fidelity for
+    // fast-moving and thrown objects without being too expensive.
+    const SUBSTEPS = 8;
     const subDt    = dt / SUBSTEPS;
     for (let _s = 0; _s < SUBSTEPS; _s++) {
-        _world.step(subDt, 8, 4);
+        _world.step(subDt, 10, 6);
     }
 
     // ── POST-STEP: realistic energy bleed + ground detection ────
@@ -1248,6 +1248,7 @@ export function stopPhysics() {
     _tileByPlanckBody.clear();
     _kinematicContacts.clear();
     _pendingCollisions.length = 0;
+    _mouseJointGround = null;
 }
 
 // ── Ground / wall / ceiling queries ──────────────────────────
@@ -1410,6 +1411,134 @@ function _rebuildBodyForFrame(entry) {
     _bodyByPlanckBody.set(newBody, entry);
 }
 
+
+// ── Drag sweep helper (used by scripting grab system) ─────────
+/**
+ * Move a kinematic body from its current position toward (targetX, targetY)
+ * using the same multi-substep SAT sweep as normal kinematic movement.
+ * Collisions with statics, tiles, other kinematics, and dynamic bodies all
+ * block the movement exactly as they do during normal physics steps.
+ *
+ * Called every frame by _applyDragThisFrame instead of raw teleport.
+ * Returns { vx, vy } — actual velocity in px/s after collision resolution,
+ * used for throw velocity sampling.
+ */
+export function sweepKinematicDrag(obj, targetXpx, targetYpx, dt) {
+    if (!_world) return { vx: 0, vy: 0 };
+
+    const P      = window.planck;
+    const body   = obj._physicsBody ?? null;
+    const prevX  = obj.x;
+    const prevY  = obj.y;
+    const dx     = targetXpx - prevX;
+    const dy     = targetYpx - prevY;
+
+    if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) return { vx: 0, vy: 0 };
+
+    // Reset to current position before sweep (kinematic sweep expects this)
+    obj.x = prevX;
+    obj.y = prevY;
+
+    // More substeps than normal movement for drag — cursor can move very fast
+    // and we want tight collision fidelity the whole way.
+    const KIN_DRAG_SUBSTEPS = 6;
+    const subDx = dx / KIN_DRAG_SUBSTEPS;
+    const subDy = dy / KIN_DRAG_SUBSTEPS;
+    const subDt = Math.max(dt, 1 / 120) / KIN_DRAG_SUBSTEPS;
+
+    const statics = _buildStaticGrid(obj);
+
+    for (let _s = 0; _s < KIN_DRAG_SUBSTEPS; _s++) {
+        const curShape = _getKinematicShape(obj);
+        const { cx: preCx, cy: preCy } = _shapeCentroid(curShape.allVerts);
+
+        const res = _sweepSAT(curShape, subDx, subDy, statics);
+
+        const { cx: postCx, cy: postCy } = _shapeCentroid(res.shape.allVerts);
+        obj.x += postCx - preCx;
+        obj.y += postCy - preCy;
+
+        // Keep Planck body in sync so dynamic bodies get pushed out each substep
+        if (body && P) {
+            const off  = body._zenOffset || { x: 0, y: 0 };
+            const cosR = Math.cos(obj.rotation || 0);
+            const sinR = Math.sin(obj.rotation || 0);
+            body.setTransform(
+                P.Vec2(obj.x + off.x * cosR - off.y * sinR,
+                       obj.y + off.x * sinR + off.y * cosR),
+                obj.rotation || 0
+            );
+        }
+
+        // Mini world step — ejects overlapping dynamic bodies
+        _world.step(subDt, 10, 4);
+    }
+
+    // Keep prevX/Y in sync so the normal kinematic step doesn't see a big jump
+    obj._kinematicPrevX = obj.x;
+    obj._kinematicPrevY = obj.y;
+
+    const realDt = Math.max(dt, 0.001);
+    return {
+        vx: (obj.x - prevX) / realDt,
+        vy: (obj.y - prevY) / realDt,
+    };
+}
+
+// ── MouseJoint helpers (used by scripting drag system) ────────
+/**
+ * Create a Planck MouseJoint pulling `body` toward (targetX, targetY).
+ * Returns the joint, or null if physics isn't running.
+ * targetX/Y are in Planck world units (same as body.getPosition()).
+ */
+export function createMouseJoint(body, targetX, targetY, opts = {}) {
+    if (!_world || !body) return null;
+    const P = window.planck;
+    if (!P) return null;
+
+    // MouseJoint needs a static ground body as its anchor
+    if (!_mouseJointGround) {
+        _mouseJointGround = _world.createBody({ type: 'static', position: P.Vec2(0, 0) });
+    }
+
+    // maxForce: how hard the joint pulls — must be large enough to move the body
+    // against gravity and inertia. 1000 * mass is the standard Box2D recommendation.
+    const mass     = body.getMass() || 1;
+    const maxForce = (opts.maxForce ?? 1000) * mass;
+    const freqHz   = opts.frequencyHz ?? 10;   // spring frequency — higher = stiffer
+    const damping  = opts.dampingRatio ?? 0.9; // 1.0 = critically damped (no oscillation)
+
+    body.setAwake(true);
+
+    const joint = _world.createJoint(P.MouseJoint({
+        bodyA:        _mouseJointGround,
+        bodyB:        body,
+        target:       P.Vec2(targetX, targetY),
+        maxForce,
+        frequencyHz:  freqHz,
+        dampingRatio: damping,
+    }));
+    return joint;
+}
+
+/**
+ * Move the MouseJoint target to a new world position.
+ */
+export function updateMouseJoint(joint, targetX, targetY) {
+    if (!joint || !window.planck) return;
+    try { joint.setTarget(window.planck.Vec2(targetX, targetY)); } catch(_) {}
+}
+
+/**
+ * Destroy a MouseJoint created by createMouseJoint().
+ */
+export function destroyMouseJoint(joint) {
+    if (!_world || !joint) return;
+    try { _world.destroyJoint(joint); } catch(_) {}
+}
+
+// Shared static ground body for all MouseJoints (created lazily)
+let _mouseJointGround = null;
 
 // ── Re-export inspector functions so existing import paths work ───
 export {
