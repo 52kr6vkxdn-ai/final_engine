@@ -2748,47 +2748,39 @@ function _buildSandbox(obj, instRef) {
 
         // ── ONE-LINE DRAG ──────────────────────────────────────
         /**
-         * Make this object grabbable — drag and optionally throw it.
-         * Works on dynamic bodies (Planck MouseJoint — real physics, collisions
-         * block the drag path naturally), kinematic bodies, and plain objects.
+         * Make this object draggable with one line. The engine handles
+         * click/tap to grab, smooth follow, and release — you do nothing else.
          *
-         *   makeGrabbable()                        — drag and place (default)
-         *   makeGrabbable({ throw: true })         — drag and throw
-         *   makeGrabbable({
-         *     throw:    false,        // true = release with velocity
-         *     smooth:   0,            // follow lag for kinematic (0=instant)
-         *     speed:    1,            // velocity multiplier at release (throw mode)
-         *     maxSpeed: null,         // cap throw speed in world units/sec
-         *     clamp:    false,        // keep inside game canvas
-         *     scale:    1.08,         // scale factor while held
-         *     onDrop:  (x, y) => {}, // called on release with world position
-         *     onThrow: (vx, vy) => {},// called on throw with velocity
-         *   })
+         *   makeDraggable()
+         *   makeDraggable({ smooth: 18, clamp: true, scale: 1.1,
+         *                   onDrop: (x, y) => { log("dropped at", x, y) } })
          *
-         * Aliases:
-         *   makeDraggable() = makeGrabbable()
-         *   makeThrowable() = makeGrabbable({ throw: true })
+         * Options (all optional):
+         *   smooth  — follow lag 0–30 (default 16, 0 = instant snap)
+         *   clamp   — keep inside game canvas (default false)
+         *   scale   — scale factor while held (default 1.08)
+         *   onDrop(x, y) — called when released, receives world position
          */
-        makeGrabbable(opts = {}) {
-            const isThrow  = opts.throw   ?? false;
-            const smooth   = opts.smooth  ?? (isThrow ? 0 : 16);
+        makeDraggable(opts = {}) {
+            const smooth   = opts.smooth  ?? 16;
             const clamp    = opts.clamp   ?? false;
             const scaleMul = opts.scale   ?? 1.08;
             const onDrop   = opts.onDrop  ?? null;
-            const onThrow  = opts.onThrow ?? null;
             let   held     = false;
-            let   origSX   = 1, origSY   = 1;
+            let   origSX   = 1, origSY = 1;
 
             const release = () => {
                 if (!held) return;
                 held = false;
                 obj.scale.x = origSX;
                 obj.scale.y = origSY;
-                // Restore fixedRotation if we temporarily disabled it
-                if (obj._physicsBody && obj.physicsFixedRotation) {
-                    try { obj._physicsBody.setFixedRotation(true); } catch(_) {}
+                if (_activeDragObj === obj) {
+                    if (onDrop) {
+                        try { onDrop(obj.x / 100, -obj.y / 100); } catch(_){}
+                    }
+                    _activeDragObj  = null;
+                    _activeDragOpts = {};
                 }
-                if (_activeDragObj === obj) _onDragMouseUp();
             };
 
             const grab = () => {
@@ -2798,19 +2790,120 @@ function _buildSandbox(obj, instRef) {
                 origSY = obj.scale.y;
                 obj.scale.x = origSX * scaleMul;
                 obj.scale.y = origSY * scaleMul;
-                _startGrab(obj, {
-                    throw:             isThrow,
+                _activeDragObj  = obj;
+                _activeDragOpts = { smooth, clampToGameBounds: clamp,
+                    onDrop: () => release()
+                };
+            };
+
+            // Grab fires on MOUSEDOWN (pointer over the object) — NOT on click/up.
+            // instRef is the [instance] wrapper array — instRef[0] is the live ScriptInstance.
+            const inst = instRef[0];
+            if (inst) {
+                inst._onDragMouseDown = grab;
+                inst._onMouseClick    = null;
+                inst._dragReleaseHook = release;
+            }
+        },
+        /**
+         * Make this object (or another) follow the mouse/finger precisely.
+         * Call once — usually inside onMouseClick or when mouseJustDown().
+         *
+         *   dragObject()                      — drag THIS object
+         *   dragObject(find("Crate"))         — drag a different object
+         *   dragObject(null, { clampToGameBounds: true })
+         *
+         * Options:
+         *   offsetX / offsetY   — world-unit offset from cursor centre (default 0)
+         *   clampToGameBounds   — keep inside game canvas (default false)
+         *   onDrop(obj) fn      — called once when finger/mouse is released
+         */
+        dragObject(target, opts = {}) {
+            const dragObj = (target && target._ref)              ? target._ref
+                          : (target && target.x !== undefined)   ? target
+                          : obj;
+            _activeDragObj  = dragObj;
+            _activeDragOpts = opts || {};
+        },
+        /** Stop dragging (calls onDrop if provided). */
+        stopDrag() {
+            if (_activeDragOpts?.onDrop && _activeDragObj) {
+                try { _activeDragOpts.onDrop(_activeDragObj); } catch(_) {}
+            }
+            _activeDragObj  = null;
+            _activeDragOpts = {};
+            _throwVelX = _throwVelY = _throwPrevX = _throwPrevY = 0;
+        },
+        /** True while a drag is active. */
+        get isDragging() { return !!_activeDragObj; },
+
+        // ── ONE-LINE DRAG-AND-THROW ───────────────────────────────
+        /**
+         * Make this object draggable AND throwable in one line.
+         * Works on kinematic and dynamic physics bodies (and plain objects).
+         * When released, the object keeps the velocity it was moving at.
+         *
+         *   makeThrowable()
+         *   makeThrowable({ smooth: 0, speed: 1.4, maxSpeed: 20,
+         *                   clamp: true, scale: 1.1,
+         *                   onThrow: (vx, vy) => { log("thrown!", vx, vy) } })
+         *
+         * Options (all optional):
+         *   smooth   — follow lag 0–30 (default 0 = instant, recommended for throw)
+         *   speed    — velocity multiplier applied at release (default 1)
+         *   maxSpeed — cap on throw speed in world units/sec (default none)
+         *   clamp    — keep inside game canvas while dragging (default false)
+         *   scale    — scale factor while held (default 1.08)
+         *   onThrow(vx, vy) — called on release with the throw velocity
+         */
+        makeThrowable(opts = {}) {
+            const smooth   = opts.smooth  ?? 0;
+            const clamp    = opts.clamp   ?? false;
+            const scaleMul = opts.scale   ?? 1.08;
+            const onThrow  = opts.onThrow ?? null;
+            let   held     = false;
+            let   origSX   = 1, origSY = 1;
+
+            const release = () => {
+                if (!held) return;
+                held = false;
+                obj.scale.x = origSX;
+                obj.scale.y = origSY;
+                if (_activeDragObj === obj) {
+                    const capVx = _throwVelX * (opts.speed ?? 1);
+                    const capVy = _throwVelY * (opts.speed ?? 1);
+                    // Apply velocity, then clear state
+                    try { _applyThrowVelocity(obj); } catch(_) {}
+                    _activeDragObj  = null;
+                    _activeDragOpts = {};
+                    _throwVelX = _throwVelY = _throwPrevX = _throwPrevY = 0;
+                    if (onThrow) {
+                        try { onThrow(capVx, capVy); } catch(_) {}
+                    }
+                }
+            };
+
+            const grab = () => {
+                if (held) return;
+                held   = true;
+                origSX = obj.scale.x;
+                origSY = obj.scale.y;
+                obj.scale.x = origSX * scaleMul;
+                obj.scale.y = origSY * scaleMul;
+                // Reset throw tracking
+                _throwVelX = _throwVelY = 0;
+                _throwPrevX = obj.x / 100;
+                _throwPrevY = -obj.y / 100;
+                _activeDragObj  = obj;
+                _activeDragOpts = {
                     smooth,
                     clampToGameBounds: clamp,
-                    speed:             opts.speed    ?? 1,
-                    maxSpeed:          opts.maxSpeed ?? null,
-                    onDrop:            (x, y) => {
-                        if (onDrop) try { onDrop(x, y); } catch(_) {}
-                        // release() will be called by _onDragMouseUp via _dragReleaseHook
-                    },
-                    onThrow,
-                    _restoreFixedRot:  !!obj.physicsFixedRotation,
-                });
+                    throw: true,
+                    speed: opts.speed     ?? 1,
+                    maxSpeed: opts.maxSpeed ?? null,
+                    _throwAlpha: 0.25,
+                    onDrop: () => release(),
+                };
             };
 
             const inst = instRef[0];
@@ -2821,41 +2914,36 @@ function _buildSandbox(obj, instRef) {
             }
         },
 
-        /** @alias makeGrabbable — drag and place */
-        makeDraggable(opts = {}) { return this.makeGrabbable({ ...opts, throw: false }); },
-        /** @alias makeGrabbable({ throw: true }) — drag and throw */
-        makeThrowable(opts = {}) { return this.makeGrabbable({ ...opts, throw: true  }); },
-
         /**
-         * Low-level: start grabbing an object right now.
-         * For dynamic bodies creates a MouseJoint — physics runs normally so
-         * collisions block the drag, and velocity is real for throwing.
+         * Low-level: start throw-dragging an object right now.
+         * Like dragObject() but applies physics velocity on release.
          * Call from onMouseClick or mouseJustDown().
          *
-         *   grabObject()                              — grab THIS object
-         *   grabObject(find("Crate"))                 — grab another object
-         *   grabObject(null, { throw: true })         — grab self in throw mode
-         *   grabObject(find("Ball"), { throw: true, speed: 1.5, maxSpeed: 30 })
+         *   throwObject()                        — throw THIS object
+         *   throwObject(find("Ball"))            — throw another object
+         *   throwObject(null, { speed: 1.5, maxSpeed: 30 })
          *
-         * Options: same as makeGrabbable
+         * Options:
+         *   offsetX / offsetY  — world-unit offset from cursor (default 0)
+         *   clampToGameBounds  — keep inside canvas while dragging (default false)
+         *   speed              — velocity multiplier at release (default 1)
+         *   maxSpeed           — cap in world units/sec (default none)
+         *   onDrop(obj)        — called on release
          */
-        grabObject(target, opts = {}) {
-            const dragObj = (target && target._ref)            ? target._ref
-                          : (target && target.x !== undefined) ? target
+        throwObject(target, opts = {}) {
+            const dragObj = (target && target._ref)             ? target._ref
+                          : (target && target.x !== undefined)  ? target
                           : obj;
-            _startGrab(dragObj, opts);
+            _throwVelX = _throwVelY = 0;
+            _throwPrevX = dragObj.x / 100;
+            _throwPrevY = -dragObj.y / 100;
+            _activeDragObj  = dragObj;
+            _activeDragOpts = {
+                ...(opts || {}),
+                throw: true,
+                _throwAlpha: 0.25,
+            };
         },
-
-        /** @alias grabObject — grab without throw */
-        dragObject(target, opts = {}) { return this.grabObject(target, { ...opts, throw: false }); },
-        /** @alias grabObject({ throw: true }) */
-        throwObject(target, opts = {}) { return this.grabObject(target, { ...opts, throw: true }); },
-
-        /** Stop the active grab (calls onDrop if set). */
-        stopDrag() { _onDragMouseUp(); },
-
-        /** True while a grab is active. */
-        get isDragging() { return !!_activeDragObj; },
 
         // ── VIRTUAL JOYSTICK ─────────────────────────────────────
         /**
@@ -3336,10 +3424,8 @@ function _makeDeferredProxy(spawnX = 0, spawnY = 0) {
         playAnimation(name)      { _c('playAnimation',[name]); },
         stopAnimation()          { _c('stopAnimation',[]); },
         pauseAnimation()         { _c('pauseAnimation',[]); },
-        makeGrabbable(opts)      { _c('makeGrabbable',[opts]); },
         makeDraggable(opts)      { _c('makeDraggable',[opts]); },
         makeThrowable(opts)      { _c('makeThrowable',[opts]); },
-        grabObject(t,opts)       { _c('grabObject',[t,opts]); },
         throwObject(t,opts)      { _c('throwObject',[t,opts]); },
         walkTo(x,y,opts)         { _c('walkTo',[x,y,opts]); },
         walkToObject(t,opts)     { _c('walkToObject',[t,opts]); },
@@ -3650,12 +3736,10 @@ function _makeProxy(f) {
         overlapsTag(tag)         { const i = _inst(); return i ? i.api.overlapsTag(tag) : null; },
         overlapsAllWithTag(tag)  { const i = _inst(); return i ? i.api.overlapsAllWithTag(tag) : []; },
 
-        // ── Grabbable / Draggable / Throwable ────────────────────────────────
-        makeGrabbable(opts)      { const i = _inst(); if (i) i.api.makeGrabbable(opts); },
-        makeDraggable(opts)      { const i = _inst(); if (i) i.api.makeDraggable(opts); },
-        makeThrowable(opts)      { const i = _inst(); if (i) i.api.makeThrowable(opts); },
-        grabObject(t, opts)      { const i = _inst(); if (i) i.api.grabObject(t, opts); },
-        throwObject(t, opts)     { const i = _inst(); if (i) i.api.throwObject(t, opts); },
+        // ── Draggable / Throwable ────────────────────────────────────────────
+        makeDraggable(opts) { const i = _inst(); if (i) i.api.makeDraggable(opts); },
+        makeThrowable(opts) { const i = _inst(); if (i) i.api.makeThrowable(opts); },
+        throwObject(t, opts) { const i = _inst(); if (i) i.api.throwObject(t, opts); },
 
         // ── Distance ──────────────────────────────────────────────────────────
         distanceTo(targetOrX, y) {
@@ -4584,54 +4668,49 @@ function getTouches()         { return input.touches; }
 function touchCount()         { return input.touchCount; }
 
 /**
- * Make this object grabbable in ONE LINE. Works on mouse and touch.
- * For dynamic physics bodies uses a Planck MouseJoint — the body is pulled
- * by a spring force so collisions block the drag path and velocity builds up
- * naturally for throwing (just like Unity/Godot/Box2D demos).
- * For kinematic bodies falls back to smooth teleport.
+ * Make this object draggable in ONE LINE. Works on mouse and touch.
+ * The engine handles grab, smooth follow, and release — you write nothing else.
  *
- *   makeGrabbable()                        — drag and place (stops on release)
- *   makeGrabbable({ throw: true })         — drag and throw (keeps velocity)
- *   makeGrabbable({
- *     throw:    false,        // true = release with physics velocity
- *     smooth:   0,            // follow lag for kinematic (0=instant, default 16 for place)
- *     speed:    1,            // velocity multiplier at throw release
- *     maxSpeed: null,         // cap throw speed in world units/sec
- *     clamp:    false,        // keep inside game canvas while dragging
- *     scale:    1.08,         // grow while held (1 = no change)
- *     onDrop:  (x, y) => {}, // called on release with world position
- *     onThrow: (vx, vy) => {},// called on throw with release velocity
- *   })
+ *   makeDraggable()
+ *   makeDraggable({ smooth: 20 })              — extra smooth lag
+ *   makeDraggable({ smooth: 0 })               — instant snap to finger
+ *   makeDraggable({ clamp: true })             — stay inside game canvas
+ *   makeDraggable({ scale: 1.15 })             — grow while held
+ *   makeDraggable({ onDrop: (x,y) => { log("landed at", x, y) } })
  *
- * No onUpdate or mouseDown check needed — engine handles everything.
+ * No onUpdate, no mouseDown check, no stopDrag needed.
  */
-function makeGrabbable(opts)       { api.makeGrabbable(opts); }
-
-/** @alias makeGrabbable — drag and place (no throw) */
 function makeDraggable(opts)       { api.makeDraggable(opts); }
-/** @alias makeGrabbable({ throw: true }) — drag and throw */
+
+/** Low-level: start dragging an object right now (call from onMouseClick). */
+function dragObject(target, opts)  { api.dragObject(target, opts); }
+/** Stop the active drag (fires onDrop if set). */
+function stopDrag()                { api.stopDrag(); }
+/** True while a drag is active. */
+function isDragging()              { return api.isDragging; }
+
+/**
+ * Make this object draggable AND throwable in one line.
+ * Works with kinematic and dynamic physics bodies.
+ * When the user releases, the object flies with the velocity it was being moved at.
+ *
+ *   makeThrowable()
+ *   makeThrowable({ speed: 1.4, maxSpeed: 25 })
+ *   makeThrowable({ smooth: 0, onThrow: (vx, vy) => { log("thrown at", vx, vy) } })
+ *
+ * Options: smooth, speed, maxSpeed, clamp, scale, onThrow(vx, vy)
+ */
 function makeThrowable(opts)       { api.makeThrowable(opts); }
 
 /**
- * Low-level: start grabbing an object right now.
- * For dynamic bodies creates a MouseJoint so collisions block it.
- * Call from onMouseClick or mouseJustDown().
+ * Low-level: start throw-dragging an object right now.
+ * Call from onMouseClick or mouseJustDown(). Applies physics velocity on release.
  *
- *   grabObject()                              — grab THIS object
- *   grabObject(find("Crate"))                 — grab another object
- *   grabObject(null, { throw: true })         — grab self in throw mode
- *   grabObject(find("Ball"), { throw: true, speed: 1.5, maxSpeed: 30 })
+ *   throwObject()                     — throw THIS object
+ *   throwObject(find("Ball"))         — throw another object
+ *   throwObject(null, { speed: 2, maxSpeed: 40 })
  */
-function grabObject(target, opts)  { api.grabObject(target, opts); }
-/** @alias grabObject — grab without throw */
-function dragObject(target, opts)  { api.dragObject(target, opts); }
-/** @alias grabObject({ throw: true }) */
 function throwObject(target, opts) { api.throwObject(target, opts); }
-
-/** Stop the active grab (fires onDrop if set). */
-function stopDrag()                { api.stopDrag(); }
-/** True while a grab/drag is active. */
-function isDragging()              { return api.isDragging; }
 
 /**
  * Create a virtual on-screen joystick for mobile/touch controls.
@@ -6134,239 +6213,136 @@ function _updateActiveTouches(touchList) {
     }
 }
 
-// ── Grab / Drag state ─────────────────────────────────────────
-//
-// Unified grab system — works like Unity/Godot/Box2D demos:
-//
-//   Dynamic bodies  → Planck MouseJoint (spring-pulls body toward cursor).
-//                     Physics runs normally the whole time, so collisions,
-//                     gravity, and momentum all work for free. The joint
-//                     velocity IS the throw velocity — no manual sampling.
-//
-//   Kinematic/none  → Teleport fallback (same as before). Velocity is
-//                     sampled via exponential smoothing for throw.
-//
+// ── Drag & Drop state ─────────────────────────────────────────
 let _activeDragObj  = null;
 let _activeDragOpts = {};
-let _activeMouseJoint = null;          // Planck MouseJoint (dynamic only)
 
-// Kinematic / no-physics fallback: sampled velocity
-let _throwVelX  = 0, _throwVelY  = 0;
-let _throwPrevX = 0, _throwPrevY = 0;
+// Throw velocity tracking (world units/sec, sampled over recent frames)
+let _throwVelX   = 0;   // current throw velocity X (world units/sec)
+let _throwVelY   = 0;   // current throw velocity Y (world units/sec)
+let _throwPrevX  = 0;   // previous frame world X
+let _throwPrevY  = 0;   // previous frame world Y
 
-// ── Cursor → Planck world position ───────────────────────────
-function _cursorToWorld(inst) {
-    const sc = state.sceneContainer;
-    if (!sc || !inst) return null;
-    return {
-        x:  (inst._mouse.x - sc.x) / (sc.scale.x * 100),
-        y: -(inst._mouse.y - sc.y) / (sc.scale.y * 100),
-    };
-}
-
-// ── Per-frame update ─────────────────────────────────────────
 function _applyDragThisFrame(dt) {
     if (!_activeDragObj) return;
+    const sc = state.sceneContainer;
+    if (!sc) return;
     const inst = _instances.find(i => i.obj === _activeDragObj) ?? _instances[0];
     if (!inst) return;
-
-    const cur = _cursorToWorld(inst);
-    if (!cur) return;
-
-    const opts   = _activeDragOpts;
-    const ox     = opts.offsetX ?? 0;
-    const oy     = opts.offsetY ?? 0;
-    const realDt = (typeof dt === 'number' && dt > 0) ? dt : (1 / 60);
-
-    let wx = cur.x + ox;
-    let wy = cur.y + oy;
-
-    if (opts.clampToGameBounds) {
+    const cx = inst._mouse.x;
+    const cy = inst._mouse.y;
+    const targetX =  (cx - sc.x) / (sc.scale.x * 100) + (_activeDragOpts.offsetX ?? 0);
+    const targetY = -(cy - sc.y) / (sc.scale.y * 100) + (_activeDragOpts.offsetY ?? 0);
+    const smooth = _activeDragOpts.smooth ?? 0;
+    let wx, wy;
+    if (smooth > 0) {
+        const realDt = (typeof dt === 'number' && dt > 0) ? dt : (1 / 60);
+        const t = Math.min(1, smooth * realDt);
+        wx = (_activeDragObj.x  / 100) + (targetX - (_activeDragObj.x  / 100)) * t;
+        wy = (-_activeDragObj.y / 100) + (targetY - (-_activeDragObj.y / 100)) * t;
+    } else {
+        wx = targetX; wy = targetY;
+    }
+    if (_activeDragOpts.clampToGameBounds) {
         const gw = (state.sceneSettings?.gameWidth  ?? 1280) / 100 / 2;
         const gh = (state.sceneSettings?.gameHeight ?? 720)  / 100 / 2;
         wx = Math.max(-gw, Math.min(gw, wx));
         wy = Math.max(-gh, Math.min(gh, wy));
     }
 
-    const obj       = _activeDragObj;
-    const isDynamic = obj.physicsBody === 'dynamic' && obj._physicsBody && window.planck;
-    const isKinematic = obj.physicsBody === 'kinematic';
-
-    if (isDynamic && _activeMouseJoint) {
-        // ── Dynamic: MouseJoint path ─────────────────────────
-        // Planck moves the body with proper physics — walls/floors block it,
-        // velocity builds up naturally. We force bullet (CCD) mode on the body
-        // while held so fast cursor movement never tunnels through thin objects.
-        if (obj._physicsBody) {
-            obj._physicsBody.setBullet(true);
-            obj._physicsBody.setAwake(true);
-        }
-        import('./engine.physics.js').then(m => {
-            m.updateMouseJoint(_activeMouseJoint, wx, wy);
-        });
-
-    } else if (isKinematic && obj._physicsBody) {
-        // ── Kinematic: SAT sweep path ─────────────────────────
-        // Route the drag delta through sweepKinematicDrag() — same multi-substep
-        // SAT sweep used for normal kinematic movement, so collisions with walls,
-        // floors, other kinematics, and dynamic bodies all block it correctly.
-        // No more going through walls.
-        const smooth = opts.smooth ?? 0;
-        let targetX = wx * 100;
-        let targetY = -wy * 100;
-
-        if (smooth > 0) {
-            const t = Math.min(1, smooth * realDt);
-            targetX = obj.x + (targetX - obj.x) * t;
-            targetY = obj.y + (targetY - obj.y) * t;
-        }
-
-        import('./engine.physics.js').then(m => {
-            const { vx, vy } = m.sweepKinematicDrag(obj, targetX, targetY, realDt);
-
-            // Velocity sampling for throw using actual post-sweep velocity
-            // (reflects true motion — if blocked by a wall, velocity on that
-            // axis is zero, which is correct for throw direction)
-            if (opts.throw) {
-                const alpha = 0.25;
-                // vx/vy from sweep are in px/s (+Y = down screen = negative world Y)
-                _throwVelX = _throwVelX * alpha + ( vx / 100) * (1 - alpha);
-                _throwVelY = _throwVelY * alpha + (-vy / 100) * (1 - alpha);
-            }
-        });
-
-    } else {
-        // ── No physics body: plain teleport ──────────────────
-        const smooth = opts.smooth ?? 0;
-        if (smooth > 0) {
-            const t = Math.min(1, smooth * realDt);
-            wx = ( obj.x / 100) + (wx - ( obj.x / 100)) * t;
-            wy = (-obj.y / 100) + (wy - (-obj.y / 100)) * t;
-        }
-        if (opts.throw) {
-            const rawVx = (wx - _throwPrevX) / realDt;
-            const rawVy = (wy - _throwPrevY) / realDt;
-            const alpha = 0.25;
-            _throwVelX = _throwVelX * alpha + rawVx * (1 - alpha);
-            _throwVelY = _throwVelY * alpha + rawVy * (1 - alpha);
-        }
+    // ── Throw velocity tracking ──────────────────────────────
+    // Sample instantaneous velocity using exponential smoothing so that
+    // a momentarily-still cursor doesn't zero-out the throw.
+    if (_activeDragOpts.throw) {
+        const realDt = (typeof dt === 'number' && dt > 0) ? dt : (1 / 60);
+        const rawVx  = (wx - _throwPrevX) / realDt;   // world units/sec
+        const rawVy  = (wy - _throwPrevY) / realDt;
+        const alpha  = _activeDragOpts._throwAlpha ?? 0.35; // smoothing (0=no smooth,1=all prev)
+        _throwVelX = _throwVelX * alpha + rawVx * (1 - alpha);
+        _throwVelY = _throwVelY * alpha + rawVy * (1 - alpha);
         _throwPrevX = wx;
         _throwPrevY = wy;
-        obj.x =  wx * 100;
-        obj.y = -wy * 100;
+    }
+    // ────────────────────────────────────────────────────────
+
+    _activeDragObj.x =  wx * 100;
+    _activeDragObj.y = -wy * 100;
+
+    // ── Dynamic body fix: Planck overwrites obj.x/y every step from body position.
+    // We must also move the body itself, and zero its velocity so physics doesn't
+    // immediately push it back.
+    const draggedObj = _activeDragObj;
+    if (draggedObj.physicsBody === 'dynamic' && draggedObj._physicsBody && window.planck) {
+        const body = draggedObj._physicsBody;
+        const off  = body._zenOffset || { x: 0, y: 0 };
+        const ang  = body.getAngle();
+        const cosR = Math.cos(ang);
+        const sinR = Math.sin(ang);
+        body.setTransform(
+            window.planck.Vec2(
+                draggedObj.x + off.x * cosR - off.y * sinR,
+                draggedObj.y + off.x * sinR + off.y * cosR
+            ),
+            ang
+        );
+        body.setLinearVelocity(window.planck.Vec2(0, 0));
+        body.setAngularVelocity(0);
+        body.setAwake(true);
     }
 }
 
-// ── Release ──────────────────────────────────────────────────
-function _onDragMouseUp() {
-    if (!_activeDragObj) return;
-    const obj  = _activeDragObj;
-    const opts = _activeDragOpts;
-
-    // ── Destroy MouseJoint first ─────────────────────────────
-    if (_activeMouseJoint) {
-        const joint = _activeMouseJoint;
-        _activeMouseJoint = null;
-
-        if (opts.throw) {
-            // Velocity is already on the body from the joint — just cap it
-            if (obj._physicsBody && window.planck) {
-                const body = obj._physicsBody;
-                const vel  = body.getLinearVelocity();
-                let vx = vel.x, vy = vel.y;
-                const speedMul = opts.speed ?? 1;
-                vx *= speedMul; vy *= speedMul;
-                if (opts.maxSpeed != null) {
-                    const spd = Math.sqrt(vx * vx + vy * vy);
-                    if (spd > opts.maxSpeed * 100) {
-                        const s = (opts.maxSpeed * 100) / spd;
-                        vx *= s; vy *= s;
-                    }
-                }
-                body.setLinearVelocity(window.planck.Vec2(vx, vy));
-                body.setAwake(true);
-                if (opts.onThrow) {
-                    try { opts.onThrow(vx / 100, -vy / 100); } catch(_) {}
-                }
-            }
-        } else {
-            // Place mode — bleed off most velocity so body doesn't drift
-            if (obj._physicsBody && window.planck) {
-                obj._physicsBody.setLinearVelocity(window.planck.Vec2(0, 0));
-                obj._physicsBody.setAngularVelocity(0);
-            }
-        }
-
-        import('./engine.physics.js').then(m => m.destroyMouseJoint(joint));
-
-        // After release, let the normal per-frame bullet-mode logic handle CCD
-        // (it enables bullet when speed > 500 px/s, disables when slow).
-        // Don't force it off here — the body may be moving fast right after throw.
-
-    } else {
-        // ── Kinematic / no-physics throw ─────────────────────
-        if (opts.throw) {
-            _applyKinematicThrowVelocity(obj, opts);
-        }
-    }
-
-    if (opts.onDrop) {
-        try { opts.onDrop(obj.x / 100, -obj.y / 100); } catch(_) {}
-    }
-
-    _activeDragObj  = null;
-    _activeDragOpts = {};
-    _throwVelX = _throwVelY = _throwPrevX = _throwPrevY = 0;
-}
-
-// ── Apply sampled velocity to kinematic / no-physics bodies ──
-function _applyKinematicThrowVelocity(obj, opts) {
+// Apply throw velocity to the released physics body
+function _applyThrowVelocity(obj) {
+    const opts    = _activeDragOpts;
     const speedMul = opts.speed ?? 1;
     let vx = _throwVelX * speedMul;
     let vy = _throwVelY * speedMul;
+
+    // Optional max-speed cap
     if (opts.maxSpeed != null) {
         const spd = Math.sqrt(vx * vx + vy * vy);
-        if (spd > opts.maxSpeed) { const s = opts.maxSpeed / spd; vx *= s; vy *= s; }
+        if (spd > opts.maxSpeed) {
+            const s = opts.maxSpeed / spd;
+            vx *= s; vy *= s;
+        }
     }
-    if (obj.physicsBody === 'kinematic') {
-        obj._kinematicVx =  vx * 100;
+
+    const ptype = obj.physicsBody;
+    if (ptype === 'dynamic' && obj._physicsBody && window.planck) {
+        // Dynamic: set Planck body velocity directly (pixels/sec → planck units)
+        obj._physicsBody.setLinearVelocity(window.planck.Vec2(vx * 100, -vy * 100));
+        obj._physicsBody.setAwake(true);
+    } else if (ptype === 'kinematic') {
+        // Kinematic: write into the engine's kinematic velocity slots
+        obj._kinematicVx =  vx * 100;   // stored in px/sec internally
         obj._kinematicVy = -vy * 100;
+        obj._velDirty = true;
     } else {
+        // No physics body — fall back to scripting velocity fields
         obj._vel = obj._vel ?? { x: 0, y: 0 };
-        obj._vel.x = vx; obj._vel.y = vy;
-        obj._velDirty = obj._velSetX = obj._velSetY = true;
-    }
-    if (opts.onThrow) {
-        try { opts.onThrow(vx, vy); } catch(_) {}
+        obj._vel.x = vx;
+        obj._vel.y = vy;
+        obj._velDirty  = true;
+        obj._velSetX   = true;
+        obj._velSetY   = true;
     }
 }
 
-// ── Start a grab (shared by makeGrabbable and grabObject) ────
-function _startGrab(dragObj, opts) {
-    // If dynamic, create a MouseJoint instead of teleporting
-    if (dragObj.physicsBody === 'dynamic' && dragObj._physicsBody && window.planck) {
-        const body = dragObj._physicsBody;
-        const pos  = body.getPosition();
-        import('./engine.physics.js').then(m => {
-            _activeMouseJoint = m.createMouseJoint(body, pos.x, pos.y, {
-                maxForce:     opts._mouseJointForce   ?? 1000,
-                frequencyHz:  opts._mouseJointFreq    ?? 12,
-                dampingRatio: opts._mouseJointDamping ?? 0.9,
-            });
-        });
-        // Turn off fixed rotation while grabbed so it can spin naturally,
-        // restore on drop (opts._prevFixedRot saved by makeGrabbable)
-        if (opts._restoreFixedRot !== undefined) {
-            body.setFixedRotation(false);
-        }
-    } else {
-        // Kinematic: reset velocity tracking
-        _throwVelX = _throwVelY = 0;
-        _throwPrevX = dragObj.x / 100;
-        _throwPrevY = -dragObj.y / 100;
+// Release drag on mouseup
+function _onDragMouseUp() {
+    if (!_activeDragObj) return;
+
+    // Apply throw velocity before clearing state
+    if (_activeDragOpts.throw) {
+        try { _applyThrowVelocity(_activeDragObj); } catch(_) {}
     }
-    _activeDragObj  = dragObj;
-    _activeDragOpts = opts;
+
+    if (_activeDragOpts?.onDrop) {
+        try { _activeDragOpts.onDrop(_activeDragObj); } catch(_) {}
+    }
+    _activeDragObj  = null;
+    _activeDragOpts = {};
+    _throwVelX = _throwVelY = _throwPrevX = _throwPrevY = 0;
 }
 
 // ── Virtual Joystick system ───────────────────────────────────
