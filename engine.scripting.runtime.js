@@ -28,6 +28,48 @@ import {
 import { _buildSandbox, _deepCopyObjectProps } from './engine.scripting.sandbox.js';
 import { _makeProxy } from './engine.scripting.proxy.js';
 import { _navTick } from './engine.scripting.nav.js';
+import {
+    acquireSandboxIframe, releaseSandboxIframe,
+    runInSandbox, isSandboxSupported, prewarmSandboxPool,
+} from './engine.scripting.sandbox-iframe.js';
+
+// ── Sandbox support detection ─────────────────────────────────
+// Set to true once we've confirmed sandboxed iframes work.
+// Falls back to direct AsyncFunction if not supported (e.g. exported game).
+let _sandboxEnabled = false;
+isSandboxSupported().then(ok => {
+    _sandboxEnabled = ok;
+    if (ok) {
+        prewarmSandboxPool(4);
+        console.log('[Zengine] Script sandbox: ✅ enabled (sandboxed iframe)');
+    } else {
+        console.log('[Zengine] Script sandbox: ℹ️  running in game-only mode (no sandbox needed)');
+    }
+});
+
+// ── Runtime error → editor jump helper ──────────────────────
+function _jumpEditorToError(err, code, scriptName) {
+    try {
+        let lineNum = null;
+        if (err?.lineNumber) {
+            lineNum = err.lineNumber;
+        } else if (err?.stack) {
+            const m = err.stack.match(/<anonymous>:(\d+)|Function[^:]*:(\d+)|at eval[^:]*:(\d+)/);
+            if (m) lineNum = parseInt(m[1] ?? m[2] ?? m[3], 10);
+        }
+        const PRELUDE_LINES = 1130;
+        if (lineNum != null && lineNum > PRELUDE_LINES) {
+            const userLine = lineNum - PRELUDE_LINES;
+            if (window._zeJumpEditorToError) {
+                // Check if the script that errored is the one currently open
+                const openEditor = window._seAceEditor;
+                if (openEditor && !openEditor.destroyed) {
+                    window._zeJumpEditorToError(userLine, err?.message ?? String(err));
+                }
+            }
+        }
+    } catch(_) {}
+}
 
 // ── Script Instance ───────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════════════════
@@ -81,10 +123,25 @@ class ScriptInstance {
         this._repeats       = _repeats;
         this._keyDownHandlers = _keyDownHandlers;
         this._keyUpHandlers   = _keyUpHandlers;
-        this._compile(code, api);
+        // Sandbox iframe — acquired async, compile runs once it's ready
+        this._sandboxIframe = null;
+        this._compileAsync(code, api);
     }
 
-    _compile(code, api) {
+    async _compileAsync(code, api) {
+        // Acquire a sandboxed iframe if the sandbox is supported.
+        // We await it here so _doCompile always has a valid iframe (or null).
+        if (_sandboxEnabled) {
+            try {
+                this._sandboxIframe = await acquireSandboxIframe();
+            } catch(_) {
+                this._sandboxIframe = null;
+            }
+        }
+        this._doCompile(code, api);
+    }
+
+    _doCompile(code, api) {
         // ── The full scripting prelude — everything accessible in scripts ──
         const prelude = `
 var _onStart=null, _onUpdate=null, _onStop=null, _onCloneStart=null, _onDestroy=null;
@@ -1787,7 +1844,7 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
             // Chain .catch IMMEDIATELY on the call — never store then attach separately.
             // Storing in a variable first creates a window where a synchronous microtask
             // rejection fires before .catch is attached, causing "Unhandled promise rejection".
-            fn.call(api, api, out).catch(_err => {
+            runInSandbox(fn, api, out, this._sandboxIframe).catch(_err => {
                 const friendly = _friendlyScriptError(_err, code, this.name, this.obj.label, 'compile');
                 for (const line of friendly) _logConsole(line, '#f87171');
                 const _rm = _err?.message ?? String(_err);
@@ -1796,6 +1853,7 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
                 _logConsole(`  🔍 RAW ERROR: [${_rt}] ${_rm}`, '#fb923c');
                 _logConsole(`  📋 STACK: ${_rs}`, '#94a3b8');
                 console.error('[Zengine async compile error]', _rt + ':', _rm, '\nScript:', this.name, '\nFull error:', _err);
+                _jumpEditorToError(_err, code, this.name);
                 import('./engine.console.js').then(m => m.recordPlayError());
             });
             // Bind all user-defined callbacks to api so this === api inside onStart, onUpdate, etc.
@@ -1879,6 +1937,7 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
             catch (e) {
                 const friendly = _friendlyScriptError(e, null, this.name, this.obj.label, 'onStart');
                 for (const line of friendly) _logConsole(line, '#f87171');
+                _jumpEditorToError(e, null, this.name);
                 import('./engine.console.js').then(m => m.recordPlayError());
             }
         }
@@ -1898,6 +1957,7 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
                 if (this._updateErrCount === 1) {
                     const friendly = _friendlyScriptError(e, null, this.name, obj.label, 'onUpdate');
                     for (const line of friendly) _logConsole(line, '#f87171');
+                    _jumpEditorToError(e, null, this.name);
                     _logConsole(`  ↳ This error repeats every frame — fix the script to stop the spam.`, '#facc15');
                     import('./engine.console.js').then(m => m.recordPlayError());
                 } else if (this._updateErrCount % 300 === 0) {
@@ -2040,6 +2100,11 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
     }
 
     stop() {
+        // Release the sandbox iframe back to the pool for reuse
+        if (this._sandboxIframe) {
+            releaseSandboxIframe(this._sandboxIframe);
+            this._sandboxIframe = null;
+        }
         if (!this._onStop) return;
         try { this._onStop(); }
         catch (e) {

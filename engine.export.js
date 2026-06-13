@@ -30,7 +30,7 @@ export async function exportGame() {
             'engine.transitions.js','engine.console.js','engine.spritesheet.js',
             'engine.collision-overlay.js','engine.defaultscripts.js','engine.history.js',
             'engine.ui.js','engine.project.js','engine.export.js',
-            'engine.scripting.chat.js','engine.scripting.editor.js',
+            'engine.scripting.chat.js','engine.scripting.editor.js','engine.scripting.sandbox-iframe.js','engine.scripting.linter.js',
             'engine.physics.inspector.js','pathfindlogic.js',
         ];
 
@@ -130,6 +130,9 @@ function _buildGameHTML(projectData, engineFiles, userScripts) {
     // ── Injected project data ─────────────────────────────────
     window.__ZENGINE_PROJECT__ = ${projectJson};
     window.__ZENGINE_AUTOPLAY__ = true;
+    // Disable the editor sandbox — exported games don't have an editor UI to protect.
+    // Scripts run directly without the iframe sandbox overhead.
+    window.__ZENGINE_GAME_ONLY__ = true;
 
     // ── Boot the engine in game-only mode ─────────────────────
     import('./engine.core.js').then(m => m.startEngine({ gameOnly: true }));

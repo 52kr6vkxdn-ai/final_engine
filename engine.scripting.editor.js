@@ -5,7 +5,11 @@
    ============================================================ */
 
 import { state }                               from './engine.state.js';
+import { attachLinter, jumpEditorToError }        from './engine.scripting.linter.js';
 // getScript/saveScript/refreshScriptPanel loaded dynamically to avoid circular deps
+
+// ── Expose jumpEditorToError globally so runtime can call it ──
+window._zeJumpEditorToError = jumpEditorToError;
 
 // ── Local console logger (mirrors engine.scripting.js pattern) ─
 function _logConsole(msg, color) {
@@ -841,6 +845,9 @@ export async function openScriptEditor(obj, scriptName, initialCode) {
     });
 
     editor.commands.addCommand({ name:'save', bindKey:{win:'Ctrl-S',mac:'Command-S'}, exec:_doSave });
+
+    // Attach live linter — red squiggles + error panel + jump-to-line
+    attachLinter(editor, aceEl);
 
     // Defer focus so the browser has fully painted — fixes "can't type" on first open
     requestAnimationFrame(() => {

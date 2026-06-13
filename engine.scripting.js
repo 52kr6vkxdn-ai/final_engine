@@ -12,6 +12,10 @@
      engine.scripting.sandbox.js  — _buildSandbox / _deepCopyObjectProps
      engine.scripting.runtime.js  — ScriptInstance, drag, joystick,
                                     input handlers, startScripts/stopScripts
+     engine.scripting.sandbox-iframe.js — sandboxed iframe execution layer
+                                    (blocks DOM access, localStorage, navigation)
+     engine.scripting.linter.js     — live as-you-type error detection,
+                                    red squiggles, error panel, runtime jump
    ============================================================ */
 
 import { state } from './engine.state.js';
