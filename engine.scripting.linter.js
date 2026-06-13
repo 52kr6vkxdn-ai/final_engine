@@ -246,7 +246,7 @@ const TYPO_MAP = {
     "destroyself":"destroySelf","destroyobject":"destroyObject",
     "gotoscene":"gotoScene","pausescene":"pauseScene","resumescene":"resumeScene",
     "restartscene":"restartScene","currentscene":"currentScene",
-    "camerafollow":"cameraFollow","cameraunfollow","cameraUnfollow",
+    "camerafollow":"cameraFollow","cameraunfollow":"cameraUnfollow",
     "cameramoveto":"cameraMoveTo","getcamerax":"getCameraX","getcameray":"getCameraY",
     "camerashake":"cameraShake","playanimation":"playAnimation",
     "stopanimation":"stopAnimation","pauseanimation":"pauseAnimation",
