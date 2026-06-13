@@ -5,7 +5,7 @@
                          exposes the full scripting API surface
    ============================================================ */
 
-import { _instances } from './engine.scripting.shared.js';
+import { _instances, _isOverlapping, _tagRegistry } from './engine.scripting.shared.js';
 
 function _makeDeferredProxy(spawnX = 0, spawnY = 0) {
     let _realProxy = null;
@@ -224,35 +224,61 @@ function _makeProxy(f) {
         },
 
         // ── Velocity (script-driven, not physics) ─────────────────────────────
+        // NOTE: when an external script writes velocity via a stored proxy
+        // (e.g. `var him = find("enemy"); him.velocityY = 10;`), we must also
+        // set _velDirty/_velSetX/_velSetY — these flags are what tell the
+        // dynamic-physics branch of the tick loop to actually push the new
+        // velocity into the Planck body (see _tick step 4). Without them the
+        // value sits in api._vel but is silently ignored for dynamic bodies.
         get velocityX() { const i = _inst(); return i ? i.api._vel.x : (f._spawnVx ?? 0); },
         set velocityX(v) {
             f._spawnVx = +v;
-            const i = _inst(); if (i) i.api._vel.x = +v;
+            const i = _inst();
+            if (i) { i.api._vel.x = +v; }
+            f._velDirty = true; f._velSetX = true;
         },
 
         get velocityY() { const i = _inst(); return i ? i.api._vel.y : (f._spawnVy ?? 0); },
         set velocityY(v) {
             f._spawnVy = +v;
-            const i = _inst(); if (i) i.api._vel.y = +v;
+            const i = _inst();
+            if (i) { i.api._vel.y = +v; }
+            f._velDirty = true; f._velSetY = true;
         },
 
         // Short aliases
         get vx() { const i = _inst(); return i ? i.api._vel.x : (f._spawnVx ?? 0); },
-        set vx(v) { f._spawnVx = +v; const i = _inst(); if (i) i.api._vel.x = +v; },
+        set vx(v) {
+            f._spawnVx = +v;
+            const i = _inst(); if (i) i.api._vel.x = +v;
+            f._velDirty = true; f._velSetX = true;
+        },
 
         get vy() { const i = _inst(); return i ? i.api._vel.y : (f._spawnVy ?? 0); },
-        set vy(v) { f._spawnVy = +v; const i = _inst(); if (i) i.api._vel.y = +v; },
+        set vy(v) {
+            f._spawnVy = +v;
+            const i = _inst(); if (i) i.api._vel.y = +v;
+            f._velDirty = true; f._velSetY = true;
+        },
 
         setVelocity(vx, vy) {
             f._spawnVx = +vx; f._spawnVy = +vy;
             const i = _inst(); if (i) { i.api._vel.x = +vx; i.api._vel.y = +vy; }
+            f._velDirty = true; f._velSetX = true; f._velSetY = true;
         },
         stopMovement() {
             f._spawnVx = 0; f._spawnVy = 0;
             const i = _inst(); if (i) { i.api._vel.x = 0; i.api._vel.y = 0; }
+            f._velDirty = true; f._velSetX = true; f._velSetY = true;
         },
-        bounceX() { const i = _inst(); if (i) i.api.bounceX(); },
-        bounceY() { const i = _inst(); if (i) i.api.bounceY(); },
+        bounceX() {
+            const i = _inst(); if (i) i.api.bounceX();
+            f._velDirty = true; f._velSetX = true;
+        },
+        bounceY() {
+            const i = _inst(); if (i) i.api.bounceY();
+            f._velDirty = true; f._velSetY = true;
+        },
 
         // ── Visibility / alpha ────────────────────────────────────────────────
         get visible() { return f.visible; },
@@ -314,14 +340,55 @@ function _makeProxy(f) {
             if (i) i.api.setPhysicsType(type);
             else f.physicsBody = type;
         },
-        setCollision(v) { const i = _inst(); if (i) i.api.setCollision(v); },
-        setSensor(v)    { const i = _inst(); if (i) i.api.setSensor(v); },
-        setImmovable(v) { const i = _inst(); if (i) i.api.setImmovable(v); },
+        // setCollision/setSensor/setImmovable/applyForce/etc operate purely on
+        // the underlying object + Planck body — no script instance required,
+        // so these now work via a stored proxy even when called on an object
+        // from another object's script (e.g. `him.setCollision(false)`).
+        setCollision(v) {
+            f.physicsIsSensor = !v;
+            if (f._physicsBody && window.planck) {
+                for (let fx = f._physicsBody.getFixtureList(); fx; fx = fx.getNext()) fx.setSensor(!v);
+            }
+        },
+        setSensor(v) {
+            f.physicsIsSensor = !!v;
+            if (f._physicsBody && window.planck) {
+                for (let fx = f._physicsBody.getFixtureList(); fx; fx = fx.getNext()) fx.setSensor(!!v);
+            }
+        },
+        setImmovable(v) {
+            f.physicsImmovable = !!v;
+            import('./engine.physics.js').then(m => m.rebuildBodyForObject(f)).catch(() => {});
+        },
 
-        applyForce(fx, fy)    { const i = _inst(); if (i) i.api.physics?.applyForce(fx, fy); },
-        applyImpulse(ix, iy)  { const i = _inst(); if (i) i.api.physics?.applyImpulse(ix, iy); },
-        setAngularVelocity(r) { const i = _inst(); if (i) i.api.physics?.setAngularVelocity(r); },
-        stopPhysics()         { const i = _inst(); if (i) i.api.physics?.stop(); },
+        applyForce(fx2, fy2) {
+            if (window.planck && f._physicsBody) {
+                f._physicsBody.applyForce(window.planck.Vec2(fx2, -fy2), f._physicsBody.getWorldCenter(), true);
+            }
+        },
+        applyImpulse(ix, iy) {
+            if (window.planck && f._physicsBody) {
+                const b = f._physicsBody;
+                const vel = b.getLinearVelocity();
+                b.setLinearVelocity(window.planck.Vec2(
+                    vel.x + ix * 100 / (b.getMass() || 1),
+                    vel.y - iy * 100 / (b.getMass() || 1),
+                ));
+            }
+        },
+        setAngularVelocity(r) {
+            if (window.planck && f._physicsBody && f.physicsBody === 'dynamic') {
+                f._physicsBody.setAngularVelocity(r * Math.PI / 180);
+            }
+        },
+        stopPhysics() {
+            if (f.physicsBody === 'kinematic') {
+                f._kinematicVx = 0; f._kinematicVy = 0;
+                f._pendingKinematicDelta = { x: 0, y: 0 };
+            } else if (window.planck && f._physicsBody) {
+                f._physicsBody.setLinearVelocity(window.planck.Vec2(0, 0));
+            }
+        },
 
         get physics() { const i = _inst(); return i ? i.api.physics : null; },
 
@@ -339,7 +406,17 @@ function _makeProxy(f) {
         setMaxHealth(n) { f._maxHealth = Math.max(0, +n); },
         getMaxHealth()  { return f._maxHealth ?? 100; },
 
-        takeDamage(amount, source) { const i = _inst(); if (i) i.api.takeDamage(amount, source); },
+        takeDamage(amount, source) {
+            if (f._isInvincible) return;
+            if (f._health == null) f._health = 100;
+            const prev = f._health;
+            f._health = Math.max(0, prev - amount);
+            const inst = _instances.find(i => i.obj === f);
+            if (inst?._onDamage) { try { inst._onDamage(amount, source ?? null); } catch(_) {} }
+            if (f._health <= 0 && prev > 0 && inst?._onDeath) {
+                try { inst._onDeath(source ?? null); } catch(_) {}
+            }
+        },
         heal(amount) {
             const i = _inst();
             if (i) { i.api.heal(amount); }
@@ -405,21 +482,73 @@ function _makeProxy(f) {
             f.scale.y *= -1;
             if (f.spriteGraphic) f.spriteGraphic.scale.y = f.scale.y;
         },
-        moveForward(speed) { const i = _inst(); if (i) i.api.moveForward(speed); },
+        // These operate purely on `f` (+ Planck body / spriteGraphic), so they
+        // work via a stored proxy regardless of whether the target object has
+        // its own running script instance.
+        moveForward(speed) {
+            const r  = -f.rotation;
+            const dx = Math.cos(r) * speed * 100;
+            const dy = Math.sin(r) * speed * 100;
+            if (f.physicsBody === 'kinematic') {
+                if (!f._pendingKinematicDelta) f._pendingKinematicDelta = { x: 0, y: 0 };
+                f._pendingKinematicDelta.x += dx;
+                f._pendingKinematicDelta.y -= dy;
+            } else {
+                f.x += dx;
+                f.y -= dy;
+            }
+        },
 
-        lockRotation()          { const i = _inst(); if (i) i.api.lockRotation(); },
-        unlockRotation()        { const i = _inst(); if (i) i.api.unlockRotation(); },
-        setRotationLocked(v)    { const i = _inst(); if (i) i.api.setRotationLocked(v); },
+        lockRotation() {
+            f.physicsFixedRotation = true;
+            if (f._physicsBody) f._physicsBody.setFixedRotation(true);
+        },
+        unlockRotation() {
+            f.physicsFixedRotation = false;
+            if (f._physicsBody) f._physicsBody.setFixedRotation(false);
+        },
+        setRotationLocked(v) {
+            f.physicsFixedRotation = !!v;
+            if (f._physicsBody) f._physicsBody.setFixedRotation(!!v);
+        },
 
         // ── Animation ─────────────────────────────────────────────────────────
-        get currentAnimation() { const i = _inst(); return i ? i.api.currentAnimation : null; },
+        get currentAnimation() { return f.animations?.[f.activeAnimIndex ?? 0]?.name ?? null; },
 
-        playAnimation(name)  { const i = _inst(); if (i) i.api.playAnimation(name); },
-        stopAnimation()      { const i = _inst(); if (i) i.api.stopAnimation(); },
-        pauseAnimation()     { const i = _inst(); if (i) i.api.pauseAnimation(); },
+        // playAnimation rebuilds the sprite via engine.animator.js — pure obj
+        // operation, no instance needed, so it works on any stored proxy.
+        playAnimation(name) {
+            const anims = f.animations;
+            if (!anims?.length) return;
+            const idx = anims.findIndex(a => a.name === name);
+            if (idx < 0) return;
+            const changed = f.activeAnimIndex !== idx;
+            f.activeAnimIndex = idx;
+            const existing = f._animSprite;
+            if (!changed && existing?.play) {
+                if (!existing.playing) existing.gotoAndPlay(0);
+                return;
+            }
+            if (f._animSwitchPending) return;
+            f._animSwitchPending = true;
+            import('./engine.animator.js').then(({ reapplyAnimationToObject }) => {
+                f._animSwitchPending = false;
+                reapplyAnimationToObject(f);
+                const s = f._animSprite;
+                if (s?.play) s.gotoAndPlay(0);
+            }).catch(() => { f._animSwitchPending = false; });
+        },
+        stopAnimation() {
+            const s = f._animSprite ?? f.spriteGraphic;
+            try { if (s?.stop) s.stop(); } catch(_) {}
+        },
+        pauseAnimation() {
+            const s = f._animSprite ?? f.spriteGraphic;
+            try { if (s?.stop) s.stop(); } catch(_) {}
+        },
 
         // ── AI / Navigation ───────────────────────────────────────────────────
-        get isWalking() { const i = _inst(); return i ? !!i.obj._nav?.active : false; },
+        get isWalking() { return !!f._nav?.active; },
         get isStuck()   { const i = _inst(); return i ? !!i._isStuck : false; },
 
         walkTo(x, y, opts)        { const i = _inst(); if (i) i.api.walkTo(x, y, opts ?? {}); },
@@ -433,9 +562,27 @@ function _makeProxy(f) {
         lastKnownPos(target)      { const i = _inst(); return i ? i.api.lastKnownPos(target) : null; },
 
         // ── Overlap / collision ───────────────────────────────────────────────
-        overlaps(other)          { const i = _inst(); return i ? i.api.overlaps(other) : false; },
-        overlapsTag(tag)         { const i = _inst(); return i ? i.api.overlapsTag(tag) : null; },
-        overlapsAllWithTag(tag)  { const i = _inst(); return i ? i.api.overlapsAllWithTag(tag) : []; },
+        // _isOverlapping is a pure AABB check on the underlying objects, so
+        // these work via a stored proxy even if the target object has no
+        // running script instance.
+        overlaps(other)          { return _isOverlapping(f, other?._ref ?? other); },
+        overlapsTag(tag) {
+            const set = _tagRegistry.get(tag);
+            if (!set) return null;
+            for (const inst of set) {
+                if (inst.obj !== f && _isOverlapping(f, inst.obj)) return _makeProxy(inst.obj);
+            }
+            return null;
+        },
+        overlapsAllWithTag(tag) {
+            const set = _tagRegistry.get(tag);
+            if (!set) return [];
+            const result = [];
+            for (const inst of set) {
+                if (inst.obj !== f && _isOverlapping(f, inst.obj)) result.push(_makeProxy(inst.obj));
+            }
+            return result;
+        },
 
         // ── Draggable / Throwable ────────────────────────────────────────────
         makeDraggable(opts) { const i = _inst(); if (i) i.api.makeDraggable(opts); },
