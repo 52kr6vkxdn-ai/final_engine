@@ -1622,7 +1622,7 @@ function isInvincible()            { return api.isInvincible(); }
  *   if (isKeyJustDown("Space") && isOnGround()) triggerJump();
  */
 function triggerJump() {
-    if (_onJump) try { _onJump(); } catch(_) {}
+    if (_onJump) try { _onJump.call(api); } catch(_) {}
 }
 
 // ── AMMO SYSTEM ───────────────────────────────────────────
@@ -1787,7 +1787,7 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
             // Chain .catch IMMEDIATELY on the call — never store then attach separately.
             // Storing in a variable first creates a window where a synchronous microtask
             // rejection fires before .catch is attached, causing "Unhandled promise rejection".
-            fn(api, out).catch(_err => {
+            fn.call(api, api, out).catch(_err => {
                 const friendly = _friendlyScriptError(_err, code, this.name, this.obj.label, 'compile');
                 for (const line of friendly) _logConsole(line, '#f87171');
                 const _rm = _err?.message ?? String(_err);
@@ -1798,35 +1798,44 @@ __out._syncVel           = typeof _syncVelocityToApi !== 'undefined' ? _syncVelo
                 console.error('[Zengine async compile error]', _rt + ':', _rm, '\nScript:', this.name, '\nFull error:', _err);
                 import('./engine.console.js').then(m => m.recordPlayError());
             });
-            this._onStart         = out._onStart         ?? null;
-            this._onCloneStart    = out._onCloneStart    ?? null;
-            this._onDestroy       = out._onDestroy       ?? null;
-            this._onUpdate        = out._onUpdate        ?? null;
-            this._onStop          = out._onStop          ?? null;
-            this._onCollisionEnter= out._onCollisionEnter ?? null;
-            this._onCollisionStay = out._onCollisionStay  ?? null;
-            this._onCollisionExit = out._onCollisionExit  ?? null;
-            this._onOverlapEnter  = out._onOverlapEnter   ?? null;
-            this._onOverlapExit   = out._onOverlapExit    ?? null;
-            this._onVisible       = out._onVisible        ?? null;
-            this._onHide          = out._onHide           ?? null;
-            this._onMouseClick    = out._onMouseClick     ?? null;
-            this._onMouseEnter    = out._onMouseEnter     ?? null;
-            this._onMouseLeave    = out._onMouseLeave     ?? null;
-            this._messageHandlers    = out._msgHandlers         ?? new Map();
-            this._syncVel            = out._syncVel             ?? null;
-            this._syncIsWalking      = out._syncIsWalking       ?? null;
-            this._syncIsStuck        = out._syncIsStuck         ?? null;
-            this._onDamage           = out._onDamage            ?? null;
-            this._onDeath            = out._onDeath             ?? null;
-            this._onHeal             = out._onHeal              ?? null;
-            this._onLand             = out._onLand              ?? null;
-            this._onJump             = out._onJump              ?? null;
-            this._onScreenExit       = out._onScreenExit        ?? null;
-            this._onScreenEnter      = out._onScreenEnter       ?? null;
-            this._onReload           = out._onReload            ?? null;
-            this._stateEnterHandlers = out._stateEnterHandlers  ?? new Map();
-            this._stateExitHandlers  = out._stateExitHandlers   ?? new Map();
+            // Bind all user-defined callbacks to api so this === api inside onStart, onUpdate, etc.
+            const _b = fn => fn ? fn.bind(api) : null;
+            this._onStart         = _b(out._onStart);
+            this._onCloneStart    = _b(out._onCloneStart);
+            this._onDestroy       = _b(out._onDestroy);
+            this._onUpdate        = _b(out._onUpdate);
+            this._onStop          = _b(out._onStop);
+            this._onCollisionEnter= _b(out._onCollisionEnter);
+            this._onCollisionStay = _b(out._onCollisionStay);
+            this._onCollisionExit = _b(out._onCollisionExit);
+            this._onOverlapEnter  = _b(out._onOverlapEnter);
+            this._onOverlapExit   = _b(out._onOverlapExit);
+            this._onVisible       = _b(out._onVisible);
+            this._onHide          = _b(out._onHide);
+            this._onMouseClick    = _b(out._onMouseClick);
+            this._onMouseEnter    = _b(out._onMouseEnter);
+            this._onMouseLeave    = _b(out._onMouseLeave);
+            this._onDamage        = _b(out._onDamage);
+            this._onDeath         = _b(out._onDeath);
+            this._onHeal          = _b(out._onHeal);
+            this._onLand          = _b(out._onLand);
+            this._onJump          = _b(out._onJump);
+            this._onScreenExit    = _b(out._onScreenExit);
+            this._onScreenEnter   = _b(out._onScreenEnter);
+            this._onReload        = _b(out._onReload);
+            this._syncVel            = out._syncVel          ?? null;
+            this._syncIsWalking      = out._syncIsWalking    ?? null;
+            this._syncIsStuck        = out._syncIsStuck      ?? null;
+            // Bind message and state handlers to api too
+            const _rawMsg = out._msgHandlers ?? new Map();
+            this._messageHandlers = new Map();
+            for (const [k, fn] of _rawMsg) this._messageHandlers.set(k, fn.bind(api));
+            const _rawEnter = out._stateEnterHandlers ?? new Map();
+            this._stateEnterHandlers = new Map();
+            for (const [k, fn] of _rawEnter) this._stateEnterHandlers.set(k, fn.bind(api));
+            const _rawExit = out._stateExitHandlers ?? new Map();
+            this._stateExitHandlers = new Map();
+            for (const [k, fn] of _rawExit) this._stateExitHandlers.set(k, fn.bind(api));
             // Apply initial velocity: _spawnVx/Vy (set by spawnObject callback) takes
             // priority over top-level var declarations (_initVX/VY) so bullets move
             // in the direction the spawner set before this script compiled.
